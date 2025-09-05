@@ -1,0 +1,70 @@
+{
+  "name": "Hexagon Grid 100",
+  "description": "Honeycomb hexagonal pattern with ~100 cells",
+  "version": "1.0",
+  "gridType": "hexagon",
+  "cellCount": 100,
+  "dimensions": {
+    "width": 2.0,
+    "depth": 2.0,
+    "thickness": 0.015
+  },
+  "material": {
+    "baseColor": "#1E1E1E",
+    "shadowColor": "#080808",
+    "highlightColor": "#2E2E2E",
+    "gridLineColor": "#2C2C2C",
+    "textureOpacity": 0.04
+  },
+  "lighting": {
+    "lightDirection": {"x": -0.3, "y": 1.0, "z": -0.3},
+    "ambientIntensity": 0.12,
+    "diffuseIntensity": 0.6
+  },
+  "pattern": {
+    "type": "hexagon",
+    "hexRadius": 0.167,
+    "hexHeight": 0.289,
+    "lineWidth": 0.0018,
+    "raised": true,
+    "raisedHeight": 0.0025
+  },
+  "cells": [],
+  "hexagons": [
+    {
+      "id": 0,
+      "center": {"x": 0.167, "z": 0.167},
+      "radius": 0.167,
+      "height": 0.0,
+      "texture": {
+        "type": "hexagonal_dots",
+        "intensity": 0.04,
+        "dotCount": 6
+      },
+      "edges": {
+        "raised": true,
+        "height": 0.0025,
+        "bevel": true
+      }
+    }
+  ],
+  "contours": [
+    {
+      "type": "outer",
+      "points": [
+        {"x": 0.0, "z": 0.0},
+        {"x": 2.0, "z": 0.0},
+        {"x": 2.0, "z": 2.0},
+        {"x": 0.0, "z": 2.0}
+      ],
+      "beveled": true,
+      "bevelSize": 0.006
+    }
+  ],
+  "metadata": {
+    "createdDate": "2025-01-04",
+    "author": "TrimBox Simulator",
+    "tags": ["hexagon", "honeycomb", "100-cells", "organic"],
+    "difficulty": "intermediate"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "name": "Square Grid 100",
+  "description": "10x10 square grid pattern inspired by trunk mat",
+  "version": "1.0",
+  "gridType": "square",
+  "cellCount": 100,
+  "dimensions": {
+    "width": 2.0,
+    "depth": 2.0,
+    "thickness": 0.015
+  },
+  "material": {
+    "baseColor": "#1C1C1C",
+    "shadowColor": "#0F0F0F",
+    "highlightColor": "#2A2A2A",
+    "gridLineColor": "#2A2A2A",
+    "textureOpacity": 0.03
+  },
+  "lighting": {
+    "lightDirection": {"x": -0.3, "y": 1.0, "z": -0.3},
+    "ambientIntensity": 0.1,
+    "diffuseIntensity": 0.7
+  },
+  "pattern": {
+    "type": "grid",
+    "rows": 10,
+    "columns": 10,
+    "cellSize": 0.2,
+    "lineWidth": 0.002,
+    "raised": true,
+    "raisedHeight": 0.002
+  },
+  "cells": [
+    {
+      "id": 0,
+      "row": 0,
+      "col": 0,
+      "position": {"x": 0.1, "z": 0.1},
+      "size": {"width": 0.2, "depth": 0.2},
+      "height": 0.0,
+      "texture": {
+        "type": "cross",
+        "intensity": 0.03,
+        "scale": 0.3
+      },
+      "edges": {
+        "top": {"raised": true, "height": 0.002},
+        "bottom": {"raised": true, "height": 0.002},
+        "left": {"raised": true, "height": 0.002},
+        "right": {"raised": true, "height": 0.002}
+      }
+    }
+  ],
+  "contours": [
+    {
+      "type": "outer",
+      "points": [
+        {"x": 0.0, "z": 0.0},
+        {"x": 2.0, "z": 0.0},
+        {"x": 2.0, "z": 2.0},
+        {"x": 0.0, "z": 2.0}
+      ],
+      "beveled": true,
+      "bevelSize": 0.005
+    }
+  ],
+  "metadata": {
+    "createdDate": "2025-01-04",
+    "author": "TrimBox Simulator",
+    "tags": ["square", "grid", "100-cells", "trunk-mat"],
+    "difficulty": "basic"
+  }
+}

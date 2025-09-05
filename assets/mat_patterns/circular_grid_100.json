@@ -1,0 +1,77 @@
+{
+  "name": "Circular Grid 100",
+  "description": "Concentric circles with radial segments",
+  "version": "1.0",
+  "gridType": "circular",
+  "cellCount": 100,
+  "dimensions": {
+    "width": 2.0,
+    "depth": 2.0,
+    "thickness": 0.015
+  },
+  "material": {
+    "baseColor": "#1A1A1A",
+    "shadowColor": "#070707",
+    "highlightColor": "#2F2F2F",
+    "gridLineColor": "#2D2D2D",
+    "textureOpacity": 0.03
+  },
+  "lighting": {
+    "lightDirection": {"x": 0.0, "y": 1.0, "z": -0.5},
+    "ambientIntensity": 0.15,
+    "diffuseIntensity": 0.65
+  },
+  "pattern": {
+    "type": "circular",
+    "center": {"x": 1.0, "z": 1.0},
+    "rings": 10,
+    "segments": 10,
+    "maxRadius": 0.9,
+    "lineWidth": 0.0016,
+    "raised": true,
+    "raisedHeight": 0.002
+  },
+  "cells": [],
+  "sectors": [
+    {
+      "id": 0,
+      "ring": 0,
+      "segment": 0,
+      "innerRadius": 0.0,
+      "outerRadius": 0.09,
+      "startAngle": 0,
+      "endAngle": 36,
+      "center": {"x": 1.0, "z": 1.0},
+      "height": 0.0,
+      "texture": {
+        "type": "radial_lines",
+        "intensity": 0.03,
+        "lineCount": 3
+      },
+      "edges": {
+        "raised": true,
+        "height": 0.002,
+        "curved": true
+      }
+    }
+  ],
+  "contours": [
+    {
+      "type": "outer",
+      "points": [
+        {"x": 0.0, "z": 0.0},
+        {"x": 2.0, "z": 0.0},
+        {"x": 2.0, "z": 2.0},
+        {"x": 0.0, "z": 2.0}
+      ],
+      "beveled": true,
+      "bevelSize": 0.005
+    }
+  ],
+  "metadata": {
+    "createdDate": "2025-01-04",
+    "author": "TrimBox Simulator",
+    "tags": ["circular", "radial", "concentric", "100-cells"],
+    "difficulty": "advanced"
+  }
+}

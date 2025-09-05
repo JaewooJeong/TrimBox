@@ -1,0 +1,27 @@
+{
+  "success": false,
+  "iterationsRequired": 5,
+  "totalPatternsGenerated": 5000,
+  "excellentPatternsCount": 0,
+  "selectedPattern": {
+    "patternId": 4126,
+    "patternName": "Square Grid 100 (Var 126)",
+    "gridType": "square",
+    "overallSimilarity": 0.9394496397051384,
+    "overallSimilarityPercent": "93.94%",
+    "detailScores": {
+      "colorSimilarity": 0.9937254901960784,
+      "textureSimilarity": 0.992644750996038,
+      "lightingSimilarity": 0.8052373748429431,
+      "materialSimilarity": 0.948006801980454,
+      "isometricSimilarity": 0.7955672739340357,
+      "patternSimilarity": 0.9999999999999999,
+      "visualCoherence": 1.0
+    },
+    "recommendationLevel": "VERY_GOOD",
+    "analysisNotes": []
+  },
+  "finalScore": 0.9394496397051384,
+  "finalScorePercent": "93.945%",
+  "completionDate": "2025-09-04T22:22:33.564859"
+}
