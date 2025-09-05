@@ -4,6 +4,9 @@ import 'package:flutter/services.dart';
 import '../models/apartment_blueprint.dart';
 import '../converters/apartment_to_isometric.dart';
 import '../engine/isometric_engine.dart';
+import '../math/vector2d.dart';
+import '../math/vector3d.dart';
+import '../math/isometric_transform.dart';
 import '../main.dart';
 
 class ApartmentSimulatorScreen extends StatefulWidget {
@@ -23,6 +26,9 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
   bool _isLoading = false;
   bool _showAnalysis = false;
   double _scale = 60.0;
+  double _cameraYaw = 0.0; // 좌우 회전
+  double _cameraPitch = 0.0; // 상하 회전
+  Vector2D _offset = Vector2D.zero;
 
   @override
   void initState() {
@@ -72,6 +78,7 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
         final screenSize = MediaQuery.of(context).size;
         _engine!.fitToAllObjects(screenSize);
         _engine!.setScale(_scale);
+        _updateCameraTransform();
       });
       
     } catch (e) {
@@ -82,6 +89,20 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
         _isLoading = false;
       });
     }
+  }
+
+  void _updateCameraTransform() {
+    if (_engine == null) return;
+    
+    // 카메라 각도 적용
+    _engine!.setCameraRotation(_cameraYaw, _cameraPitch);
+    
+    // 오프셋 적용
+    final currentTransform = _engine!.transform;
+    _engine!.setTransform(IsometricTransform(
+      scale: currentTransform.scale,
+      offset: currentTransform.offset + _offset,
+    ));
   }
 
   void _showError(String message) {
@@ -232,14 +253,32 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
                     ),
                     child: _engine == null
                         ? const Center(child: Text('아파트 데이터를 불러오는 중...'))
-                        : AnimatedBuilder(
-                            animation: _animationController,
-                            builder: (context, child) {
-                              return CustomPaint(
-                                painter: IsometricEnginePainter(_engine!),
-                                size: Size.infinite,
-                              );
+                        : GestureDetector(
+                            onPanUpdate: (details) {
+                              setState(() {
+                                // 드래그로 카메라 회전
+                                _cameraYaw += details.delta.dx * 0.5;
+                                _cameraPitch -= details.delta.dy * 0.5;
+                                
+                                // 각도 제한
+                                _cameraYaw = _cameraYaw.clamp(-180.0, 180.0);
+                                _cameraPitch = _cameraPitch.clamp(-45.0, 45.0);
+                                
+                                _updateCameraTransform();
+                              });
                             },
+                            onTap: () {
+                              // 탭으로 객체 선택 (향후 확장 가능)
+                            },
+                            child: AnimatedBuilder(
+                              animation: _animationController,
+                              builder: (context, child) {
+                                return CustomPaint(
+                                  painter: IsometricEnginePainter(_engine!),
+                                  size: Size.infinite,
+                                );
+                              },
+                            ),
                           ),
                   ),
                 ),
@@ -309,6 +348,7 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
       ),
       child: Column(
         children: [
+          // 스케일 컨트롤
           Row(
             children: [
               const Text('스케일: '),
@@ -330,8 +370,57 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
               Text('${_scale.round()}'),
             ],
           ),
+          
+          // 카메라 회전 컨트롤
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              const Text('Y축 회전: '),
+              Expanded(
+                child: Slider(
+                  value: _cameraYaw,
+                  min: -180.0,
+                  max: 180.0,
+                  divisions: 72,
+                  label: '${_cameraYaw.round()}°',
+                  onChanged: (value) {
+                    setState(() {
+                      _cameraYaw = value;
+                      _updateCameraTransform();
+                    });
+                  },
+                ),
+              ),
+              Text('${_cameraYaw.round()}°'),
+            ],
+          ),
+          
+          Row(
+            children: [
+              const Text('X축 회전: '),
+              Expanded(
+                child: Slider(
+                  value: _cameraPitch,
+                  min: -45.0,
+                  max: 45.0,
+                  divisions: 18,
+                  label: '${_cameraPitch.round()}°',
+                  onChanged: (value) {
+                    setState(() {
+                      _cameraPitch = value;
+                      _updateCameraTransform();
+                    });
+                  },
+                ),
+              ),
+              Text('${_cameraPitch.round()}°'),
+            ],
+          ),
+          
+          // 기본 컨트롤 버튼들
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               ElevatedButton.icon(
                 onPressed: () => _engine?.zoom(1.2),
@@ -351,6 +440,18 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
                 },
                 icon: const Icon(Icons.fit_screen, size: 18),
                 label: const Text('전체 보기'),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _cameraYaw = 0.0;
+                    _cameraPitch = 0.0;
+                    _offset = Vector2D.zero;
+                    _updateCameraTransform();
+                  });
+                },
+                icon: const Icon(Icons.3d_rotation, size: 18),
+                label: const Text('카메라 리셋'),
               ),
               ElevatedButton.icon(
                 onPressed: _showSimilarityAnalysis,
@@ -373,15 +474,15 @@ class _ApartmentSimulatorScreenState extends State<ApartmentSimulatorScreen>
           top: BorderSide(color: Colors.grey.shade300),
         ),
       ),
-      child: Row(
+      child: Wrap(
+        spacing: 16,
         children: [
           Text('총 객체: ${_engine?.objects.length ?? 0}'),
-          const SizedBox(width: 16),
           Text('FPS: ${_engine?.performance.averageFps.toStringAsFixed(1) ?? '0.0'}'),
-          const Spacer(),
+          Text('카메라 Y: ${_cameraYaw.round()}°'),
+          Text('카메라 X: ${_cameraPitch.round()}°'),
           if (_similarityAnalysis != null)
             Text('변환 유사도: ${_similarityAnalysis!['overall_similarity']}%'),
-          const SizedBox(width: 16),
           Text('스케일: ${_engine?.transform.scale.toStringAsFixed(1) ?? '0.0'}'),
         ],
       ),

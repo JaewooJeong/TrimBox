@@ -235,7 +235,7 @@ class Wall {
       type: json['type'],
       points: (json['points'] as List)
           .map((point) => (point as List)
-              .map((coord) => coord.toDouble())
+              .map((coord) => (coord as num).toDouble())
               .toList())
           .toList(),
       thickness: json['thickness'].toDouble(),
