@@ -154,7 +154,7 @@ class IsometricPainter extends CustomPainter {
         strokeColor = const Color(0xFF4DA3FF);
         strokeWidth = 2.5;
       } else {
-        strokeColor = box.color.withValues(alpha: 0.8);
+        strokeColor = _darken(box.color, 0.3);
         strokeWidth = 1.0;
       }
 
@@ -166,7 +166,7 @@ class IsometricPainter extends CustomPainter {
         w: box.effectiveW,
         h: box.h,
         d: box.effectiveD,
-        fillColor: box.color.withValues(alpha: 0.7),
+        fillColor: box.color,
         strokeColor: strokeColor,
         strokeWidth: strokeWidth,
       );
@@ -190,51 +190,52 @@ class IsometricPainter extends CustomPainter {
     required Color strokeColor,
     double strokeWidth = 1.0,
   }) {
-    // 보이는 면에 필요한 꼭짓점만 계산
-    final p0 = toIso(x, y, z);         // 바닥-앞왼
-    final p2 = toIso(x + w, y, z + d); // 바닥-뒤오른
-    final p3 = toIso(x, y, z + d);     // 바닥-뒤왼
-    final p4 = toIso(x, y + h, z);     // 윗면-앞왼
-    final p5 = toIso(x + w, y + h, z); // 윗면-앞오른
+    // 8개 꼭짓점 모두 계산
+    final p0 = toIso(x, y, z);             // 바닥-앞왼
+    final p1 = toIso(x + w, y, z);         // 바닥-앞오른
+    final p3 = toIso(x, y, z + d);         // 바닥-뒤왼
+    final p4 = toIso(x, y + h, z);         // 윗면-앞왼
+    final p5 = toIso(x + w, y + h, z);     // 윗면-앞오른
     final p6 = toIso(x + w, y + h, z + d); // 윗면-뒤오른
-    final p7 = toIso(x, y + h, z + d); // 윗면-뒤왼
+    final p7 = toIso(x, y + h, z + d);     // 윗면-뒤왼
 
     final fill = Paint()..style = PaintingStyle.fill;
     final stroke = Paint()
       ..color = strokeColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth;
+      ..strokeWidth = strokeWidth
+      ..strokeJoin = StrokeJoin.round;
 
-    // 윗면 (가장 밝게)
+    // 1. 윗면 (가장 밝게)
     final top = Path()
       ..moveTo(p4.dx, p4.dy)
       ..lineTo(p5.dx, p5.dy)
       ..lineTo(p6.dx, p6.dy)
       ..lineTo(p7.dx, p7.dy)
       ..close();
-    fill.color = _brighten(fillColor, 0.2);
+    fill.color = _brighten(fillColor, 0.15);
     canvas.drawPath(top, fill);
     canvas.drawPath(top, stroke);
 
-    // 왼쪽 면
+    // 2. 왼쪽 면 (x=x, 화면 왼쪽 — 가장 어둡게)
     final left = Path()
-      ..moveTo(p3.dx, p3.dy)
-      ..lineTo(p7.dx, p7.dy)
-      ..lineTo(p6.dx, p6.dy)
-      ..lineTo(p2.dx, p2.dy)
-      ..close();
-    fill.color = _darken(fillColor, 0.1);
-    canvas.drawPath(left, fill);
-    canvas.drawPath(left, stroke);
-
-    // 오른쪽 면
-    final right = Path()
       ..moveTo(p0.dx, p0.dy)
       ..lineTo(p4.dx, p4.dy)
       ..lineTo(p7.dx, p7.dy)
       ..lineTo(p3.dx, p3.dy)
       ..close();
-    fill.color = _darken(fillColor, 0.2);
+    fill.color = _darken(fillColor, 0.25);
+    canvas.drawPath(left, fill);
+    canvas.drawPath(left, stroke);
+
+    // 3. 오른쪽 면 (z=z, 화면 오른쪽 — 중간 밝기)
+    final right = Path()
+      ..moveTo(p0.dx, p0.dy)
+      ..lineTo(p1.dx, p1.dy)
+      ..lineTo(p5.dx, p5.dy)
+      ..lineTo(p4.dx, p4.dy)
+      ..close();
+    fill.color = _darken(fillColor, 0.08);
     canvas.drawPath(right, fill);
     canvas.drawPath(right, stroke);
   }
@@ -247,7 +248,7 @@ class IsometricPainter extends CustomPainter {
     );
 
     final text =
-        '${(box.w * 100).round()}×${(box.d * 100).round()}×${(box.h * 100).round()}cm';
+        '${(box.effectiveW * 100).round()}×${(box.effectiveD * 100).round()}×${(box.h * 100).round()}cm';
     final tp = TextPainter(
       text: TextSpan(
         text: text,
