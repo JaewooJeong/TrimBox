@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# BMAD symlinks (actual files are in bmad-submodule)
+.claude/commands/bmad*
+.claude/commands/commit.md
+_bmad
