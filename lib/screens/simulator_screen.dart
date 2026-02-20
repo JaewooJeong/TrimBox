@@ -221,6 +221,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     setState(() {
       box.x = _dragStartX + dx3d;
       box.z = _dragStartZ + dz3d;
+      box.clampTo(_space.w, _space.d);
       _updateCollisions();
     });
   }
@@ -230,6 +231,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
       setState(() {
         box.snapToGrid(_space.gridUnit);
+        box.clampTo(_space.w, _space.d);
         _isDragging = false;
         _dragStartScreen = null;
         _updateCollisions();
@@ -268,6 +270,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           return;
       }
       box.snapToGrid(_space.gridUnit);
+      box.clampTo(_space.w, _space.d);
       _updateCollisions();
     });
   }
