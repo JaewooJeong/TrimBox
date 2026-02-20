@@ -52,12 +52,19 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   double _lastScale = 280.0;
 
   late CollisionDetector _detector;
+  final FocusNode _canvasFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
     _space = TrunkPreset.suv.toTrunkSpace()!;
     _detector = CollisionDetector(_space);
+  }
+
+  @override
+  void dispose() {
+    _canvasFocusNode.dispose();
+    super.dispose();
   }
 
   double _calculateScale(Size canvasSize) {
@@ -143,10 +150,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
-        _lastScale = _calculateScale(canvasSize);
+        final scale = _calculateScale(canvasSize);
+        // postFrameCallback으로 _lastScale을 업데이트 (build 밖에서 상태 변경)
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _lastScale = scale;
+        });
 
         return KeyboardListener(
-          focusNode: FocusNode()..requestFocus(),
+          focusNode: _canvasFocusNode,
+          autofocus: true,
           onKeyEvent: _onKeyEvent,
           child: GestureDetector(
             onPanStart: _onPanStart,
@@ -160,7 +172,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                   boxes: _boxes,
                   selectedBoxId: _selectedBoxId,
                   collidingBoxIds: _collidingIds,
-                  scale: _lastScale,
+                  scale: scale,
                 ),
                 size: Size.infinite,
               ),
@@ -266,7 +278,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         case LogicalKeyboardKey.backspace:
           _boxes.removeWhere((b) => b.id == _selectedBoxId);
           _selectedBoxId = null;
-          break;
+          _updateCollisions();
+          return;
         default:
           return;
       }
@@ -356,6 +369,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     setState(() {
       box.rotate90();
       box.snapToGrid(_space.gridUnit);
+      box.clampTo(_space.w, _space.d);
       _updateCollisions();
     });
   }
@@ -478,10 +492,22 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     try {
       final scene = JsonIO.importScene(jsonStr);
       setState(() {
+        _space = scene.space;
+        _detector = CollisionDetector(_space);
+        _selectedPreset = TrunkPreset.custom;
         _boxes
           ..clear()
           ..addAll(scene.boxes);
-        _boxCounter = _boxes.length;
+        // 기존 박스 ID에서 최대 번호를 추출하여 충돌 방지
+        int maxId = 0;
+        for (final b in _boxes) {
+          final match = RegExp(r'box-(\d+)').firstMatch(b.id);
+          if (match != null) {
+            final n = int.tryParse(match.group(1)!) ?? 0;
+            if (n > maxId) maxId = n;
+          }
+        }
+        _boxCounter = maxId > _boxes.length ? maxId : _boxes.length;
         _selectedBoxId = null;
         _updateCollisions();
       });

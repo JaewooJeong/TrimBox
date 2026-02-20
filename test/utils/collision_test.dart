@@ -80,7 +80,7 @@ void main() {
       expect(detector.overlapsLeftWheelhouse(box), false);
     });
 
-    test('findAllCollisions 종합', () {
+    test('findAllCollisions 경계 밖 감지', () {
       final boxes = [
         makeBox(id: 'ok1', x: 0.3, z: 0.0, w: 0.2, d: 0.2),
         makeBox(id: 'ok2', x: 0.3, z: 0.3, w: 0.2, d: 0.2),
@@ -90,6 +90,16 @@ void main() {
       expect(result.contains('oob'), true);
       expect(result.contains('ok1'), false);
       expect(result.contains('ok2'), false);
+    });
+
+    test('findAllCollisions 겹치는 두 박스 모두 감지', () {
+      final boxes = [
+        makeBox(id: 'a', x: 0.3, z: 0.3, w: 0.2, d: 0.2),
+        makeBox(id: 'b', x: 0.4, z: 0.4, w: 0.2, d: 0.2), // a와 겹침
+      ];
+      final result = detector.findAllCollisions(boxes);
+      expect(result.contains('a'), true);
+      expect(result.contains('b'), true);
     });
   });
 }
