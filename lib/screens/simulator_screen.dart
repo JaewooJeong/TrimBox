@@ -10,6 +10,7 @@ import '../utils/collision.dart';
 import '../utils/json_io.dart';
 import '../widgets/add_box_dialog.dart';
 import '../widgets/box_list_panel.dart';
+import '../widgets/trunk_size_dialog.dart';
 
 /// 박스 파스텔 색상 팔레트
 const _boxColors = [
@@ -31,11 +32,12 @@ class SimulatorScreen extends StatefulWidget {
 }
 
 class _SimulatorScreenState extends State<SimulatorScreen> {
-  final TrunkSpace _space = TrunkSpace.defaultSUV();
+  late TrunkSpace _space;
   final List<TrimBox> _boxes = [];
   String? _selectedBoxId;
   Set<String> _collidingIds = {};
   int _boxCounter = 0;
+  TrunkPreset _selectedPreset = TrunkPreset.suv;
 
   // 드래그 상태
   bool _isDragging = false;
@@ -47,14 +49,23 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   static const double _isoAngle = 30.0 * math.pi / 180.0;
   static final double _cosA = math.cos(_isoAngle);
   static final double _sinA = math.sin(_isoAngle);
-  static const double _scale = 280.0;
+  double _lastScale = 280.0;
 
-  late final CollisionDetector _detector;
+  late CollisionDetector _detector;
 
   @override
   void initState() {
     super.initState();
+    _space = TrunkPreset.suv.toTrunkSpace()!;
     _detector = CollisionDetector(_space);
+  }
+
+  double _calculateScale(Size canvasSize) {
+    final isoWidth = (_space.w + _space.d) * _cosA;
+    final isoHeight = (_space.w + _space.d) * _sinA + _space.h;
+    final scaleX = canvasSize.width * 0.8 / isoWidth;
+    final scaleY = canvasSize.height * 0.8 / isoHeight;
+    return math.min(scaleX, scaleY);
   }
 
   @override
@@ -62,7 +73,44 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1C),
       appBar: AppBar(
-        title: const Text('TrimBox Simulator'),
+        title: Row(
+          children: [
+            const Text('TrimBox'),
+            const SizedBox(width: 16),
+            DropdownButton<TrunkPreset>(
+              value: _selectedPreset,
+              dropdownColor: const Color(0xFF333333),
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              underline: const SizedBox.shrink(),
+              icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
+              items: TrunkPreset.values.map((p) {
+                return DropdownMenuItem(
+                  value: p,
+                  child: Text(p.label),
+                );
+              }).toList(),
+              selectedItemBuilder: (_) => TrunkPreset.values.map((p) {
+                if (p == TrunkPreset.custom && _selectedPreset == TrunkPreset.custom) {
+                  return Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '커스텀 (${(_space.w * 100).round()}×${(_space.d * 100).round()}cm)',
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                  );
+                }
+                return Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(p.label,
+                      style: const TextStyle(color: Colors.white, fontSize: 14)),
+                );
+              }).toList(),
+              onChanged: (p) {
+                if (p != null) _onPresetChanged(p);
+              },
+            ),
+          ],
+        ),
         backgroundColor: const Color(0xFF1C1C1C),
         foregroundColor: Colors.white,
         elevation: 0,
@@ -92,27 +140,34 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   Widget _buildCanvas() {
-    return KeyboardListener(
-      focusNode: FocusNode()..requestFocus(),
-      onKeyEvent: _onKeyEvent,
-      child: GestureDetector(
-        onPanStart: _onPanStart,
-        onPanUpdate: _onPanUpdate,
-        onPanEnd: _onPanEnd,
-        onTapUp: _onTapUp,
-        child: RepaintBoundary(
-          child: CustomPaint(
-            painter: IsometricPainter(
-              space: _space,
-              boxes: _boxes,
-              selectedBoxId: _selectedBoxId,
-              collidingBoxIds: _collidingIds,
-              scale: _scale,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
+        _lastScale = _calculateScale(canvasSize);
+
+        return KeyboardListener(
+          focusNode: FocusNode()..requestFocus(),
+          onKeyEvent: _onKeyEvent,
+          child: GestureDetector(
+            onPanStart: _onPanStart,
+            onPanUpdate: _onPanUpdate,
+            onPanEnd: _onPanEnd,
+            onTapUp: _onTapUp,
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: IsometricPainter(
+                  space: _space,
+                  boxes: _boxes,
+                  selectedBoxId: _selectedBoxId,
+                  collidingBoxIds: _collidingIds,
+                  scale: _lastScale,
+                ),
+                size: Size.infinite,
+              ),
             ),
-            size: Size.infinite,
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -220,11 +275,11 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   // ──── 역 아이소메트릭 변환 ────
 
   double _screenToIsoX(double sx, double sy) {
-    return (sx / (_cosA * _scale) + sy / (_sinA * _scale)) / 2;
+    return (sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
   }
 
   double _screenToIsoDx(double sx, double sy) {
-    return (-sx / (_cosA * _scale) + sy / (_sinA * _scale)) / 2;
+    return (-sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
   }
 
   // ──── 히트 테스트: 탭 위치에서 박스 찾기 ────
@@ -279,8 +334,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   Offset _toIso(double x, double y, double z) {
-    final sx = (x - z) * _cosA * _scale;
-    final sy = (x + z) * _sinA * _scale - y * _scale;
+    final sx = (x - z) * _cosA * _lastScale;
+    final sy = (x + z) * _sinA * _lastScale - y * _lastScale;
     return Offset(sx, sy);
   }
 
@@ -331,6 +386,35 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     setState(() {
       _boxes.add(newBox);
       _selectedBoxId = newBox.id;
+      _updateCollisions();
+    });
+  }
+
+  // ──── 트렁크 프리셋 변경 ────
+
+  Future<void> _onPresetChanged(TrunkPreset preset) async {
+    TrunkSpace? newSpace;
+
+    if (preset == TrunkPreset.custom) {
+      newSpace = await showDialog<TrunkSpace>(
+        context: context,
+        builder: (_) => const TrunkSizeDialog(),
+      );
+      if (newSpace == null) return;
+    } else {
+      newSpace = preset.toTrunkSpace();
+    }
+
+    if (newSpace == null) return;
+
+    setState(() {
+      _selectedPreset = preset;
+      _space = newSpace!;
+      _detector = CollisionDetector(_space);
+      for (final box in _boxes) {
+        box.snapToGrid(_space.gridUnit);
+        box.clampTo(_space.w, _space.d);
+      }
       _updateCollisions();
     });
   }
