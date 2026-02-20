@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../models/trim_box.dart';
+import '../models/trunk_space.dart';
 
 /// 박스 리스트 패널 — 각 박스 정보 + 회전/삭제 버튼
 class BoxListPanel extends StatelessWidget {
   final List<TrimBox> boxes;
+  final TrunkSpace space;
   final String? selectedBoxId;
   final Set<String> collidingBoxIds;
   final ValueChanged<String> onSelect;
@@ -17,6 +19,7 @@ class BoxListPanel extends StatelessWidget {
   const BoxListPanel({
     super.key,
     required this.boxes,
+    required this.space,
     this.selectedBoxId,
     this.collidingBoxIds = const {},
     required this.onSelect,
@@ -175,21 +178,59 @@ class BoxListPanel extends StatelessWidget {
   Widget _statsBar() {
     final totalVolume = boxes.fold<double>(
         0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
+    final boxArea = boxes.fold<double>(
+        0.0, (sum, b) => sum + b.effectiveW * b.effectiveD);
+    final effectiveArea = space.w * space.d -
+        (space.leftWheelhouse.w * space.leftWheelhouse.d) -
+        (space.rightWheelhouse.w * space.rightWheelhouse.d);
+    final ratio = effectiveArea > 0
+        ? (boxArea / effectiveArea).clamp(0.0, 1.0)
+        : 0.0;
+    final percent = (ratio * 100).round();
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: Color(0xFF444444))),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            '박스: ${boxes.length}개',
-            style: const TextStyle(color: Colors.grey, fontSize: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '박스: ${boxes.length}개',
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              Text(
+                '총 부피: ${(totalVolume * 1e6).round()}cm³',
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
           ),
-          Text(
-            '총 부피: ${(totalVolume * 1e6).round()}cm³',
-            style: const TextStyle(color: Colors.grey, fontSize: 12),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Text(
+                '점유율: $percent%',
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  backgroundColor: const Color(0xFF444444),
+                  color: Color.lerp(
+                    const Color(0xFFFF4D4D),
+                    const Color(0xFF6BD06B),
+                    ratio,
+                  ),
+                  minHeight: 6,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ],
           ),
         ],
       ),

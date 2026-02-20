@@ -174,6 +174,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   Widget _buildPanel() {
     return BoxListPanel(
       boxes: _boxes,
+      space: _space,
       selectedBoxId: _selectedBoxId,
       collidingBoxIds: _collidingIds,
       onSelect: _selectBox,
