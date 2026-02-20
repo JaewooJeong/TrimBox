@@ -1,3 +1,23 @@
+/// 트렁크 크기 프리셋
+enum TrunkPreset { suv, sedan, van, custom }
+
+extension TrunkPresetExt on TrunkPreset {
+  String get label => switch (this) {
+        TrunkPreset.suv => 'SUV (108×107cm)',
+        TrunkPreset.sedan => '세단 (90×85cm)',
+        TrunkPreset.van => '밴 (130×120cm)',
+        TrunkPreset.custom => '커스텀',
+      };
+
+  /// custom은 별도 다이얼로그로 생성하므로 null 반환
+  TrunkSpace? toTrunkSpace() => switch (this) {
+        TrunkPreset.suv => TrunkSpace.defaultSUV(),
+        TrunkPreset.sedan => TrunkSpace.sedan(),
+        TrunkPreset.van => TrunkSpace.van(),
+        TrunkPreset.custom => null,
+      };
+}
+
 /// 트렁크 공간 및 휠하우스 모델
 class Wheelhouse {
   final double w; // 폭 (m)
@@ -39,6 +59,37 @@ class TrunkSpace {
         h: 0.80,
         leftWheelhouse: Wheelhouse(w: 0.18, d: 0.36, h: 0.12),
         rightWheelhouse: Wheelhouse(w: 0.18, d: 0.36, h: 0.12),
+      );
+
+  factory TrunkSpace.sedan() => const TrunkSpace(
+        w: 0.90,
+        d: 0.85,
+        h: 0.65,
+        leftWheelhouse: Wheelhouse(w: 0.15, d: 0.30, h: 0.10),
+        rightWheelhouse: Wheelhouse(w: 0.15, d: 0.30, h: 0.10),
+      );
+
+  factory TrunkSpace.van() => const TrunkSpace(
+        w: 1.30,
+        d: 1.20,
+        h: 0.90,
+        leftWheelhouse: Wheelhouse(w: 0.20, d: 0.40, h: 0.15),
+        rightWheelhouse: Wheelhouse(w: 0.20, d: 0.40, h: 0.15),
+      );
+
+  factory TrunkSpace.custom({
+    required double w,
+    required double d,
+    required double h,
+    Wheelhouse leftWheelhouse = const Wheelhouse(w: 0, d: 0, h: 0),
+    Wheelhouse rightWheelhouse = const Wheelhouse(w: 0, d: 0, h: 0),
+  }) =>
+      TrunkSpace(
+        w: w,
+        d: d,
+        h: h,
+        leftWheelhouse: leftWheelhouse,
+        rightWheelhouse: rightWheelhouse,
       );
 
   Map<String, dynamic> toJson() => {

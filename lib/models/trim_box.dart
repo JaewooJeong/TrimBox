@@ -41,6 +41,12 @@ class TrimBox {
     z = (z / gridUnit).round() * gridUnit;
   }
 
+  /// 트렁크 경계 내로 클램핑 (회전 상태 반영)
+  void clampTo(double maxW, double maxD) {
+    x = x.clamp(0, (maxW - effectiveW).clamp(0, double.infinity));
+    z = z.clamp(0, (maxD - effectiveD).clamp(0, double.infinity));
+  }
+
   TrimBox copyWith({
     String? id,
     String? label,
