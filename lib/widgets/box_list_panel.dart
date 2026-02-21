@@ -15,6 +15,7 @@ class BoxListPanel extends StatelessWidget {
   final VoidCallback onAddBox;
   final VoidCallback onSave;
   final VoidCallback onLoad;
+  final VoidCallback? onScreenshot;
 
   const BoxListPanel({
     super.key,
@@ -28,6 +29,7 @@ class BoxListPanel extends StatelessWidget {
     required this.onAddBox,
     required this.onSave,
     required this.onLoad,
+    this.onScreenshot,
   });
 
   @override
@@ -57,6 +59,10 @@ class BoxListPanel extends StatelessWidget {
                 _actionButton(Icons.save, '저장', onSave),
                 const SizedBox(width: 8),
                 _actionButton(Icons.folder_open, '불러오기', onLoad),
+                if (onScreenshot != null) ...[
+                  const SizedBox(width: 8),
+                  _actionButton(Icons.photo_camera, '스크린샷', onScreenshot!),
+                ],
               ],
             ),
           ),
@@ -64,10 +70,27 @@ class BoxListPanel extends StatelessWidget {
           // 박스 리스트
           Expanded(
             child: boxes.isEmpty
-                ? const Center(
-                    child: Text(
-                      '박스를 추가하세요',
-                      style: TextStyle(color: Colors.grey, fontSize: 14),
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.inventory_2_outlined,
+                            color: Colors.grey[700], size: 48),
+                        const SizedBox(height: 12),
+                        const Text(
+                          '아직 박스가 없습니다',
+                          style: TextStyle(
+                              color: Colors.grey, fontSize: 14,
+                              fontWeight: FontWeight.w500),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '상단의 "박스 추가" 버튼으로\n시작하세요',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              color: Colors.grey[600], fontSize: 12),
+                        ),
+                      ],
                     ),
                   )
                 : ListView.builder(
@@ -138,11 +161,25 @@ class BoxListPanel extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      box.label.isNotEmpty ? box.label : box.id,
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 13),
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            box.label.isNotEmpty ? box.label : box.id,
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 13),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isColliding) ...[
+                          const SizedBox(width: 4),
+                          const Tooltip(
+                            message: '충돌 감지: 다른 박스 또는 경계와 겹침',
+                            child: Icon(Icons.warning_amber_rounded,
+                                color: Color(0xFFFF4D4D), size: 16),
+                          ),
+                        ],
+                      ],
                     ),
                     Text(
                       '$wCm × $dCm × ${hCm}cm  R:${box.rotY}°',

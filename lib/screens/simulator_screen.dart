@@ -1,5 +1,7 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../models/trim_box.dart';
@@ -7,6 +9,7 @@ import '../models/trunk_space.dart';
 import '../models/scene.dart';
 import '../painters/isometric_painter.dart';
 import '../utils/collision.dart';
+import '../utils/file_io.dart' as file_io;
 import '../utils/json_io.dart';
 import '../widgets/add_box_dialog.dart';
 import '../widgets/box_list_panel.dart';
@@ -45,6 +48,11 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   double _dragStartX = 0;
   double _dragStartZ = 0;
 
+  // Undo/Redo 스택 (박스 리스트 스냅샷)
+  static const int _maxUndoSteps = 50;
+  final List<List<TrimBox>> _undoStack = [];
+  final List<List<TrimBox>> _redoStack = [];
+
   // 아이소메트릭 변환에 사용하는 상수
   static const double _isoAngle = 30.0 * math.pi / 180.0;
   static final double _cosA = math.cos(_isoAngle);
@@ -54,6 +62,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   late CollisionDetector _detector;
   final FocusNode _canvasFocusNode = FocusNode();
+  final GlobalKey _canvasKey = GlobalKey();
 
   @override
   void initState() {
@@ -126,7 +135,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       body: LayoutBuilder(
         builder: (context, constraints) {
           // 가로가 넓으면 우측 패널, 좁으면 하단 패널
-          final isWide = constraints.maxWidth > 700;
+          final isWide = constraints.maxWidth > 600;
           if (isWide) {
             return Row(
               children: [
@@ -168,6 +177,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             onPanEnd: _onPanEnd,
             onTapUp: _onTapUp,
             child: RepaintBoundary(
+              key: _canvasKey,
               child: CustomPaint(
                 painter: IsometricPainter(
                   space: _space,
@@ -197,6 +207,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       onAddBox: _showAddDialog,
       onSave: _saveScene,
       onLoad: _loadScene,
+      onScreenshot: _takeScreenshot,
     );
   }
 
@@ -244,6 +255,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   void _onPanEnd(DragEndDetails details) {
     if (_isDragging && _selectedBoxId != null) {
       final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
+      _pushUndo();
       setState(() {
         box.snapToGrid(_space.gridUnit);
         box.clampTo(_space.w, _space.d);
@@ -255,10 +267,30 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   void _onKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent || _selectedBoxId == null) return;
+    if (event is! KeyDownEvent) return;
+
+    final isCtrl = HardwareKeyboard.instance.isControlPressed;
+    final isShift = HardwareKeyboard.instance.isShiftPressed;
+
+    // Ctrl+Z = Undo, Ctrl+Shift+Z / Ctrl+Y = Redo
+    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      if (isShift) {
+        _redo();
+      } else {
+        _undo();
+      }
+      return;
+    }
+    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyY) {
+      _redo();
+      return;
+    }
+
+    if (_selectedBoxId == null) return;
     final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
     final unit = _space.gridUnit;
 
+    _pushUndo();
     setState(() {
       switch (event.logicalKey) {
         case LogicalKeyboardKey.arrowLeft:
@@ -283,6 +315,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           _updateCollisions();
           return;
         default:
+          // 알 수 없는 키 → undo 스택에서 불필요한 스냅샷 제거
+          if (_undoStack.isNotEmpty) _undoStack.removeLast();
           return;
       }
       box.snapToGrid(_space.gridUnit);
@@ -363,6 +397,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   void _rotateBox(String id) {
+    _pushUndo();
     final box = _boxes.firstWhere((b) => b.id == id);
     setState(() {
       box.rotate90();
@@ -373,6 +408,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   void _deleteBox(String id) {
+    _pushUndo();
     setState(() {
       _boxes.removeWhere((b) => b.id == id);
       if (_selectedBoxId == id) _selectedBoxId = null;
@@ -389,16 +425,20 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     _boxCounter++;
     final colorIndex = (_boxCounter - 1) % _boxColors.length;
+    final selectedColor = result['color'] != null
+        ? Color(result['color'] as int)
+        : _boxColors[colorIndex];
     final newBox = TrimBox(
       id: 'box-${_boxCounter.toString().padLeft(3, '0')}',
       label: result['label'] as String? ?? 'Box $_boxCounter',
       w: result['w'] as double,
       d: result['d'] as double,
       h: result['h'] as double,
-      color: _boxColors[colorIndex],
+      color: selectedColor,
     );
     newBox.snapToGrid(_space.gridUnit);
 
+    _pushUndo();
     setState(() {
       _boxes.add(newBox);
       _selectedBoxId = newBox.id;
@@ -435,59 +475,45 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     });
   }
 
-  // ──── 저장/불러오기 ────
+  // ──── 저장/불러오기 (파일 기반) ────
 
   Future<void> _saveScene() async {
     final scene = Scene(space: _space, boxes: _boxes);
     final jsonStr = JsonIO.exportScene(scene);
+    final timestamp = DateTime.now()
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .split('.')
+        .first;
+    final filename = 'trimbox-$timestamp.json';
 
-    // 클립보드에 복사
-    await Clipboard.setData(ClipboardData(text: jsonStr));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('씬 JSON이 클립보드에 복사되었습니다'),
-          backgroundColor: Color(0xFF6BD06B),
-        ),
-      );
+    try {
+      file_io.downloadJson(jsonStr, filename);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$filename 저장 완료'),
+            backgroundColor: const Color(0xFF6BD06B),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('저장 실패: $e'),
+            backgroundColor: const Color(0xFFFF4D4D),
+          ),
+        );
+      }
     }
   }
 
   Future<void> _loadScene() async {
-    final ctrl = TextEditingController();
-    final jsonStr = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF252525),
-        title:
-            const Text('JSON 불러오기', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: ctrl,
-          maxLines: 8,
-          style: const TextStyle(color: Colors.white, fontSize: 12),
-          decoration: const InputDecoration(
-            hintText: 'JSON을 붙여넣으세요',
-            hintStyle: TextStyle(color: Color(0xFF666666)),
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소', style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, ctrl.text),
-            child: const Text('불러오기'),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-
-    if (jsonStr == null || jsonStr.isEmpty) return;
-
     try {
+      final jsonStr = await file_io.pickJsonFile();
+      if (jsonStr == null || jsonStr.isEmpty) return;
+
       final scene = JsonIO.importScene(jsonStr);
       setState(() {
         _space = scene.space;
@@ -496,7 +522,6 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         _boxes
           ..clear()
           ..addAll(scene.boxes);
-        // 기존 박스 ID에서 최대 번호를 추출하여 충돌 방지
         int maxId = 0;
         for (final b in _boxes) {
           final match = RegExp(r'box-(\d+)').firstMatch(b.id);
@@ -517,6 +542,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           ),
         );
       }
+    } on FormatException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('잘못된 파일 형식: $e'),
+            backgroundColor: const Color(0xFFFF4D4D),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -527,6 +561,85 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         );
       }
     }
+  }
+
+  // ──── 스크린샷 ────
+
+  Future<void> _takeScreenshot() async {
+    try {
+      final boundary = _canvasKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      final image = await boundary.toImage(pixelRatio: 2.0);
+      final byteData = await image.toByteData(
+          format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+
+      final bytes = byteData.buffer.asUint8List();
+      final timestamp = DateTime.now()
+          .toIso8601String()
+          .replaceAll(':', '-')
+          .split('.')
+          .first;
+      final filename = 'trimbox-$timestamp.png';
+
+      file_io.downloadBytes(bytes, filename, 'image/png');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$filename 저장 완료'),
+            backgroundColor: const Color(0xFF6BD06B),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('스크린샷 실패: $e'),
+            backgroundColor: const Color(0xFFFF4D4D),
+          ),
+        );
+      }
+    }
+  }
+
+  // ──── Undo/Redo ────
+
+  /// 현재 박스 상태를 undo 스택에 저장 (변경 전 호출)
+  void _pushUndo() {
+    _undoStack.add(_boxes.map((b) => b.copyWith()).toList());
+    if (_undoStack.length > _maxUndoSteps) _undoStack.removeAt(0);
+    _redoStack.clear();
+  }
+
+  void _undo() {
+    if (_undoStack.isEmpty) return;
+    // 현재 상태를 redo에 저장
+    _redoStack.add(_boxes.map((b) => b.copyWith()).toList());
+    final prev = _undoStack.removeLast();
+    setState(() {
+      _boxes
+        ..clear()
+        ..addAll(prev);
+      _selectedBoxId = null;
+      _updateCollisions();
+    });
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) return;
+    _undoStack.add(_boxes.map((b) => b.copyWith()).toList());
+    final next = _redoStack.removeLast();
+    setState(() {
+      _boxes
+        ..clear()
+        ..addAll(next);
+      _selectedBoxId = null;
+      _updateCollisions();
+    });
   }
 
   // ──── 충돌 업데이트 ────
