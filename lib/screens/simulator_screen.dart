@@ -50,6 +50,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   static final double _cosA = math.cos(_isoAngle);
   static final double _sinA = math.sin(_isoAngle);
   double _lastScale = 280.0;
+  Size _lastCanvasSize = Size.zero;
 
   late CollisionDetector _detector;
   final FocusNode _canvasFocusNode = FocusNode();
@@ -151,9 +152,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
         final scale = _calculateScale(canvasSize);
-        // postFrameCallback으로 _lastScale을 업데이트 (build 밖에서 상태 변경)
+        // postFrameCallback으로 _lastScale, _lastCanvasSize 업데이트
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _lastScale = scale;
+          _lastCanvasSize = canvasSize;
         });
 
         return KeyboardListener(
@@ -302,52 +304,48 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   // ──── 히트 테스트: 탭 위치에서 박스 찾기 ────
 
   TrimBox? _hitTest(Offset localPos) {
-    // 캔버스 중앙 기준 변환
-    final renderBox = context.findRenderObject() as RenderBox?;
-    if (renderBox == null) return null;
+    if (_lastCanvasSize == Size.zero) return null;
 
-    final canvasSize = renderBox.size;
-    final cx = canvasSize.width / 2;
-    final cy = canvasSize.height * 0.55;
-    final adjusted = Offset(localPos.dx - cx, localPos.dy - cy);
+    // painter와 동일한 중심점 계산
+    final center = IsometricPainter.computeCenter(
+        _lastCanvasSize, _space, _lastScale);
+    final adjusted = Offset(localPos.dx - center.dx, localPos.dy - center.dy);
 
-    // 뒤에서부터(위에 그려진 것부터) 검사
+    // 앞에 그려진 것부터 (뒤에서부터) 검사
     for (final box in _boxes.reversed) {
       if (_isPointInBox(adjusted, box)) return box;
     }
     return null;
   }
 
-  bool _isPointInBox(Offset screenPt, TrimBox box) {
-    // 박스 윗면의 4꼭짓점을 아이소메트릭 변환
-    final pts = [
-      _toIso(box.x, box.y + box.h, box.z),
-      _toIso(box.x + box.effectiveW, box.y + box.h, box.z),
-      _toIso(box.x + box.effectiveW, box.y + box.h, box.z + box.effectiveD),
-      _toIso(box.x, box.y + box.h, box.z + box.effectiveD),
+  /// 박스의 보이는 헥사곤(6각형) 외곽선 안에 포인트가 있는지 판정
+  bool _isPointInBox(Offset pt, TrimBox box) {
+    final w = box.effectiveW;
+    final d = box.effectiveD;
+    // 헥사곤 꼭짓점: p4→p5→p1→p2→p3→p7 (시계 방향, p2가 정면 아래)
+    final polygon = [
+      _toIso(box.x, box.y + box.h, box.z),             // p4 윗면-뒤
+      _toIso(box.x + w, box.y + box.h, box.z),         // p5 윗면-오른
+      _toIso(box.x + w, box.y, box.z),                  // p1 바닥-오른
+      _toIso(box.x + w, box.y, box.z + d),              // p2 바닥-앞 (정면)
+      _toIso(box.x, box.y, box.z + d),                  // p3 바닥-왼
+      _toIso(box.x, box.y + box.h, box.z + d),          // p7 윗면-왼
     ];
-    // + 정면(오른쪽면 + 왼쪽면) 포함한 넓은 바운딩
-    final allPts = [
-      ...pts,
-      _toIso(box.x, box.y, box.z),
-      _toIso(box.x + box.effectiveW, box.y, box.z),
-      _toIso(box.x + box.effectiveW, box.y, box.z + box.effectiveD),
-      _toIso(box.x, box.y, box.z + box.effectiveD),
-    ];
+    return _pointInPolygon(pt, polygon);
+  }
 
-    double minX = double.infinity, maxX = -double.infinity;
-    double minY = double.infinity, maxY = -double.infinity;
-    for (final p in allPts) {
-      if (p.dx < minX) minX = p.dx;
-      if (p.dx > maxX) maxX = p.dx;
-      if (p.dy < minY) minY = p.dy;
-      if (p.dy > maxY) maxY = p.dy;
+  /// Ray-casting 알고리즘으로 폴리곤 내부 판정
+  static bool _pointInPolygon(Offset pt, List<Offset> polygon) {
+    bool inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final yi = polygon[i].dy, yj = polygon[j].dy;
+      final xi = polygon[i].dx, xj = polygon[j].dx;
+      if (((yi > pt.dy) != (yj > pt.dy)) &&
+          (pt.dx < (xj - xi) * (pt.dy - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
     }
-
-    return screenPt.dx >= minX &&
-        screenPt.dx <= maxX &&
-        screenPt.dy >= minY &&
-        screenPt.dy <= maxY;
+    return inside;
   }
 
   Offset _toIso(double x, double y, double z) {
