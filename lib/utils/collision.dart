@@ -26,6 +26,11 @@ class CollisionDetector {
         box.z + box.effectiveD > space.d + 0.001;
   }
 
+  /// 박스가 트렁크 높이를 초과하는지 확인
+  bool isOverHeight(TrimBox box) {
+    return box.y + box.h > space.h + 0.001;
+  }
+
   /// 박스가 왼쪽 휠하우스와 겹치는지 확인
   bool overlapsLeftWheelhouse(TrimBox box) {
     final lw = space.leftWheelhouse;
@@ -53,6 +58,7 @@ class CollisionDetector {
   /// 특정 박스가 충돌 상태인지 종합 판정
   bool hasCollision(TrimBox box, List<TrimBox> allBoxes) {
     if (isOutOfBounds(box)) return true;
+    if (isOverHeight(box)) return true;
     if (overlapsLeftWheelhouse(box)) return true;
     if (overlapsRightWheelhouse(box)) return true;
     for (final other in allBoxes) {
@@ -66,6 +72,7 @@ class CollisionDetector {
     final colliding = <String>{};
     for (final box in boxes) {
       if (isOutOfBounds(box) ||
+          isOverHeight(box) ||
           overlapsLeftWheelhouse(box) ||
           overlapsRightWheelhouse(box)) {
         colliding.add(box.id);

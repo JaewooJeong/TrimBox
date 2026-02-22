@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -34,19 +35,42 @@ class SimulatorScreen extends StatefulWidget {
   State<SimulatorScreen> createState() => _SimulatorScreenState();
 }
 
-class _SimulatorScreenState extends State<SimulatorScreen> {
+class _SimulatorScreenState extends State<SimulatorScreen>
+    with TickerProviderStateMixin {
   late TrunkSpace _space;
   final List<TrimBox> _boxes = [];
   String? _selectedBoxId;
   Set<String> _collidingIds = {};
   int _boxCounter = 0;
-  TrunkPreset _selectedPreset = TrunkPreset.suv;
+  TrunkPreset _selectedPreset = TrunkPreset.tucson;
+
+  // 카메라 방향 + 회전 애니메이션
+  CameraDirection _cameraDir = CameraDirection.dir0;
+  late final AnimationController _rotationController;
+  CameraDirection _pendingDir = CameraDirection.dir0;
+  bool _hasSwitchedDir = false;
 
   // 드래그 상태
   bool _isDragging = false;
   Offset? _dragStartScreen;
   double _dragStartX = 0;
   double _dragStartZ = 0;
+
+  // 줌 & 패닝
+  double _zoomLevel = 1.0;
+  Offset _panOffset = Offset.zero;
+  static const double _minZoom = 0.5;
+  static const double _maxZoom = 3.0;
+
+  // 핀치 줌 제스처 추적
+  double _gestureStartZoom = 1.0;
+  Offset _gestureStartPanOffset = Offset.zero;
+  Offset _gestureStartFocalPoint = Offset.zero;
+
+  // 우클릭/미들클릭 패닝
+  bool _isPanning = false;
+  Offset _panStartScreenPos = Offset.zero;
+  Offset _panStartPanOffset = Offset.zero;
 
   // Undo/Redo 스택 (박스 리스트 스냅샷)
   static const int _maxUndoSteps = 50;
@@ -67,12 +91,25 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   @override
   void initState() {
     super.initState();
-    _space = TrunkPreset.suv.toTrunkSpace()!;
+    _space = TrunkPreset.tucson.toTrunkSpace()!;
     _detector = CollisionDetector(_space);
+
+    _rotationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+    )..addListener(() {
+        if (_rotationController.value >= 0.5 && !_hasSwitchedDir) {
+          _hasSwitchedDir = true;
+          setState(() {
+            _cameraDir = _pendingDir;
+          });
+        }
+      });
   }
 
   @override
   void dispose() {
+    _rotationController.dispose();
     _canvasFocusNode.dispose();
     super.dispose();
   }
@@ -94,37 +131,31 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           children: [
             const Text('TrimBox'),
             const SizedBox(width: 16),
-            DropdownButton<TrunkPreset>(
-              value: _selectedPreset,
-              dropdownColor: const Color(0xFF333333),
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-              underline: const SizedBox.shrink(),
-              icon: const Icon(Icons.arrow_drop_down, color: Colors.white70),
-              items: TrunkPreset.values.map((p) {
-                return DropdownMenuItem(
-                  value: p,
-                  child: Text(p.label),
-                );
-              }).toList(),
-              selectedItemBuilder: (_) => TrunkPreset.values.map((p) {
-                if (p == TrunkPreset.custom && _selectedPreset == TrunkPreset.custom) {
-                  return Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '커스텀 (${(_space.w * 100).round()}×${(_space.d * 100).round()}cm)',
+            PopupMenuButton<TrunkPreset>(
+              initialValue: _selectedPreset,
+              color: const Color(0xFF333333),
+              onSelected: _onPresetChanged,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xFF555555)),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _selectedPreset == TrunkPreset.custom
+                          ? '커스텀 (${(_space.w * 100).round()}×${(_space.d * 100).round()}cm)'
+                          : _selectedPreset.label,
                       style: const TextStyle(color: Colors.white, fontSize: 14),
                     ),
-                  );
-                }
-                return Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(p.label,
-                      style: const TextStyle(color: Colors.white, fontSize: 14)),
-                );
-              }).toList(),
-              onChanged: (p) {
-                if (p != null) _onPresetChanged(p);
-              },
+                    const SizedBox(width: 4),
+                    const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
+                  ],
+                ),
+              ),
+              itemBuilder: (_) => _buildVehicleMenuItems(),
             ),
           ],
         ),
@@ -160,38 +191,131 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
-        final scale = _calculateScale(canvasSize);
-        // postFrameCallback으로 _lastScale, _lastCanvasSize 업데이트
+        final baseScale = _calculateScale(canvasSize);
+        final effectiveScale = baseScale * _zoomLevel;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _lastScale = scale;
+          _lastScale = effectiveScale;
           _lastCanvasSize = canvasSize;
         });
 
-        return KeyboardListener(
-          focusNode: _canvasFocusNode,
-          autofocus: true,
-          onKeyEvent: _onKeyEvent,
-          child: GestureDetector(
-            onPanStart: _onPanStart,
-            onPanUpdate: _onPanUpdate,
-            onPanEnd: _onPanEnd,
-            onTapUp: _onTapUp,
-            child: RepaintBoundary(
-              key: _canvasKey,
-              child: CustomPaint(
-                painter: IsometricPainter(
-                  space: _space,
-                  boxes: _boxes,
-                  selectedBoxId: _selectedBoxId,
-                  collidingBoxIds: _collidingIds,
-                  scale: scale,
+        return Stack(
+          children: [
+            // 캔버스 + 제스처
+            Listener(
+              onPointerSignal: _onPointerSignal,
+              onPointerDown: _onPointerDown,
+              onPointerMove: _onPointerMove,
+              onPointerUp: _onPointerUp,
+              child: KeyboardListener(
+                focusNode: _canvasFocusNode,
+                autofocus: true,
+                onKeyEvent: _onKeyEvent,
+                child: GestureDetector(
+                  onTapUp: _onTapUp,
+                  onScaleStart: _onScaleStart,
+                  onScaleUpdate: _onScaleUpdate,
+                  onScaleEnd: _onScaleEnd,
+                  child: AnimatedBuilder(
+                    animation: _rotationController,
+                    builder: (context, child) {
+                      final t = _rotationController.isAnimating
+                          ? (1.0 -
+                              (2.0 * _rotationController.value - 1.0).abs())
+                          : 0.0;
+                      return Opacity(
+                        opacity: 1.0 - 0.5 * t,
+                        child: Transform.scale(
+                          scale: 1.0 - 0.05 * t,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: RepaintBoundary(
+                      key: _canvasKey,
+                      child: CustomPaint(
+                        painter: IsometricPainter(
+                          space: _space,
+                          boxes: _boxes,
+                          selectedBoxId: _selectedBoxId,
+                          collidingBoxIds: _collidingIds,
+                          scale: effectiveScale,
+                          panOffset: _panOffset,
+                          direction: _cameraDir,
+                          draggingBoxId:
+                              _isDragging ? _selectedBoxId : null,
+                        ),
+                        size: Size.infinite,
+                      ),
+                    ),
+                  ),
                 ),
-                size: Size.infinite,
+              ),
+            ),
+            // 회전 컨트롤 오버레이
+            Positioned(
+              bottom: 16,
+              left: 16,
+              child: _buildRotationControls(),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildRotationControls() {
+    const dirLabels = ['0°', '90°', '180°', '270°'];
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xCC1A1A1A),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.rotate_left, size: 18),
+            color: Colors.white70,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            padding: EdgeInsets.zero,
+            splashRadius: 18,
+            tooltip: '좌회전 (Q)',
+            onPressed: () => _rotateCamera(-1),
+          ),
+          Container(
+            width: 32,
+            alignment: Alignment.center,
+            child: Transform.rotate(
+              angle: _cameraDir.index * math.pi / 2,
+              child: const Icon(
+                Icons.navigation,
+                color: Colors.white54,
+                size: 16,
               ),
             ),
           ),
-        );
-      },
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Text(
+              dirLabels[_cameraDir.index],
+              style: const TextStyle(
+                color: Colors.white38,
+                fontSize: 10,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.rotate_right, size: 18),
+            color: Colors.white70,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            padding: EdgeInsets.zero,
+            splashRadius: 18,
+            tooltip: '우회전 (E)',
+            onPressed: () => _rotateCamera(1),
+          ),
+        ],
+      ),
     );
   }
 
@@ -211,6 +335,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     );
   }
 
+  // ──── 카메라 회전 (애니메이션) ────
+
+  void _rotateCamera(int delta) {
+    if (_rotationController.isAnimating) return;
+    _pendingDir = CameraDirection.values[(_cameraDir.index + delta + 4) % 4];
+    _hasSwitchedDir = false;
+    _rotationController.forward(from: 0);
+  }
+
   // ──── 이벤트 핸들러 ────
 
   void _onTapUp(TapUpDetails details) {
@@ -220,45 +353,122 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     });
   }
 
-  void _onPanStart(DragStartDetails details) {
-    final hit = _hitTest(details.localPosition);
-    if (hit != null) {
+  // ──── 줌: 마우스 휠 ────
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent && _lastCanvasSize != Size.zero) {
+      final oldZoom = _zoomLevel;
+      final factor = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
+      final newZoom = (oldZoom * factor).clamp(_minZoom, _maxZoom);
+      if (newZoom == oldZoom) return;
+
+      // 커서 중심 줌: 커서 아래 월드 포인트가 줌 후에도 동일 위치에 유지
+      final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
+      final r = newZoom / oldZoom;
       setState(() {
-        _selectedBoxId = hit.id;
-        _isDragging = true;
-        _dragStartScreen = details.localPosition;
-        _dragStartX = hit.x;
-        _dragStartZ = hit.z;
+        _panOffset = (event.localPosition - sc) * (1 - r) + _panOffset * r;
+        _zoomLevel = newZoom;
       });
     }
   }
 
-  void _onPanUpdate(DragUpdateDetails details) {
+  // ──── 패닝: 우클릭/미들클릭 드래그 ────
+
+  void _onPointerDown(PointerDownEvent event) {
+    if (event.buttons == kSecondaryMouseButton ||
+        event.buttons == kMiddleMouseButton) {
+      _isPanning = true;
+      _panStartScreenPos = event.localPosition;
+      _panStartPanOffset = _panOffset;
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (_isPanning) {
+      setState(() {
+        _panOffset =
+            _panStartPanOffset + (event.localPosition - _panStartScreenPos);
+      });
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    if (_isPanning) {
+      _isPanning = false;
+    }
+  }
+
+  // ──── 제스처: 박스 드래그 + 핀치 줌 ────
+
+  void _onScaleStart(ScaleStartDetails details) {
+    _gestureStartZoom = _zoomLevel;
+    _gestureStartPanOffset = _panOffset;
+    _gestureStartFocalPoint = details.localFocalPoint;
+
+    // 싱글 터치: 박스 드래그 시작 시도
+    if (details.pointerCount == 1) {
+      final hit = _hitTest(details.localFocalPoint);
+      if (hit != null) {
+        setState(() {
+          _selectedBoxId = hit.id;
+          _isDragging = true;
+          _dragStartScreen = details.localFocalPoint;
+          _dragStartX = hit.x;
+          _dragStartZ = hit.z;
+        });
+      }
+    }
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    // 멀티 터치: 핀치 줌 + 패닝
+    if (details.pointerCount >= 2) {
+      if (_isDragging) {
+        _isDragging = false;
+        _dragStartScreen = null;
+      }
+      final newZoom =
+          (_gestureStartZoom * details.scale).clamp(_minZoom, _maxZoom);
+      final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
+      final r = newZoom / _gestureStartZoom;
+      final zoomPan = (_gestureStartFocalPoint - sc) * (1 - r) +
+          _gestureStartPanOffset * r;
+      final focalDelta = details.localFocalPoint - _gestureStartFocalPoint;
+
+      setState(() {
+        _zoomLevel = newZoom;
+        _panOffset = zoomPan + focalDelta;
+      });
+      return;
+    }
+
+    // 싱글 터치: 박스 드래그
     if (!_isDragging || _selectedBoxId == null || _dragStartScreen == null) {
       return;
     }
     final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
-    final delta = details.localPosition - _dragStartScreen!;
+    final delta = details.localFocalPoint - _dragStartScreen!;
 
-    // 2D 화면 이동량 → 3D 좌표 변환 (역 아이소메트릭)
-    final dx3d = _screenToIsoX(delta.dx, delta.dy);
-    final dz3d = _screenToIsoDx(delta.dx, delta.dy);
+    final dx3d = _screenToWorldDX(delta.dx, delta.dy);
+    final dz3d = _screenToWorldDZ(delta.dx, delta.dy);
 
     setState(() {
       box.x = _dragStartX + dx3d;
       box.z = _dragStartZ + dz3d;
       box.clampTo(_space.w, _space.d);
+      _resolveStackingY(box);
       _updateCollisions();
     });
   }
 
-  void _onPanEnd(DragEndDetails details) {
+  void _onScaleEnd(ScaleEndDetails details) {
     if (_isDragging && _selectedBoxId != null) {
       final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
       _pushUndo();
       setState(() {
         box.snapToGrid(_space.gridUnit);
         box.clampTo(_space.w, _space.d);
+        _resolveGravity();
         _isDragging = false;
         _dragStartScreen = null;
         _updateCollisions();
@@ -283,6 +493,26 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     }
     if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyY) {
       _redo();
+      return;
+    }
+
+    // Q: 좌회전 (CCW), E: 우회전 (CW)
+    if (event.logicalKey == LogicalKeyboardKey.keyQ) {
+      _rotateCamera(-1);
+      return;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.keyE) {
+      _rotateCamera(1);
+      return;
+    }
+
+    // 숫자 0: 줌/패닝 리셋
+    if (event.logicalKey == LogicalKeyboardKey.digit0 ||
+        event.logicalKey == LogicalKeyboardKey.numpad0) {
+      setState(() {
+        _zoomLevel = 1.0;
+        _panOffset = Offset.zero;
+      });
       return;
     }
 
@@ -312,6 +542,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         case LogicalKeyboardKey.backspace:
           _boxes.removeWhere((b) => b.id == _selectedBoxId);
           _selectedBoxId = null;
+          _resolveGravity();
           _updateCollisions();
           return;
         default:
@@ -321,18 +552,45 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       }
       box.snapToGrid(_space.gridUnit);
       box.clampTo(_space.w, _space.d);
+      _resolveGravity();
       _updateCollisions();
     });
   }
 
-  // ──── 역 아이소메트릭 변환 ────
+  // ──── 역 아이소메트릭 변환 (direction-aware) ────
 
-  double _screenToIsoX(double sx, double sy) {
+  /// Screen delta → view-space delta (X axis)
+  double _screenToViewDX(double sx, double sy) {
     return (sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
   }
 
-  double _screenToIsoDx(double sx, double sy) {
+  /// Screen delta → view-space delta (Z axis)
+  double _screenToViewDZ(double sx, double sy) {
     return (-sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
+  }
+
+  /// Screen delta → world-space delta X
+  double _screenToWorldDX(double sx, double sy) {
+    final dvx = _screenToViewDX(sx, sy);
+    final dvz = _screenToViewDZ(sx, sy);
+    switch (_cameraDir) {
+      case CameraDirection.dir0: return dvx;
+      case CameraDirection.dir1: return -dvz;
+      case CameraDirection.dir2: return -dvx;
+      case CameraDirection.dir3: return dvz;
+    }
+  }
+
+  /// Screen delta → world-space delta Z
+  double _screenToWorldDZ(double sx, double sy) {
+    final dvx = _screenToViewDX(sx, sy);
+    final dvz = _screenToViewDZ(sx, sy);
+    switch (_cameraDir) {
+      case CameraDirection.dir0: return dvz;
+      case CameraDirection.dir1: return dvx;
+      case CameraDirection.dir2: return -dvz;
+      case CameraDirection.dir3: return -dvx;
+    }
   }
 
   // ──── 히트 테스트: 탭 위치에서 박스 찾기 ────
@@ -340,10 +598,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   TrimBox? _hitTest(Offset localPos) {
     if (_lastCanvasSize == Size.zero) return null;
 
-    // painter와 동일한 중심점 계산
+    // painter와 동일한 중심점 계산 (panOffset 포함)
     final center = IsometricPainter.computeCenter(
-        _lastCanvasSize, _space, _lastScale);
-    final adjusted = Offset(localPos.dx - center.dx, localPos.dy - center.dy);
+        _lastCanvasSize, _space, _lastScale, _cameraDir);
+    final adjusted = Offset(
+      localPos.dx - center.dx - _panOffset.dx,
+      localPos.dy - center.dy - _panOffset.dy,
+    );
 
     // 앞에 그려진 것부터 (뒤에서부터) 검사
     for (final box in _boxes.reversed) {
@@ -383,8 +644,20 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   Offset _toIso(double x, double y, double z) {
-    final sx = (x - z) * _cosA * _lastScale;
-    final sy = (x + z) * _sinA * _lastScale - y * _lastScale;
+    // World → view-space transform
+    double vx, vz;
+    switch (_cameraDir) {
+      case CameraDirection.dir0:
+        vx = x; vz = z;
+      case CameraDirection.dir1:
+        vx = z; vz = _space.w - x;
+      case CameraDirection.dir2:
+        vx = _space.w - x; vz = _space.d - z;
+      case CameraDirection.dir3:
+        vx = _space.d - z; vz = x;
+    }
+    final sx = (vx - vz) * _cosA * _lastScale;
+    final sy = (vx + vz) * _sinA * _lastScale - y * _lastScale;
     return Offset(sx, sy);
   }
 
@@ -403,6 +676,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       box.rotate90();
       box.snapToGrid(_space.gridUnit);
       box.clampTo(_space.w, _space.d);
+      _resolveGravity();
       _updateCollisions();
     });
   }
@@ -412,6 +686,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     setState(() {
       _boxes.removeWhere((b) => b.id == id);
       if (_selectedBoxId == id) _selectedBoxId = null;
+      _resolveGravity();
       _updateCollisions();
     });
   }
@@ -441,12 +716,64 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     _pushUndo();
     setState(() {
       _boxes.add(newBox);
+      _resolveStackingY(newBox);
       _selectedBoxId = newBox.id;
       _updateCollisions();
     });
   }
 
   // ──── 트렁크 프리셋 변경 ────
+
+  /// 카테고리별 그룹 구분이 포함된 차종 메뉴 항목
+  List<PopupMenuEntry<TrunkPreset>> _buildVehicleMenuItems() {
+    final items = <PopupMenuEntry<TrunkPreset>>[];
+    VehicleCategory? lastCat;
+
+    for (final p in TrunkPreset.values) {
+      final cat = p.category;
+
+      // 카테고리 변경 시 구분 헤더
+      if (cat != null && cat != lastCat) {
+        if (items.isNotEmpty) {
+          items.add(const PopupMenuDivider(height: 1));
+        }
+        items.add(PopupMenuItem<TrunkPreset>(
+          enabled: false,
+          height: 28,
+          child: Text(
+            cat.label,
+            style: const TextStyle(
+              color: Color(0xFF999999),
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ));
+      }
+      lastCat = cat;
+
+      final vol = p.volumeLiters;
+      items.add(PopupMenuItem<TrunkPreset>(
+        value: p,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                p.label,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+            if (vol != null)
+              Text(
+                '${vol}L',
+                style: const TextStyle(color: Color(0xFF888888), fontSize: 11),
+              ),
+          ],
+        ),
+      ));
+    }
+    return items;
+  }
 
   Future<void> _onPresetChanged(TrunkPreset preset) async {
     TrunkSpace? newSpace;
@@ -640,6 +967,66 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       _selectedBoxId = null;
       _updateCollisions();
     });
+  }
+
+  // ──── 스태킹 Y 해소 ────
+
+  /// 박스의 Y를 XZ 겹침 기반으로 계산 (50% 이상 겹치면 위에 적재)
+  void _resolveStackingY(TrimBox box) {
+    double supportY = 0;
+    final boxArea = box.effectiveW * box.effectiveD;
+
+    for (final other in _boxes) {
+      if (other.id == box.id) continue;
+      final overlapX =
+          math.min(box.x + box.effectiveW, other.x + other.effectiveW) -
+              math.max(box.x, other.x);
+      final overlapZ =
+          math.min(box.z + box.effectiveD, other.z + other.effectiveD) -
+              math.max(box.z, other.z);
+
+      if (overlapX > 0 && overlapZ > 0) {
+        final overlapArea = overlapX * overlapZ;
+        if (overlapArea >= boxArea * 0.5) {
+          final candidateY = other.y + other.h;
+          if (candidateY > supportY) supportY = candidateY;
+        }
+      }
+    }
+
+    box.y = supportY;
+  }
+
+  /// 모든 박스의 Y를 아래에서 위로 재계산 (중력)
+  void _resolveGravity() {
+    // 원래 Y 순서(아래→위)로 정렬
+    final sorted = List<TrimBox>.from(_boxes)
+      ..sort((a, b) => a.y.compareTo(b.y));
+
+    // 아래에서 위로 순차 처리: 이미 정착된 아래 박스만 지지면으로 사용
+    for (int i = 0; i < sorted.length; i++) {
+      final box = sorted[i];
+      double supportY = 0;
+      final boxArea = box.effectiveW * box.effectiveD;
+
+      for (int j = 0; j < i; j++) {
+        final other = sorted[j];
+        final overlapX = math.min(
+                box.x + box.effectiveW, other.x + other.effectiveW) -
+            math.max(box.x, other.x);
+        final overlapZ = math.min(
+                box.z + box.effectiveD, other.z + other.effectiveD) -
+            math.max(box.z, other.z);
+        if (overlapX > 0 && overlapZ > 0) {
+          final overlapArea = overlapX * overlapZ;
+          if (overlapArea >= boxArea * 0.5) {
+            final candidateY = other.y + other.h;
+            if (candidateY > supportY) supportY = candidateY;
+          }
+        }
+      }
+      box.y = supportY;
+    }
   }
 
   // ──── 충돌 업데이트 ────

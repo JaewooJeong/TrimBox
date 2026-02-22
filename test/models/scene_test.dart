@@ -7,13 +7,13 @@ import 'package:trimbox/models/trim_box.dart';
 void main() {
   group('Scene', () {
     test('빈 씬 직렬화/역직렬화', () {
-      final scene = Scene(space: TrunkSpace.defaultSUV());
+      final scene = Scene(space: TrunkSpace.tucson());
       final json = scene.toJson();
       final restored = Scene.fromJson(json);
 
       expect(restored.version, '1.0.0');
       expect(restored.boxes, isEmpty);
-      expect(restored.space.w, 1.08);
+      expect(restored.space.w, 1.04);
     });
 
     test('박스 포함 씬 라운드트립', () {
@@ -40,7 +40,7 @@ void main() {
           color: const Color(0xFF00FF00),
         ),
       ];
-      final scene = Scene(space: TrunkSpace.defaultSUV(), boxes: boxes);
+      final scene = Scene(space: TrunkSpace.tucson(), boxes: boxes);
       final json = scene.toJson();
       final restored = Scene.fromJson(json);
 
@@ -52,7 +52,7 @@ void main() {
 
     test('toJsonString/fromJsonString 일관성', () {
       final scene = Scene(
-        space: TrunkSpace.defaultSUV(),
+        space: TrunkSpace.tucson(),
         boxes: [
           TrimBox(
             id: 'b1',
@@ -73,7 +73,7 @@ void main() {
     });
 
     test('기본 버전/그리드 값', () {
-      final scene = Scene(space: TrunkSpace.defaultSUV());
+      final scene = Scene(space: TrunkSpace.tucson());
       expect(scene.version, '1.0.0');
       expect(scene.gridUnit, 0.10);
     });
