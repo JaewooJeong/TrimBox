@@ -213,17 +213,50 @@ class BoxListPanel extends StatelessWidget {
   }
 
   Widget _statsBar() {
-    final totalVolume = boxes.fold<double>(
-        0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
+    // 면적 점유율
     final boxArea = boxes.fold<double>(
         0.0, (sum, b) => sum + b.effectiveW * b.effectiveD);
     final effectiveArea = space.w * space.d -
         (space.leftWheelhouse.w * space.leftWheelhouse.d) -
         (space.rightWheelhouse.w * space.rightWheelhouse.d);
-    final ratio = effectiveArea > 0
+    final areaRatio = effectiveArea > 0
         ? (boxArea / effectiveArea).clamp(0.0, 1.0)
         : 0.0;
-    final percent = (ratio * 100).round();
+    final areaPct = (areaRatio * 100).round();
+
+    // 부피 점유율
+    final totalBoxVol = boxes.fold<double>(
+        0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
+    final lhVol = space.leftWheelhouse.w *
+        space.leftWheelhouse.d *
+        space.leftWheelhouse.h;
+    final rhVol = space.rightWheelhouse.w *
+        space.rightWheelhouse.d *
+        space.rightWheelhouse.h;
+    final totalSpaceVol = space.w * space.d * space.h - lhVol - rhVol;
+    final volRatio = totalSpaceVol > 0
+        ? (totalBoxVol / totalSpaceVol).clamp(0.0, 1.0)
+        : 0.0;
+    final volPct = (volRatio * 100).round();
+    final totalLiters = (totalBoxVol * 1000).round();
+
+    // 최대 스택 높이 및 남은 높이
+    double maxStackTop = 0;
+    for (final b in boxes) {
+      final top = b.y + b.h;
+      if (top > maxStackTop) maxStackTop = top;
+    }
+    final remainH = ((space.h - maxStackTop) * 100).round();
+
+    // 높이 초과 박스 찾기
+    final overHeightBoxes = <String>[];
+    for (final b in boxes) {
+      final over = b.y + b.h - space.h;
+      if (over > 0.001) {
+        final name = b.label.isNotEmpty ? b.label : b.id;
+        overHeightBoxes.add('$name (+${(over * 100).round()}cm)');
+      }
+    }
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -233,6 +266,7 @@ class BoxListPanel extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // 박스 수 + 총 부피
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -241,36 +275,72 @@ class BoxListPanel extends StatelessWidget {
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
               Text(
-                '총 부피: ${(totalVolume * 1e6).round()}cm³',
+                '총 ${totalLiters}L · 남은 높이: ${remainH}cm',
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
             ],
           ),
           const SizedBox(height: 6),
-          Row(
-            children: [
-              Text(
-                '점유율: $percent%',
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: ratio,
-                  backgroundColor: const Color(0xFF444444),
-                  color: Color.lerp(
-                    const Color(0xFFFF4D4D),
-                    const Color(0xFF6BD06B),
-                    ratio,
-                  ),
-                  minHeight: 6,
-                  borderRadius: BorderRadius.circular(3),
+          // 면적 점유율
+          _progressRow('면적', areaPct, areaRatio),
+          const SizedBox(height: 4),
+          // 부피 점유율
+          _progressRow('부피', volPct, volRatio),
+          // 높이 초과 경고
+          if (overHeightBoxes.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            for (final msg in overHeightBoxes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: Color(0xFFFF4D4D), size: 14),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '$msg 높이 초과',
+                        style: const TextStyle(
+                          color: Color(0xFFFF6B6B),
+                          fontSize: 11,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _progressRow(String label, int percent, double ratio) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 62,
+          child: Text(
+            '$label: $percent%',
+            style: const TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: LinearProgressIndicator(
+            value: ratio,
+            backgroundColor: const Color(0xFF444444),
+            color: Color.lerp(
+              const Color(0xFF6BD06B),
+              const Color(0xFFFF4D4D),
+              ratio,
+            ),
+            minHeight: 5,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+      ],
     );
   }
 }
