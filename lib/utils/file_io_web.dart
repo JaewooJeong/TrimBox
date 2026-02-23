@@ -1,6 +1,8 @@
 import 'dart:async';
 // ignore: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:html' as html;
+// ignore: avoid_web_libraries_in_flutter, deprecated_member_use
+import 'dart:js_util' as js_util;
 
 /// JSON 문자열을 파일로 다운로드
 void downloadJson(String content, String filename) {
@@ -56,4 +58,28 @@ Future<String?> pickJsonFile() async {
   });
 
   return completer.future;
+}
+
+/// 이미지를 Web Share API로 공유 시도, 미지원 시 다운로드 폴백
+Future<bool> shareOrDownloadImage(
+    List<int> bytes, String filename, String mimeType) async {
+  try {
+    final navigator = html.window.navigator;
+    // canShare 지원 확인
+    if (js_util.hasProperty(navigator, 'canShare')) {
+      final file = html.File([bytes], filename, {'type': mimeType});
+      final shareData = js_util.jsify({'files': [file]});
+      final canShare =
+          js_util.callMethod<bool>(navigator, 'canShare', [shareData]);
+      if (canShare) {
+        await js_util.promiseToFuture(
+            js_util.callMethod(navigator, 'share', [shareData]));
+        return true;
+      }
+    }
+  } catch (_) {
+    // Share failed or cancelled — fall through to download
+  }
+  downloadBytes(bytes, filename, mimeType);
+  return false;
 }

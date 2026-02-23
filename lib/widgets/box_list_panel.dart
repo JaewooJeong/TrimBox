@@ -16,6 +16,8 @@ class BoxListPanel extends StatelessWidget {
   final VoidCallback onSave;
   final VoidCallback onLoad;
   final VoidCallback? onScreenshot;
+  final ScrollController? scrollController;
+  final bool showDragHandle;
 
   const BoxListPanel({
     super.key,
@@ -30,78 +32,134 @@ class BoxListPanel extends StatelessWidget {
     required this.onSave,
     required this.onLoad,
     this.onScreenshot,
+    this.scrollController,
+    this.showDragHandle = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (scrollController != null) {
+      return _buildScrollablePanel();
+    }
+    return _buildFixedPanel();
+  }
+
+  Widget _buildFixedPanel() {
     return Container(
       color: const Color(0xFF252525),
       child: Column(
         children: [
-          // 상단 액션 버튼들
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF4DA3FF),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    onPressed: onAddBox,
-                    icon: const Icon(Icons.add, size: 20),
-                    label: const Text('박스 추가'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                _actionButton(Icons.save, '저장', onSave),
-                const SizedBox(width: 8),
-                _actionButton(Icons.folder_open, '불러오기', onLoad),
-                if (onScreenshot != null) ...[
-                  const SizedBox(width: 8),
-                  _actionButton(Icons.photo_camera, '스크린샷', onScreenshot!),
-                ],
-              ],
-            ),
-          ),
-
+          _buildActionBar(),
           // 박스 리스트
           Expanded(
             child: boxes.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.inventory_2_outlined,
-                            color: Colors.grey[700], size: 48),
-                        const SizedBox(height: 12),
-                        const Text(
-                          '아직 박스가 없습니다',
-                          style: TextStyle(
-                              color: Colors.grey, fontSize: 14,
-                              fontWeight: FontWeight.w500),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '상단의 "박스 추가" 버튼으로\n시작하세요',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                              color: Colors.grey[600], fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  )
+                ? _buildEmptyState()
                 : ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     itemCount: boxes.length,
                     itemBuilder: (_, i) => _boxTile(boxes[i]),
                   ),
           ),
-
           // 하단 통계
           if (boxes.isNotEmpty) _statsBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScrollablePanel() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF252525),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: ListView(
+        controller: scrollController,
+        padding: EdgeInsets.zero,
+        children: [
+          if (showDragHandle) _buildDragHandle(),
+          _buildActionBar(),
+          if (boxes.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: _buildEmptyState(),
+            )
+          else
+            ...boxes.map((b) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: _boxTile(b),
+                )),
+          if (boxes.isNotEmpty) _statsBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDragHandle() {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.only(top: 8, bottom: 4),
+        width: 32,
+        height: 4,
+        decoration: BoxDecoration(
+          color: const Color(0xFF666666),
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionBar() {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          Expanded(
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4DA3FF),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: onAddBox,
+              icon: const Icon(Icons.add, size: 20),
+              label: const Text('박스 추가'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _actionButton(Icons.save, '저장', onSave),
+          const SizedBox(width: 8),
+          _actionButton(Icons.folder_open, '불러오기', onLoad),
+          if (onScreenshot != null) ...[
+            const SizedBox(width: 8),
+            _actionButton(Icons.photo_camera, '스크린샷', onScreenshot!),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.inventory_2_outlined,
+              color: Colors.grey[700], size: 48),
+          const SizedBox(height: 12),
+          const Text(
+            '아직 박스가 없습니다',
+            style: TextStyle(
+                color: Colors.grey, fontSize: 14,
+                fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '상단의 "박스 추가" 버튼으로\n시작하세요',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                color: Colors.grey[600], fontSize: 12),
+          ),
         ],
       ),
     );

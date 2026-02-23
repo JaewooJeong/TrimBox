@@ -14,6 +14,7 @@ import '../utils/file_io.dart' as file_io;
 import '../utils/json_io.dart';
 import '../widgets/add_box_dialog.dart';
 import '../widgets/box_list_panel.dart';
+import '../widgets/keyboard_shortcuts_dialog.dart';
 import '../widgets/trunk_size_dialog.dart';
 
 /// 박스 파스텔 색상 팔레트
@@ -43,6 +44,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   Set<String> _collidingIds = {};
   int _boxCounter = 0;
   TrunkPreset _selectedPreset = TrunkPreset.tucson;
+
+  // 온보딩
+  bool _showOnboarding = true;
+  bool _hasEverAddedBox = false;
 
   // 카메라 방향 + 회전 애니메이션
   CameraDirection _cameraDir = CameraDirection.dir0;
@@ -76,6 +81,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   static const int _maxUndoSteps = 50;
   final List<List<TrimBox>> _undoStack = [];
   final List<List<TrimBox>> _redoStack = [];
+
+  // 터치/마우스 판별
+  bool _lastPointerIsTouch = false;
 
   // 아이소메트릭 변환에 사용하는 상수
   static const double _isoAngle = 30.0 * math.pi / 180.0;
@@ -162,12 +170,27 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         backgroundColor: const Color(0xFF1C1C1C),
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline, size: 22),
+            tooltip: '키보드 단축키 (?)',
+            onPressed: _showKeyboardShortcuts,
+          ),
+        ],
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
-          // 가로가 넓으면 우측 패널, 좁으면 하단 패널
-          final isWide = constraints.maxWidth > 600;
-          if (isWide) {
+          final w = constraints.maxWidth;
+          if (w > 900) {
+            // 태블릿/데스크톱: 넓은 패널
+            return Row(
+              children: [
+                Expanded(flex: 3, child: _buildCanvas()),
+                SizedBox(width: 320, child: _buildPanel()),
+              ],
+            );
+          } else if (w >= 600) {
+            // 중간: 좁은 패널
             return Row(
               children: [
                 Expanded(flex: 3, child: _buildCanvas()),
@@ -175,10 +198,16 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               ],
             );
           } else {
-            return Column(
+            // 모바일: 전체 캔버스 + 하단 드래그 시트
+            return Stack(
               children: [
-                Expanded(flex: 3, child: _buildCanvas()),
-                SizedBox(height: 240, child: _buildPanel()),
+                _buildCanvas(),
+                DraggableScrollableSheet(
+                  initialChildSize: 0.15,
+                  minChildSize: 0.10,
+                  maxChildSize: 0.7,
+                  builder: (ctx, scrollCtrl) => _buildDraggablePanel(scrollCtrl),
+                ),
               ],
             );
           }
@@ -243,6 +272,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                           direction: _cameraDir,
                           draggingBoxId:
                               _isDragging ? _selectedBoxId : null,
+                          zoomLevel: _zoomLevel,
                         ),
                         size: Size.infinite,
                       ),
@@ -257,9 +287,115 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               left: 16,
               child: _buildRotationControls(),
             ),
+            // 온보딩 오버레이
+            if (_showOnboarding && _boxes.isEmpty)
+              _buildOnboardingOverlay(canvasSize),
           ],
         );
       },
+    );
+  }
+
+  Widget _buildOnboardingOverlay(Size canvasSize) {
+    final isNarrow = canvasSize.width < 600;
+    final isTouch = _lastPointerIsTouch;
+
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: () => setState(() => _showOnboarding = false),
+        child: Container(
+          color: const Color(0x88000000),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 320),
+              margin: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A2A),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF4DA3FF), width: 0.5),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.inventory_2_outlined,
+                      color: Color(0xFF4DA3FF), size: 48),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '박스를 추가하여\n시뮬레이션을 시작하세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Icon(
+                    isNarrow ? Icons.arrow_downward : Icons.arrow_forward,
+                    color: const Color(0xFF4DA3FF),
+                    size: 28,
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('조작법',
+                            style: TextStyle(
+                                color: Color(0xFF4DA3FF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 8),
+                        if (isTouch) ...[
+                          _controlRow('드래그', '박스 이동'),
+                          _controlRow('핀치', '줌 인/아웃'),
+                          _controlRow('두 손가락 드래그', '패닝'),
+                        ] else ...[
+                          _controlRow('클릭 + 드래그', '박스 이동'),
+                          _controlRow('마우스 휠', '줌 인/아웃'),
+                          _controlRow('우클릭 드래그', '패닝'),
+                          _controlRow('Q / E', '카메라 회전'),
+                          _controlRow('?', '단축키 도움말'),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '아무 곳이나 탭하여 닫기',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _controlRow(String key, String desc) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(key,
+                style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          ),
+          Expanded(
+            child: Text(desc,
+                style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -335,6 +471,31 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     );
   }
 
+  Widget _buildDraggablePanel(ScrollController scrollCtrl) {
+    return BoxListPanel(
+      boxes: _boxes,
+      space: _space,
+      selectedBoxId: _selectedBoxId,
+      collidingBoxIds: _collidingIds,
+      onSelect: _selectBox,
+      onRotate: _rotateBox,
+      onDelete: _deleteBox,
+      onAddBox: _showAddDialog,
+      onSave: _saveScene,
+      onLoad: _loadScene,
+      onScreenshot: _takeScreenshot,
+      scrollController: scrollCtrl,
+      showDragHandle: true,
+    );
+  }
+
+  void _showKeyboardShortcuts() {
+    showDialog(
+      context: context,
+      builder: (_) => const KeyboardShortcutsDialog(),
+    );
+  }
+
   // ──── 카메라 회전 (애니메이션) ────
 
   void _rotateCamera(int delta) {
@@ -405,6 +566,11 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     _gestureStartPanOffset = _panOffset;
     _gestureStartFocalPoint = details.localFocalPoint;
 
+    // 포인터 종류 기록 (터치 오프셋용)
+    if (details.pointerCount == 1) {
+      _lastPointerIsTouch = details.kind == PointerDeviceKind.touch;
+    }
+
     // 싱글 터치: 박스 드래그 시작 시도
     if (details.pointerCount == 1) {
       final hit = _hitTest(details.localFocalPoint);
@@ -447,7 +613,11 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       return;
     }
     final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
-    final delta = details.localFocalPoint - _dragStartScreen!;
+    // 터치 시 손가락 아래가 보이도록 Y 오프셋 보정
+    final focalPoint = _lastPointerIsTouch
+        ? details.localFocalPoint - const Offset(0, 40)
+        : details.localFocalPoint;
+    final delta = focalPoint - _dragStartScreen!;
 
     final dx3d = _screenToWorldDX(delta.dx, delta.dy);
     final dz3d = _screenToWorldDZ(delta.dx, delta.dy);
@@ -503,6 +673,12 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     }
     if (event.logicalKey == LogicalKeyboardKey.keyE) {
       _rotateCamera(1);
+      return;
+    }
+
+    // ?: 키보드 단축키 도움말
+    if (event.character == '?') {
+      _showKeyboardShortcuts();
       return;
     }
 
@@ -703,6 +879,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     final selectedColor = result['color'] != null
         ? Color(result['color'] as int)
         : _boxColors[colorIndex];
+    final catIndex = result['category'] as int?;
+    final boxCategory = catIndex != null
+        ? BoxCategory.values[catIndex.clamp(0, BoxCategory.values.length - 1)]
+        : BoxCategory.custom;
     final newBox = TrimBox(
       id: 'box-${_boxCounter.toString().padLeft(3, '0')}',
       label: result['label'] as String? ?? 'Box $_boxCounter',
@@ -710,6 +890,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       d: result['d'] as double,
       h: result['h'] as double,
       color: selectedColor,
+      category: boxCategory,
     );
     newBox.snapToGrid(_space.gridUnit);
 
@@ -719,6 +900,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       _resolveStackingY(newBox);
       _selectedBoxId = newBox.id;
       _updateCollisions();
+      if (!_hasEverAddedBox) {
+        _hasEverAddedBox = true;
+        _showOnboarding = false;
+      }
     });
   }
 
@@ -860,6 +1045,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         _boxCounter = maxId > _boxes.length ? maxId : _boxes.length;
         _selectedBoxId = null;
         _updateCollisions();
+        if (_boxes.isNotEmpty) {
+          _hasEverAddedBox = true;
+          _showOnboarding = false;
+        }
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -893,14 +1082,105 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   // ──── 스크린샷 ────
 
   Future<void> _takeScreenshot() async {
+    // 해상도 선택 다이얼로그
+    final pixelRatio = await showDialog<double>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('스크린샷 해상도',
+            style: TextStyle(color: Colors.white)),
+        backgroundColor: const Color(0xFF333333),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 1.0),
+            child: const Text('1x (표준)', style: TextStyle(color: Colors.white70)),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 2.0),
+            child: const Text('2x (고해상도)', style: TextStyle(color: Colors.white)),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 3.0),
+            child: const Text('3x (최고해상도)', style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+    if (pixelRatio == null) return;
+
     try {
       final boundary = _canvasKey.currentContext?.findRenderObject()
           as RenderRepaintBoundary?;
       if (boundary == null) return;
 
-      final image = await boundary.toImage(pixelRatio: 2.0);
-      final byteData = await image.toByteData(
-          format: ui.ImageByteFormat.png);
+      final rawImage = await boundary.toImage(pixelRatio: pixelRatio);
+
+      // 워터마크 합성
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final imgW = rawImage.width.toDouble();
+      final imgH = rawImage.height.toDouble();
+
+      // 원본 이미지 그리기
+      canvas.drawImage(rawImage, Offset.zero, Paint());
+
+      // 하단 반투명 바
+      const barHeight = 32.0;
+      canvas.drawRect(
+        Rect.fromLTWH(0, imgH - barHeight, imgW, barHeight),
+        Paint()..color = const Color(0x66000000),
+      );
+
+      // 워터마크 텍스트
+      final presetName = _selectedPreset == TrunkPreset.custom
+          ? '커스텀'
+          : _selectedPreset.label.split(' (').first;
+      final totalBoxVol = _boxes.fold<double>(
+          0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
+      final lhVol = _space.leftWheelhouse.w *
+          _space.leftWheelhouse.d *
+          _space.leftWheelhouse.h;
+      final rhVol = _space.rightWheelhouse.w *
+          _space.rightWheelhouse.d *
+          _space.rightWheelhouse.h;
+      final totalSpaceVol = _space.w * _space.d * _space.h - lhVol - rhVol;
+      final volPct = totalSpaceVol > 0
+          ? ((totalBoxVol / totalSpaceVol) * 100).round()
+          : 0;
+
+      final leftText = '$presetName | ${_boxes.length}개 | 점유율 $volPct%';
+      const rightText = 'TrimBox';
+
+      final textStyle = ui.TextStyle(
+        color: const Color(0xCCFFFFFF),
+        fontSize: 14 * pixelRatio,
+      );
+
+      final leftParagraph = (ui.ParagraphBuilder(ui.ParagraphStyle())
+            ..pushStyle(textStyle)
+            ..addText(leftText))
+          .build()
+        ..layout(ui.ParagraphConstraints(width: imgW - 20));
+      canvas.drawParagraph(
+          leftParagraph,
+          Offset(8 * pixelRatio,
+              imgH - barHeight + (barHeight - leftParagraph.height) / 2));
+
+      final rightParagraph = (ui.ParagraphBuilder(
+              ui.ParagraphStyle(textAlign: TextAlign.right))
+            ..pushStyle(textStyle)
+            ..addText(rightText))
+          .build()
+        ..layout(ui.ParagraphConstraints(width: imgW - 20));
+      canvas.drawParagraph(
+          rightParagraph,
+          Offset(imgW - rightParagraph.maxIntrinsicWidth - 8 * pixelRatio,
+              imgH - barHeight + (barHeight - rightParagraph.height) / 2));
+
+      final picture = recorder.endRecording();
+      final finalImage =
+          await picture.toImage(imgW.toInt(), imgH.toInt());
+      final byteData =
+          await finalImage.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) return;
 
       final bytes = byteData.buffer.asUint8List();
@@ -911,7 +1191,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
           .first;
       final filename = 'trimbox-$timestamp.png';
 
-      file_io.downloadBytes(bytes, filename, 'image/png');
+      await file_io.shareOrDownloadImage(bytes, filename, 'image/png');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

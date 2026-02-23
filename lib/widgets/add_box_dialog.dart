@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../models/trim_box.dart';
+
 /// 박스 프리셋 카테고리
 enum _PresetCategory { custom, carrier, camping, moving }
 
@@ -51,6 +53,27 @@ const _colorPalette = [
   Color(0xFFFFA3D4),
 ];
 
+/// S7: 카테고리별 기본 색상 팔레트
+const _categoryColors = {
+  _PresetCategory.carrier: [
+    Color(0xFF2C3E50), // 다크 네이비
+    Color(0xFFC0392B), // 레드
+    Color(0xFF1A1A2E), // 블랙
+    Color(0xFF34495E), // 슬레이트
+  ],
+  _PresetCategory.moving: [
+    Color(0xFFB8956A), // 골판지
+    Color(0xFFD4A574), // 밝은 골판지
+    Color(0xFFA0826D), // 어두운 골판지
+  ],
+  _PresetCategory.camping: [
+    Color(0xFF556B2F), // 올리브
+    Color(0xFF2F4F4F), // 다크 슬레이트
+    Color(0xFFFF6B35), // 오렌지
+    Color(0xFF1B4332), // 다크 그린
+  ],
+};
+
 /// 박스 추가 다이얼로그 — 카테고리별 프리셋 + W, D, H (cm 단위) + 컬러 선택
 class AddBoxDialog extends StatefulWidget {
   const AddBoxDialog({super.key});
@@ -76,6 +99,9 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     super.dispose();
   }
 
+  /// S7: 프리셋 카운터 (카테고리별 색상 순환용)
+  final _categoryCounter = <_PresetCategory, int>{};
+
   void _onPresetChanged(int? index) {
     if (index == null) return;
     setState(() {
@@ -87,8 +113,23 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
       if (index > 0) {
         _labelCtrl.text = preset.label;
       }
+      // S7: 카테고리 색상 자동 선택 (자동 모드일 때)
+      if (_selectedColorIndex == null && preset.category != _PresetCategory.custom) {
+        // 카테고리별 색상 팔레트에서 순환 선택
+        final colors = _categoryColors[preset.category];
+        if (colors != null && colors.isNotEmpty) {
+          final count = _categoryCounter[preset.category] ?? 0;
+          _categoryCounter[preset.category] = count + 1;
+          _autoCategoryColor = colors[count % colors.length];
+        }
+      } else {
+        _autoCategoryColor = null;
+      }
     });
   }
+
+  /// S7: 자동 카테고리 색상 (null이면 기존 순서대로)
+  Color? _autoCategoryColor;
 
   @override
   Widget build(BuildContext context) {
@@ -274,6 +315,14 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     );
   }
 
+  /// _PresetCategory → BoxCategory 매핑
+  static const _categoryMap = {
+    _PresetCategory.custom: BoxCategory.custom,
+    _PresetCategory.carrier: BoxCategory.carrier,
+    _PresetCategory.camping: BoxCategory.camping,
+    _PresetCategory.moving: BoxCategory.moving,
+  };
+
   void _onConfirm() {
     final w = double.tryParse(_wCtrl.text);
     final d = double.tryParse(_dCtrl.text);
@@ -284,13 +333,23 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
       );
       return;
     }
+    final presetCat = _presets[_selectedPresetIndex].category;
+    final boxCat = _categoryMap[presetCat] ?? BoxCategory.custom;
+    // S7: 색상 결정 — 수동 선택 > 카테고리 자동 > 순서대로
+    int? colorValue;
+    if (_selectedColorIndex != null) {
+      colorValue = _colorPalette[_selectedColorIndex!].toARGB32();
+    } else if (_autoCategoryColor != null) {
+      colorValue = _autoCategoryColor!.toARGB32();
+    }
+
     Navigator.pop(context, {
       'w': w / 100.0,
       'd': d / 100.0,
       'h': h / 100.0,
       'label': _labelCtrl.text.isEmpty ? null : _labelCtrl.text,
-      if (_selectedColorIndex != null)
-        'color': _colorPalette[_selectedColorIndex!].toARGB32(),
+      if (colorValue != null) 'color': colorValue,
+      'category': boxCat.index,
     });
   }
 }

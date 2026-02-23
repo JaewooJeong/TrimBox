@@ -82,6 +82,16 @@ class TrunkSpace {
   final Wheelhouse rightWheelhouse;
   final double gridUnit; // 그리드 단위 (m), 기본 0.01
 
+  /// 뒷좌석 등받이 분할 비율 (예: [0.6, 0.4] = 6:4, [0.4, 0.2, 0.4] = 4:2:4)
+  /// null이면 세단/고정 뒷좌석 (분할선 없음)
+  final List<double>? seatSplitRatio;
+
+  /// 뒷벽 테이퍼 비율 (0.0 = 테이퍼 없음, 0.12 = 뒷벽 폭이 12% 좁아짐)
+  final double taperRatio;
+
+  /// 차종명 (바닥 로고 표시용, null이면 표시 안 함)
+  final String? vehicleName;
+
   const TrunkSpace({
     required this.w,
     required this.d,
@@ -89,60 +99,80 @@ class TrunkSpace {
     required this.leftWheelhouse,
     required this.rightWheelhouse,
     this.gridUnit = 0.01,
+    this.seatSplitRatio,
+    this.taperRatio = 0.0,
+    this.vehicleName,
   });
 
-  /// 투싼 (좌석 올린 상태)
+  /// 투싼 (좌석 올린 상태) — 6:4 분할
   factory TrunkSpace.tucson() => const TrunkSpace(
         w: 1.04,
         d: 0.91,
         h: 0.73,
         leftWheelhouse: Wheelhouse(w: 0.14, d: 0.40, h: 0.35),
         rightWheelhouse: Wheelhouse(w: 0.14, d: 0.40, h: 0.35),
+        seatSplitRatio: [0.6, 0.4],
+        taperRatio: 0.05,
+        vehicleName: 'TUCSON',
       );
 
-  /// 쏘렌토
+  /// 쏘렌토 — 4:2:4 분할
   factory TrunkSpace.sorento() => const TrunkSpace(
         w: 1.05,
         d: 1.00,
         h: 0.77,
         leftWheelhouse: Wheelhouse(w: 0.15, d: 0.40, h: 0.35),
         rightWheelhouse: Wheelhouse(w: 0.15, d: 0.40, h: 0.35),
+        seatSplitRatio: [0.4, 0.2, 0.4],
+        taperRatio: 0.04,
+        vehicleName: 'SORENTO',
       );
 
-  /// 싼타페
+  /// 싼타페 — 6:4 분할
   factory TrunkSpace.santafe() => const TrunkSpace(
         w: 1.28,
         d: 1.05,
         h: 0.80,
         leftWheelhouse: Wheelhouse(w: 0.10, d: 0.40, h: 0.35),
         rightWheelhouse: Wheelhouse(w: 0.10, d: 0.40, h: 0.35),
+        seatSplitRatio: [0.6, 0.4],
+        taperRatio: 0.04,
+        vehicleName: 'SANTA FE',
       );
 
-  /// 카니발
+  /// 카니발 — 5:5 분할
   factory TrunkSpace.carnival() => const TrunkSpace(
         w: 1.25,
         d: 0.85,
         h: 0.88,
         leftWheelhouse: Wheelhouse(w: 0.10, d: 0.30, h: 0.25),
         rightWheelhouse: Wheelhouse(w: 0.10, d: 0.30, h: 0.25),
+        seatSplitRatio: [0.5, 0.5],
+        taperRatio: 0.03,
+        vehicleName: 'CARNIVAL',
       );
 
-  /// 아이오닉5
+  /// 아이오닉5 — 6:4 분할
   factory TrunkSpace.ioniq5() => const TrunkSpace(
         w: 1.00,
         d: 0.95,
         h: 0.73,
         leftWheelhouse: Wheelhouse(w: 0.15, d: 0.35, h: 0.30),
         rightWheelhouse: Wheelhouse(w: 0.15, d: 0.35, h: 0.30),
+        seatSplitRatio: [0.6, 0.4],
+        taperRatio: 0.06,
+        vehicleName: 'IONIQ 5',
       );
 
-  /// 아반떼 (세단)
+  /// 아반떼 (세단) — 분할 없음 (고정 뒷좌석)
   factory TrunkSpace.avante() => const TrunkSpace(
         w: 1.02,
         d: 0.71,
         h: 0.43,
         leftWheelhouse: Wheelhouse(w: 0.05, d: 0.30, h: 0.25),
         rightWheelhouse: Wheelhouse(w: 0.05, d: 0.30, h: 0.25),
+        taperRatio: 0.12,
+        vehicleName: 'AVANTE',
       );
 
   factory TrunkSpace.custom({
@@ -168,10 +198,14 @@ class TrunkSpace {
           'left': leftWheelhouse.toJson(),
           'right': rightWheelhouse.toJson(),
         },
+        if (seatSplitRatio != null) 'seatSplitRatio': seatSplitRatio,
+        if (taperRatio != 0.0) 'taperRatio': taperRatio,
+        if (vehicleName != null) 'vehicleName': vehicleName,
       };
 
   factory TrunkSpace.fromJson(Map<String, dynamic> json) {
     final wh = json['wheelhouse'] as Map<String, dynamic>;
+    final rawSplit = json['seatSplitRatio'] as List<dynamic>?;
     return TrunkSpace(
       w: (json['w'] as num).toDouble(),
       d: (json['d'] as num).toDouble(),
@@ -180,6 +214,9 @@ class TrunkSpace {
           Wheelhouse.fromJson(wh['left'] as Map<String, dynamic>),
       rightWheelhouse:
           Wheelhouse.fromJson(wh['right'] as Map<String, dynamic>),
+      seatSplitRatio: rawSplit?.map((e) => (e as num).toDouble()).toList(),
+      taperRatio: (json['taperRatio'] as num?)?.toDouble() ?? 0.0,
+      vehicleName: json['vehicleName'] as String?,
     );
   }
 }

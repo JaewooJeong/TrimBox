@@ -1,5 +1,8 @@
 import 'dart:ui';
 
+/// 박스 카테고리
+enum BoxCategory { custom, carrier, camping, moving }
+
 /// 트렁크에 배치하는 박스 모델
 class TrimBox {
   final String id;
@@ -12,6 +15,7 @@ class TrimBox {
   double z; // Z 위치 (m)
   int rotY; // 회전 (0, 90, 180, 270)
   Color color;
+  BoxCategory category;
 
   TrimBox({
     required this.id,
@@ -24,6 +28,7 @@ class TrimBox {
     this.z = 0,
     this.rotY = 0,
     required this.color,
+    this.category = BoxCategory.custom,
   });
 
   /// 회전 적용 후 실제 폭/깊이
@@ -58,6 +63,7 @@ class TrimBox {
     double? z,
     int? rotY,
     Color? color,
+    BoxCategory? category,
   }) =>
       TrimBox(
         id: id ?? this.id,
@@ -70,6 +76,7 @@ class TrimBox {
         z: z ?? this.z,
         rotY: rotY ?? this.rotY,
         color: color ?? this.color,
+        category: category ?? this.category,
       );
 
   Map<String, dynamic> toJson() => {
@@ -79,6 +86,7 @@ class TrimBox {
         'pos': {'x': x, 'y': y, 'z': z},
         'rotY': rotY,
         'color': color.toARGB32(),
+        if (category != BoxCategory.custom) 'category': category.index,
       };
 
   factory TrimBox.fromJson(Map<String, dynamic> json) {
@@ -95,6 +103,10 @@ class TrimBox {
       z: (pos['z'] as num).toDouble(),
       rotY: json['rotY'] as int? ?? 0,
       color: Color(json['color'] as int),
+      category: json['category'] != null
+          ? BoxCategory.values[(json['category'] as int)
+              .clamp(0, BoxCategory.values.length - 1)]
+          : BoxCategory.custom,
     );
   }
 }

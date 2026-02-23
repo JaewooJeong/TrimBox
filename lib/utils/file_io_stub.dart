@@ -10,3 +10,9 @@ void downloadBytes(List<int> bytes, String filename, String mimeType) {
 Future<String?> pickJsonFile() async {
   throw UnsupportedError('File picker not supported on this platform');
 }
+
+Future<bool> shareOrDownloadImage(
+    List<int> bytes, String filename, String mimeType) async {
+  downloadBytes(bytes, filename, mimeType);
+  return false;
+}
