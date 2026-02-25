@@ -77,5 +77,40 @@ void main() {
       expect(scene.version, '1.0.0');
       expect(scene.gridUnit, 0.10);
     });
+
+    test('body profile 포함 Scene 라운드트립', () {
+      final scene = Scene(space: TrunkSpace.santafe());
+      final json = scene.toJson();
+      final restored = Scene.fromJson(json);
+
+      expect(restored.space.w, 1.09);
+      expect(restored.space.bodyWidth, 1.88);
+      expect(restored.space.trunkLipHeight, 0.56);
+      expect(restored.space.roofExtension, 0.12);
+      expect(restored.space.bumperDepth, 0.07);
+      expect(restored.space.bodyDepth, 0.30);
+    });
+
+    test('이전 포맷 Scene JSON (body profile 없음) 역호환', () {
+      final oldJson = {
+        'version': '1.0.0',
+        'gridUnit': 0.10,
+        'space': {
+          'w': 1.0,
+          'd': 0.8,
+          'h': 0.7,
+          'wheelhouse': {
+            'left': {'w': 0.0, 'd': 0.0, 'h': 0.0},
+            'right': {'w': 0.0, 'd': 0.0, 'h': 0.0},
+          },
+        },
+        'boxes': [],
+      };
+      final restored = Scene.fromJson(oldJson);
+      expect(restored.space.w, 1.0);
+      expect(restored.space.bodyWidth, 1.90); // default
+      expect(restored.space.trunkLipHeight, 0.55); // default
+      expect(restored.space.bodyDepth, 0.30); // default
+    });
   });
 }

@@ -13,6 +13,10 @@ void main() {
       expect(s.leftWheelhouse.h, 0.35);
       expect(s.rightWheelhouse.w, 0.14);
       expect(s.gridUnit, 0.01);
+      // body profile
+      expect(s.bodyWidth, 1.82);
+      expect(s.trunkLipHeight, 0.55);
+      expect(s.bodyExtX, closeTo(0.39, 0.01));
     });
 
     test('쏘렌토 치수 검증', () {
@@ -22,14 +26,22 @@ void main() {
       expect(s.h, 0.77);
       expect(s.leftWheelhouse.w, 0.15);
       expect(s.leftWheelhouse.h, 0.35);
+      // body profile
+      expect(s.bodyWidth, 1.90);
+      expect(s.trunkLipHeight, 0.58);
+      expect(s.bodyExtX, closeTo(0.425, 0.01));
     });
 
     test('싼타페 치수 검증', () {
       final s = TrunkSpace.santafe();
-      expect(s.w, 1.28);
+      expect(s.w, 1.09);
       expect(s.d, 1.05);
       expect(s.h, 0.80);
       expect(s.leftWheelhouse.w, 0.10);
+      // body profile
+      expect(s.bodyWidth, 1.88);
+      expect(s.trunkLipHeight, 0.56);
+      expect(s.bodyExtX, closeTo(0.395, 0.01));
     });
 
     test('카니발 치수 검증', () {
@@ -40,6 +52,10 @@ void main() {
       expect(s.leftWheelhouse.w, 0.10);
       expect(s.leftWheelhouse.d, 0.30);
       expect(s.leftWheelhouse.h, 0.25);
+      // body profile
+      expect(s.bodyWidth, 1.95);
+      expect(s.trunkLipHeight, 0.50);
+      expect(s.bodyExtX, closeTo(0.35, 0.01));
     });
 
     test('아이오닉5 치수 검증', () {
@@ -50,6 +66,10 @@ void main() {
       expect(s.leftWheelhouse.w, 0.15);
       expect(s.leftWheelhouse.d, 0.35);
       expect(s.leftWheelhouse.h, 0.30);
+      // body profile
+      expect(s.bodyWidth, 1.89);
+      expect(s.trunkLipHeight, 0.55);
+      expect(s.bodyExtX, closeTo(0.445, 0.01));
     });
 
     test('아반떼 치수 검증', () {
@@ -60,6 +80,10 @@ void main() {
       expect(s.leftWheelhouse.w, 0.05);
       expect(s.leftWheelhouse.d, 0.30);
       expect(s.leftWheelhouse.h, 0.25);
+      // body profile
+      expect(s.bodyWidth, 1.82);
+      expect(s.trunkLipHeight, 0.45);
+      expect(s.bodyExtX, closeTo(0.40, 0.01));
     });
 
     test('custom 생성', () {
@@ -92,6 +116,34 @@ void main() {
       expect(restored.h, s.h);
       expect(restored.leftWheelhouse.w, s.leftWheelhouse.w);
       expect(restored.rightWheelhouse.d, s.rightWheelhouse.d);
+      // body profile 라운드트립
+      expect(restored.bodyWidth, s.bodyWidth);
+      expect(restored.trunkLipHeight, s.trunkLipHeight);
+      expect(restored.roofExtension, s.roofExtension);
+      expect(restored.bumperDepth, s.bumperDepth);
+      expect(restored.bodyDepth, s.bodyDepth);
+    });
+
+    test('이전 포맷 JSON 역호환성', () {
+      final oldJson = {
+        'w': 1.0,
+        'd': 0.8,
+        'h': 0.7,
+        'wheelhouse': {
+          'left': {'w': 0.0, 'd': 0.0, 'h': 0.0},
+          'right': {'w': 0.0, 'd': 0.0, 'h': 0.0},
+        },
+      };
+      final s = TrunkSpace.fromJson(oldJson);
+      expect(s.w, 1.0);
+      expect(s.d, 0.8);
+      expect(s.h, 0.7);
+      // body profile 필드 없으면 기본값
+      expect(s.bodyWidth, 1.90);
+      expect(s.trunkLipHeight, 0.55);
+      expect(s.roofExtension, 0.12);
+      expect(s.bumperDepth, 0.07);
+      expect(s.bodyDepth, 0.30);
     });
   });
 
@@ -101,6 +153,7 @@ void main() {
       expect(TrunkPreset.tucson.label, contains('104'));
       expect(TrunkPreset.sorento.label, contains('쏘렌토'));
       expect(TrunkPreset.santafe.label, contains('싼타페'));
+      expect(TrunkPreset.santafe.label, contains('109'));
       expect(TrunkPreset.carnival.label, contains('카니발'));
       expect(TrunkPreset.ioniq5.label, contains('아이오닉5'));
       expect(TrunkPreset.avante.label, contains('아반떼'));

@@ -142,5 +142,26 @@ void main() {
       final b = makeBox(id: 'b', x: 0.1, z: 0.1, w: 0.2, d: 0.2, h: 0.2, y: 0.1);
       expect(detector.boxesOverlap(a, b), true);
     });
+
+    test('높이 경계값: y+h == space.h (정확히 동일 시 초과 아님)', () {
+      // 투싼 h=0.73, tolerance 0.001
+      final box = makeBox(x: 0.1, z: 0.1, w: 0.2, d: 0.2, h: 0.73, y: 0);
+      expect(detector.isOverHeight(box), false);
+    });
+
+    test('3D AABB 경계 접촉 (touching but not overlapping)', () {
+      // a: x=[0, 0.2], b: x=[0.2, 0.4] → touching at x=0.2, not overlapping
+      final a = makeBox(id: 'a', x: 0, z: 0, w: 0.2, d: 0.2, h: 0.2);
+      final b = makeBox(id: 'b', x: 0.2, z: 0, w: 0.2, d: 0.2, h: 0.2);
+      expect(detector.boxesOverlap(a, b), false);
+    });
+
+    test('빈 휠하우스(w=0, d=0, h=0) 시 충돌 없음', () {
+      final emptySpace = TrunkSpace.custom(w: 1.0, d: 1.0, h: 0.5);
+      final emptyDetector = CollisionDetector(emptySpace);
+      final box = makeBox(x: 0, z: 0.8, w: 0.1, d: 0.1, h: 0.1);
+      expect(emptyDetector.overlapsLeftWheelhouse(box), false);
+      expect(emptyDetector.overlapsRightWheelhouse(box), false);
+    });
   });
 }
