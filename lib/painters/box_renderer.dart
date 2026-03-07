@@ -1,6 +1,15 @@
 part of 'isometric_painter.dart';
 
-/// 박스 및 휠하우스 렌더링
+/// Inferred camping sub-type for texture differentiation
+enum _CampingSubType {
+  tentBag,
+  cooler,
+  chairBag,
+  container,
+  defaultCamping,
+}
+
+/// Box and wheelhouse rendering — perspective view
 extension BoxRendering on IsometricPainter {
   void drawIsometricBox(
     Canvas canvas, {
@@ -15,193 +24,335 @@ extension BoxRendering on IsometricPainter {
     double strokeWidth = 1.0,
     bool isSelected = false,
     BoxCategory category = BoxCategory.custom,
+    String label = '',
+    double origWcm = 0,
+    double origDcm = 0,
+    double origHcm = 0,
   }) {
-    final p1 = toIso(x + w, y, z);
-    final p2 = toIso(x + w, y, z + d);
-    final p3 = toIso(x, y, z + d);
-    final p4 = toIso(x, y + h, z);
-    final p5 = toIso(x + w, y + h, z);
-    final p6 = toIso(x + w, y + h, z + d);
-    final p7 = toIso(x, y + h, z + d);
+    // 8 vertices
+    final p0 = toScreen(x, y, z); // back-left-bottom
+    final p1 = toScreen(x + w, y, z); // back-right-bottom
+    final p2 = toScreen(x + w, y, z + d); // front-right-bottom
+    final p3 = toScreen(x, y, z + d); // front-left-bottom
+    final p4 = toScreen(x, y + h, z); // back-left-top
+    final p5 = toScreen(x + w, y + h, z); // back-right-top
+    final p6 = toScreen(x + w, y + h, z + d); // front-right-top
+    final p7 = toScreen(x, y + h, z + d); // front-left-top
+
+    // Depth-based brightness
+    final depthFactor = space.d > 0 ? z / space.d : 0.5;
+    final depthDarken = (1.0 - depthFactor) * 0.35;
+    final baseColor = Color.lerp(fillColor, Colors.black, depthDarken)!;
 
     final fill = Paint()..style = PaintingStyle.fill;
 
-    // 바닥 그림자
-    if (y < 0.001) {
-      final so = 0.015;
-      final shadow = Path()
-        ..moveTo(toIso(x - so, -0.002, z - so).dx,
-            toIso(x - so, -0.002, z - so).dy)
-        ..lineTo(toIso(x + w + so, -0.002, z - so).dx,
-            toIso(x + w + so, -0.002, z - so).dy)
-        ..lineTo(toIso(x + w + so * 2, -0.002, z + d + so * 2).dx,
-            toIso(x + w + so * 2, -0.002, z + d + so * 2).dy)
-        ..lineTo(toIso(x - so, -0.002, z + d + so * 2).dx,
-            toIso(x - so, -0.002, z + d + so * 2).dy)
-        ..close();
-      canvas.drawPath(
-        shadow,
-        Paint()
-          ..color = const Color(0x55000000)
-          ..style = PaintingStyle.fill,
-      );
+    // Ground shadow — multi-layer with light-from-opening offset
+    {
+      // Shadow softness grows with height (stacked boxes have softer shadow)
+      final heightFactor = y.clamp(0.0, 1.0);
+      final baseSo = 0.015;
+      // Light comes from opening (high z), so shadow offsets toward back (lower z)
+      final lightOffsetZ = -0.01 - heightFactor * 0.02;
+      // Higher boxes = more transparent + larger shadow
+      final layers = [
+        (spread: baseSo + heightFactor * 0.02, alpha: (0x44 * (1.0 - heightFactor * 0.4)).round()),
+        (spread: baseSo * 2.0 + heightFactor * 0.03, alpha: (0x22 * (1.0 - heightFactor * 0.3)).round()),
+        (spread: baseSo * 3.5 + heightFactor * 0.04, alpha: (0x11 * (1.0 - heightFactor * 0.2)).round()),
+      ];
+      for (int li = 0; li < layers.length; li++) {
+        final layer = layers[li];
+        final so = layer.spread;
+        final shadowPath = buildPath([
+          toScreen(x - so, -0.001, z - so + lightOffsetZ),
+          toScreen(x + w + so, -0.001, z - so + lightOffsetZ),
+          toScreen(x + w + so, -0.001, z + d + so + lightOffsetZ),
+          toScreen(x - so, -0.001, z + d + so + lightOffsetZ),
+        ]);
+        // Blur increases per layer for soft shadow falloff
+        final blurSigma = 2.0 + li * 3.0 + heightFactor * 4.0;
+        canvas.drawPath(
+            shadowPath,
+            Paint()
+              ..color = Color.fromARGB(layer.alpha, 0, 0, 0)
+              ..style = PaintingStyle.fill
+              ..maskFilter = MaskFilter.blur(BlurStyle.normal, blurSigma));
+      }
     }
 
-    final topColor = fillColor;
-    final topColorBright = Color.lerp(fillColor, Colors.white, 0.05)!;
-    final rightColor = Color.lerp(fillColor, Colors.black, 0.35)!;
-    final rightColorBright = Color.lerp(fillColor, Colors.black, 0.30)!;
-    final leftColor = Color.lerp(fillColor, Colors.black, 0.58)!;
-    final leftColorBright = Color.lerp(fillColor, Colors.black, 0.53)!;
+    // Face visibility from fixed camera
+    final showLeft = camX > x;
+    final showRight = camX < x + w;
+    final showTop = camY < y + h;
 
-    final leftPath = roundedPath([p3, p7, p6, p2]);
-    final rightPath = roundedPath([p1, p5, p6, p2]);
-    final topPath = roundedPath([p4, p5, p6, p7]);
+    // Draw faces back-to-front
 
-    // 1. 왼쪽 면 (z+d)
-    final leftMidTop = Offset((p7.dx + p6.dx) / 2, (p7.dy + p6.dy) / 2);
-    final leftMidBot = Offset((p3.dx + p2.dx) / 2, (p3.dy + p2.dy) / 2);
-    fill.shader = ui.Gradient.linear(
-        leftMidTop, leftMidBot, [leftColorBright, leftColor]);
-    canvas.drawPath(leftPath, fill);
-    // 2. 오른쪽 면 (x+w)
-    final rightMidTop = Offset((p5.dx + p6.dx) / 2, (p5.dy + p6.dy) / 2);
-    final rightMidBot = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
-    fill.shader = ui.Gradient.linear(
-        rightMidTop, rightMidBot, [rightColorBright, rightColor]);
-    canvas.drawPath(rightPath, fill);
-    // 3. 윗면
-    final topMidBack = Offset((p4.dx + p5.dx) / 2, (p4.dy + p5.dy) / 2);
-    final topMidFront = Offset((p7.dx + p6.dx) / 2, (p7.dy + p6.dy) / 2);
-    fill.shader = ui.Gradient.linear(
-        topMidBack, topMidFront, [topColor, topColorBright]);
-    canvas.drawPath(topPath, fill);
+    // Back face (z = z, faces away — draw only if partially visible)
+    // Skip: faces away from camera
 
-    fill.shader = null;
+    // Left face
+    if (showLeft) {
+      fill.color = Color.lerp(baseColor, Colors.black, 0.25)!;
+      canvas.drawPath(buildPath([p0, p3, p7, p4]), fill);
+    }
 
-    // 외곽 헥사곤
-    final edgeColor = Color.lerp(fillColor, Colors.black, 0.65)!;
-    final hexOutline = roundedPath([p4, p5, p1, p2, p3, p7]);
+    // Right face
+    if (showRight) {
+      fill.color = Color.lerp(baseColor, Colors.black, 0.15)!;
+      canvas.drawPath(buildPath([p1, p2, p6, p5]), fill);
+    }
 
-    canvas.drawPath(
-      hexOutline,
-      Paint()
-        ..color = Color.lerp(fillColor, Colors.black, 0.35)!
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.0
-        ..strokeJoin = StrokeJoin.round,
-    );
-    // 3개 면 다시 채우기 (그라데이션)
-    fill.shader = ui.Gradient.linear(
-        leftMidTop, leftMidBot, [leftColorBright, leftColor]);
-    canvas.drawPath(leftPath, fill);
-    fill.shader = ui.Gradient.linear(
-        rightMidTop, rightMidBot, [rightColorBright, rightColor]);
-    canvas.drawPath(rightPath, fill);
-    fill.shader = ui.Gradient.linear(
-        topMidBack, topMidFront, [topColor, topColorBright]);
-    canvas.drawPath(topPath, fill);
+    // Top face
+    if (showTop) {
+      fill.color = baseColor;
+      canvas.drawPath(buildPath([p4, p5, p6, p7]), fill);
+    }
 
-    fill.shader = null;
+    // Front face (always visible)
+    fill.color = Color.lerp(baseColor, Colors.black, 0.10)!;
+    canvas.drawPath(buildPath([p3, p2, p6, p7]), fill);
 
-    canvas.drawPath(
-      hexOutline,
-      Paint()
-        ..color = edgeColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..strokeJoin = StrokeJoin.round,
-    );
-
-    // 내부 분리선: p2→p6
-    canvas.drawLine(
-      p2, p6,
-      Paint()
-        ..color = edgeColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
-        ..strokeCap = StrokeCap.round,
-    );
-
-    // 윗면 뒤쪽 엣지
-    final backEdgePaint = Paint()
+    // Edge lines
+    final edgeColor = Color.lerp(baseColor, Colors.black, 0.50)!;
+    final edgePaint = Paint()
       ..color = edgeColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawLine(p5, p4, backEdgePaint);
-    canvas.drawLine(p4, p7, backEdgePaint);
+      ..strokeWidth = 1.2
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
 
-    // 선택 글로우 효과
-    if (isSelected) {
-      canvas.drawPath(
-        hexOutline,
-        Paint()
-          ..color = const Color(0x664DA3FF)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = strokeWidth + 6
-          ..strokeJoin = StrokeJoin.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 6),
-      );
+    // Front face edges
+    canvas.drawLine(p3, p2, edgePaint);
+    canvas.drawLine(p2, p6, edgePaint);
+    canvas.drawLine(p6, p7, edgePaint);
+    canvas.drawLine(p7, p3, edgePaint);
+
+    // Top face edges
+    if (showTop) {
+      canvas.drawLine(p4, p5, edgePaint);
+      if (showLeft) canvas.drawLine(p4, p7, edgePaint);
+      if (showRight) canvas.drawLine(p5, p6, edgePaint);
     }
 
-    // 충돌/선택 외곽선
+    // Vertical back edges
+    if (showLeft) {
+      canvas.drawLine(p0, p4, edgePaint);
+      canvas.drawLine(p0, p3, edgePaint);
+    }
+    if (showRight) {
+      canvas.drawLine(p1, p5, edgePaint);
+      canvas.drawLine(p1, p2, edgePaint);
+    }
+
+    // Selection glow
+    if (isSelected) {
+      final frontOutline = buildPath([p3, p2, p6, p7]);
+      canvas.drawPath(
+          frontOutline,
+          Paint()
+            ..color = const Color(0x664DA3FF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 6
+            ..strokeJoin = StrokeJoin.round
+            ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 6));
+    }
+
+    // Collision/selection stroke
     if (strokeWidth > 1.5) {
       canvas.drawPath(
-        hexOutline,
-        Paint()
-          ..color = strokeColor
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = strokeWidth
-          ..strokeJoin = StrokeJoin.round,
-      );
+          buildPath([p3, p2, p6, p7]),
+          Paint()
+            ..color = strokeColor
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth
+            ..strokeJoin = StrokeJoin.round);
     }
 
-    // 카테고리별 텍스처
+    // Category texture on top face
+    if (category != BoxCategory.custom && showTop) {
+      _drawBoxTexture(canvas, category, x, y + h, z, w, d, baseColor,
+          label, origWcm, origDcm, origHcm);
+    }
+
+    // Category texture on front face
     if (category != BoxCategory.custom) {
-      drawBoxTexture(canvas, category, x, y + h, z, w, d, fillColor);
+      _drawFrontFaceTexture(canvas, category, x, y, z + d, w, h, baseColor,
+          label, origWcm, origDcm, origHcm);
+    }
+
+    // Front-face label (render label text on the front face)
+    if (label.isNotEmpty) {
+      _drawFrontFaceLabel(canvas, label, x, y, z + d, w, h, baseColor);
     }
   }
 
-  /// 휠하우스 상단면에 미세한 카페트 텍스처
-  void drawWheelhouseTexture(
-      Canvas canvas, double vx, double y, double vz, double vw, double vd) {
-    final texPaint = Paint()
-      ..color = const Color(0x20000000)
+  // ── Wheelhouse (rounded arch) ──
+  void drawWheelhouse(
+    Canvas canvas, {
+    required double x,
+    required double z,
+    required double w,
+    required double h,
+    required double d,
+    required Color fillColor,
+    required Color strokeColor,
+  }) {
+    // Rounded arch profile: vertical sides + semicircular top
+    const arcSegs = 8;
+    final radius = math.min(w, h) * 0.7;
+    final straightH = h - radius; // height of straight part
+    final cx = x + w / 2;
+
+    // Build arch cross-section (left profile → right profile)
+    // from (x, 0) → (x, straightH) → arc → (x+w, straightH) → (x+w, 0)
+    List<Offset> archProfile(double atZ) {
+      final pts = <Offset>[];
+      pts.add(toScreen(x, 0, atZ));
+      pts.add(toScreen(x, straightH, atZ));
+      // Arc from left to right
+      for (int i = 0; i <= arcSegs; i++) {
+        final angle = math.pi - (math.pi * i / arcSegs); // π → 0
+        final ax = cx + radius * math.cos(angle);
+        final ay = straightH + radius * math.sin(angle);
+        final clampedAy = math.min(ay, h);
+        pts.add(toScreen(ax, clampedAy, atZ));
+      }
+      pts.add(toScreen(x + w, straightH, atZ));
+      pts.add(toScreen(x + w, 0, atZ));
+      return pts;
+    }
+
+    final depthFactor = space.d > 0 ? z / space.d : 0.5;
+    final depthDarken = (1.0 - depthFactor) * 0.10;
+    final baseColor = Color.lerp(fillColor, Colors.black, depthDarken)!;
+
+    // Draw side face (the face facing the interior, at the inner edge)
+    final isLeft = x < space.w / 2;
+    final sideX = isLeft ? x + w : x; // inner side
+
+    // Side face: simple rectangle with curved top
+    final sidePts = <Offset>[];
+    sidePts.add(toScreen(sideX, 0, z));
+    sidePts.add(toScreen(sideX, 0, z + d));
+    sidePts.add(toScreen(sideX, h, z + d));
+    sidePts.add(toScreen(sideX, h, z));
+    _drawWheelhouseFace(canvas, sidePts,
+        Color.lerp(baseColor, Colors.black, 0.20)!);
+
+    // Top surface: curved, drawn as multiple quads along depth
+    const depthSegs = 4;
+    for (int di = 0; di < depthSegs; di++) {
+      final zt0 = z + d * di / depthSegs;
+      final zt1 = z + d * (di + 1) / depthSegs;
+      for (int ai = 0; ai <= arcSegs; ai++) {
+        final a0 = math.pi - (math.pi * ai / arcSegs);
+        final a1 = math.pi - (math.pi * (ai + 1) / arcSegs);
+        if (ai >= arcSegs) break;
+
+        final ax0 = cx + radius * math.cos(a0);
+        final ay0 = math.min(straightH + radius * math.sin(a0), h);
+        final ax1 = cx + radius * math.cos(a1);
+        final ay1 = math.min(straightH + radius * math.sin(a1), h);
+
+        final shade = Color.lerp(baseColor, Colors.black, 0.05 * di / depthSegs)!;
+        final quad = buildPath([
+          toScreen(ax0, ay0, zt0),
+          toScreen(ax1, ay1, zt0),
+          toScreen(ax1, ay1, zt1),
+          toScreen(ax0, ay0, zt1),
+        ]);
+        canvas.drawPath(quad,
+            Paint()..color = shade..style = PaintingStyle.fill);
+      }
+    }
+
+    // Front face (z = z + d, toward camera)
+    final frontProfile = archProfile(z + d);
+    _drawWheelhouseFace(canvas, frontProfile,
+        Color.lerp(baseColor, Colors.black, 0.08)!);
+
+    // Edge outline on front face
+    final edgePaint = Paint()
+      ..color = Color.lerp(baseColor, Colors.black, 0.40)!
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
-
-    const step = 0.03;
-    for (double x = step; x < vw; x += step) {
-      canvas.drawLine(
-          toIso(vx + x, y, vz), toIso(vx + x, y, vz + vd), texPaint);
-    }
-    for (double z = step; z < vd; z += step) {
-      canvas.drawLine(
-          toIso(vx, y, vz + z), toIso(vx + vw, y, vz + z), texPaint);
-    }
+      ..strokeWidth = 1.0
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(buildPath(frontProfile), edgePaint);
   }
 
-  /// 카테고리별 텍스처 렌더링 (윗면 + 오른쪽면)
-  void drawBoxTexture(Canvas canvas, BoxCategory category, double x,
-      double topY, double z, double w, double d, Color baseColor) {
-    // 윗면 아이소 투영 폭이 30px 미만이면 텍스처 생략
-    final isoWidth = (toIso(x + w, topY, z).dx - toIso(x, topY, z + d).dx).abs();
-    if (isoWidth < 30) return;
+  void _drawWheelhouseFace(Canvas canvas, List<Offset> pts, Color color) {
+    canvas.drawPath(
+        buildPath(pts),
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.fill);
+  }
 
+  // ── Camping sub-type inference from dimensions (cm) and label ──
+  _CampingSubType _inferCampingSubType(
+      String label, double wcm, double dcm, double hcm) {
+    // Coolers / ice boxes
+    if (label.contains('쿨러') || label.contains('아이스')) {
+      return _CampingSubType.cooler;
+    }
+    // Folding boxes / containers / shelves
+    if (label.contains('컨테이너') ||
+        label.contains('폴딩박스') ||
+        label.contains('쉘프') ||
+        label.contains('정리함')) {
+      return _CampingSubType.container;
+    }
+    // Tent bags (long, cylindrical — w > 50 and (d < 25 or h < 25))
+    final maxDim = math.max(wcm, math.max(dcm, hcm));
+    final minDim = math.min(wcm, math.min(dcm, hcm));
+    if (maxDim > 50 && minDim < 25 &&
+        (label.contains('텐트') || label.contains('타프') ||
+         label.contains('침낭') || label.contains('매트'))) {
+      return _CampingSubType.tentBag;
+    }
+    // Chairs (long and thin — one dim > 70, another < 20)
+    if (maxDim > 70 && minDim < 20 &&
+        (label.contains('의자') || label.contains('체어'))) {
+      return _CampingSubType.chairBag;
+    }
+    // Tent bags by pure dimension (long, thin, not matched above)
+    if (maxDim > 50 && minDim < 25) {
+      return _CampingSubType.tentBag;
+    }
+    // Chairs by pure dimension
+    if (maxDim > 70 && minDim < 20) {
+      return _CampingSubType.chairBag;
+    }
+    return _CampingSubType.defaultCamping;
+  }
+
+  // ── Category textures on TOP face ──
+  void _drawBoxTexture(
+      Canvas canvas,
+      BoxCategory category,
+      double x,
+      double topY,
+      double z,
+      double w,
+      double d,
+      Color baseColor,
+      String label,
+      double origWcm,
+      double origDcm,
+      double origHcm) {
     switch (category) {
       case BoxCategory.carrier:
-        _drawCarrierTexture(canvas, x, topY, z, w, d, baseColor);
+        _drawCarrierTopTexture(canvas, x, topY, z, w, d, baseColor);
       case BoxCategory.moving:
-        _drawMovingTexture(canvas, x, topY, z, w, d, baseColor);
+        _drawMovingTopTexture(canvas, x, topY, z, w, d, baseColor);
       case BoxCategory.camping:
-        _drawCampingTexture(canvas, x, topY, z, w, d, baseColor);
+        _drawCampingTopTexture(canvas, x, topY, z, w, d, baseColor,
+            label, origWcm, origDcm, origHcm);
       case BoxCategory.custom:
         break;
     }
   }
 
-  /// 캐리어: 윗면 4코너 원(바퀴), 오른쪽면 상단 수평선+사각(손잡이)
-  void _drawCarrierTexture(Canvas canvas, double x, double topY, double z,
+  void _drawCarrierTopTexture(Canvas canvas, double x, double topY, double z,
       double w, double d, Color baseColor) {
     final wheelColor = Color.lerp(baseColor, Colors.black, 0.45)!;
     final wheelPaint = Paint()
@@ -209,46 +360,26 @@ extension BoxRendering on IsometricPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
 
-    // 윗면 4코너 바퀴 (코너에서 안쪽 15%)
-    final inW = w * 0.15;
-    final inD = d * 0.15;
-    final wheelR = math.min(w, d) * 0.08 * scale;
-
+    final inW = w * 0.15, inD = d * 0.15;
+    final wheelR = math.min(w, d) * 0.08 * scale * focalLen / (camZ - z);
     final corners = [
-      toIso(x + inW, topY, z + inD),
-      toIso(x + w - inW, topY, z + inD),
-      toIso(x + w - inW, topY, z + d - inD),
-      toIso(x + inW, topY, z + d - inD),
+      toScreen(x + inW, topY, z + inD),
+      toScreen(x + w - inW, topY, z + inD),
+      toScreen(x + w - inW, topY, z + d - inD),
+      toScreen(x + inW, topY, z + d - inD),
     ];
     for (final c in corners) {
       canvas.drawCircle(c, wheelR, wheelPaint);
       canvas.drawCircle(
-        c,
-        wheelR * 0.4,
-        Paint()
-          ..color = wheelColor
-          ..style = PaintingStyle.fill,
-      );
+          c,
+          wheelR * 0.4,
+          Paint()
+            ..color = wheelColor
+            ..style = PaintingStyle.fill);
     }
-
-    // 오른쪽면 (x+w) 상단 손잡이: 수평선 + 작은 사각
-    final handleColor = Color.lerp(baseColor, Colors.black, 0.30)!;
-    final handlePaint = Paint()
-      ..color = handleColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    final handleY = topY - (topY > 0 ? math.min(0.05, topY * 0.2) : 0);
-    canvas.drawLine(
-      toIso(x + w, handleY, z + d * 0.3),
-      toIso(x + w, handleY, z + d * 0.7),
-      handlePaint,
-    );
   }
 
-  /// 이사박스: 윗면 십자 라인(테이프), 20% 밝은 톤
-  void _drawMovingTexture(Canvas canvas, double x, double topY, double z,
+  void _drawMovingTopTexture(Canvas canvas, double x, double topY, double z,
       double w, double d, Color baseColor) {
     final tapeColor = Color.lerp(baseColor, Colors.white, 0.20)!;
     final tapePaint = Paint()
@@ -256,23 +387,25 @@ extension BoxRendering on IsometricPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round;
-
-    // 십자: 가로 + 세로 중앙선
-    canvas.drawLine(
-      toIso(x, topY, z + d / 2),
-      toIso(x + w, topY, z + d / 2),
-      tapePaint,
-    );
-    canvas.drawLine(
-      toIso(x + w / 2, topY, z),
-      toIso(x + w / 2, topY, z + d),
-      tapePaint,
-    );
+    canvas.drawLine(toScreen(x, topY, z + d / 2),
+        toScreen(x + w, topY, z + d / 2), tapePaint);
+    canvas.drawLine(toScreen(x + w / 2, topY, z),
+        toScreen(x + w / 2, topY, z + d), tapePaint);
   }
 
-  /// 캠핑: 윗면 X자 대각선(스트랩), 25% 어두운 톤
-  void _drawCampingTexture(Canvas canvas, double x, double topY, double z,
-      double w, double d, Color baseColor) {
+  void _drawCampingTopTexture(
+      Canvas canvas,
+      double x,
+      double topY,
+      double z,
+      double w,
+      double d,
+      Color baseColor,
+      String label,
+      double origWcm,
+      double origDcm,
+      double origHcm) {
+    final subType = _inferCampingSubType(label, origWcm, origDcm, origHcm);
     final strapColor = Color.lerp(baseColor, Colors.black, 0.25)!;
     final strapPaint = Paint()
       ..color = strapColor.withAlpha(0xAA)
@@ -280,38 +413,504 @@ extension BoxRendering on IsometricPainter {
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
 
-    // X자 대각선
+    switch (subType) {
+      case _CampingSubType.tentBag:
+        // Oval shape on top + horizontal compression straps
+        _drawOvalTopFace(canvas, x, topY, z, w, d, baseColor);
+        // 2-3 compression straps across length
+        final strapCount = w > d ? 3 : 2;
+        for (int i = 1; i <= strapCount; i++) {
+          final frac = i / (strapCount + 1);
+          if (w > d) {
+            // Straps perpendicular to the long axis
+            final sx = x + w * frac;
+            canvas.drawLine(
+                toScreen(sx, topY, z + d * 0.1),
+                toScreen(sx, topY, z + d * 0.9),
+                strapPaint);
+          } else {
+            final sz = z + d * frac;
+            canvas.drawLine(
+                toScreen(x + w * 0.1, topY, sz),
+                toScreen(x + w * 0.9, topY, sz),
+                strapPaint);
+          }
+        }
+
+      case _CampingSubType.cooler:
+        // Lid line at 80% depth
+        final lidZ = z + d * 0.80;
+        final lidPaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.30)!.withAlpha(0xCC)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8
+          ..strokeCap = StrokeCap.round;
+        canvas.drawLine(
+            toScreen(x + w * 0.05, topY, lidZ),
+            toScreen(x + w * 0.95, topY, lidZ),
+            lidPaint);
+        // Slightly glossy top: lighter overlay stripe
+        final glossPaint = Paint()
+          ..color = const Color(0x18FFFFFF)
+          ..style = PaintingStyle.fill;
+        canvas.drawPath(
+            buildPath([
+              toScreen(x + w * 0.1, topY, z + d * 0.2),
+              toScreen(x + w * 0.9, topY, z + d * 0.2),
+              toScreen(x + w * 0.9, topY, z + d * 0.5),
+              toScreen(x + w * 0.1, topY, z + d * 0.5),
+            ]),
+            glossPaint);
+
+      case _CampingSubType.chairBag:
+        // Fabric bag: diagonal cross-hatching on top
+        final hatchPaint = Paint()
+          ..color = strapColor.withAlpha(0x55)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.8
+          ..strokeCap = StrokeCap.round;
+        final count = 5;
+        for (int i = 0; i <= count; i++) {
+          final frac = i / count;
+          canvas.drawLine(
+              toScreen(x, topY, z + d * frac),
+              toScreen(x + w * frac, topY, z),
+              hatchPaint);
+          canvas.drawLine(
+              toScreen(x + w * frac, topY, z + d),
+              toScreen(x + w, topY, z + d * frac),
+              hatchPaint);
+        }
+
+      case _CampingSubType.container:
+        // Cross tape like moving box but thinner
+        canvas.drawLine(
+            toScreen(x, topY, z + d / 2),
+            toScreen(x + w, topY, z + d / 2),
+            strapPaint);
+
+      case _CampingSubType.defaultCamping:
+        // X-strap pattern + buckle indicator
+        canvas.drawLine(toScreen(x, topY, z),
+            toScreen(x + w, topY, z + d), strapPaint);
+        canvas.drawLine(toScreen(x + w, topY, z),
+            toScreen(x, topY, z + d), strapPaint);
+        // Buckle indicator at center
+        final cx = x + w / 2, cz = z + d / 2;
+        final bucklePaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.40)!
+          ..style = PaintingStyle.fill;
+        final bw2 = w * 0.08, bd2 = d * 0.08;
+        canvas.drawPath(
+            buildPath([
+              toScreen(cx - bw2, topY, cz - bd2),
+              toScreen(cx + bw2, topY, cz - bd2),
+              toScreen(cx + bw2, topY, cz + bd2),
+              toScreen(cx - bw2, topY, cz + bd2),
+            ]),
+            bucklePaint);
+    }
+  }
+
+  /// Draw an oval/ellipse on the top face to suggest a cylindrical bag
+  void _drawOvalTopFace(Canvas canvas, double x, double topY, double z,
+      double w, double d, Color baseColor) {
+    final cx = x + w / 2, cz = z + d / 2;
+    final rx = w * 0.42, rz = d * 0.42;
+    const segs = 16;
+    final ovalPts = <Offset>[];
+    for (int i = 0; i < segs; i++) {
+      final angle = 2 * math.pi * i / segs;
+      ovalPts.add(toScreen(
+          cx + rx * math.cos(angle), topY, cz + rz * math.sin(angle)));
+    }
+    final ovalPaint = Paint()
+      ..color = Color.lerp(baseColor, Colors.black, 0.12)!
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(buildPath(ovalPts), ovalPaint);
+    final ovalStroke = Paint()
+      ..color = Color.lerp(baseColor, Colors.black, 0.30)!
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(buildPath(ovalPts), ovalStroke);
+  }
+
+  // ── Category textures on FRONT face (z = frontZ) ──
+  void _drawFrontFaceTexture(
+      Canvas canvas,
+      BoxCategory category,
+      double x,
+      double botY,
+      double frontZ,
+      double w,
+      double h,
+      Color baseColor,
+      String label,
+      double origWcm,
+      double origDcm,
+      double origHcm) {
+    switch (category) {
+      case BoxCategory.carrier:
+        _drawCarrierFrontTexture(canvas, x, botY, frontZ, w, h, baseColor);
+      case BoxCategory.moving:
+        _drawMovingFrontTexture(canvas, x, botY, frontZ, w, h, baseColor);
+      case BoxCategory.camping:
+        _drawCampingFrontTexture(canvas, x, botY, frontZ, w, h, baseColor,
+            label, origWcm, origDcm, origHcm);
+      case BoxCategory.custom:
+        break;
+    }
+  }
+
+  void _drawCarrierFrontTexture(Canvas canvas, double x, double botY,
+      double frontZ, double w, double h, Color baseColor) {
+    // Handle on top of front face
+    final handleColor = Color.lerp(baseColor, Colors.black, 0.35)!;
+    final handlePaint = Paint()
+      ..color = handleColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round;
+    final hw = w * 0.3;
+    final hx = x + w / 2 - hw / 2;
+    final hy = botY + h * 0.85;
+    // U-shape handle
     canvas.drawLine(
-      toIso(x, topY, z),
-      toIso(x + w, topY, z + d),
-      strapPaint,
-    );
+        toScreen(hx, hy, frontZ),
+        toScreen(hx, botY + h * 0.92, frontZ),
+        handlePaint);
     canvas.drawLine(
-      toIso(x + w, topY, z),
-      toIso(x, topY, z + d),
-      strapPaint,
+        toScreen(hx, botY + h * 0.92, frontZ),
+        toScreen(hx + hw, botY + h * 0.92, frontZ),
+        handlePaint);
+    canvas.drawLine(
+        toScreen(hx + hw, botY + h * 0.92, frontZ),
+        toScreen(hx + hw, hy, frontZ),
+        handlePaint);
+    // Zipper line across middle
+    final zipPaint = Paint()
+      ..color = Color.lerp(baseColor, Colors.black, 0.18)!.withAlpha(0x88)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+        toScreen(x + w * 0.05, botY + h * 0.5, frontZ),
+        toScreen(x + w * 0.95, botY + h * 0.5, frontZ),
+        zipPaint);
+  }
+
+  void _drawMovingFrontTexture(Canvas canvas, double x, double botY,
+      double frontZ, double w, double h, Color baseColor) {
+    // Cross tape on front face (vertical + horizontal)
+    final tapeColor = Color.lerp(baseColor, Colors.white, 0.20)!;
+    final tapePaint = Paint()
+      ..color = tapeColor.withAlpha(0x88)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round;
+    // Vertical center tape
+    canvas.drawLine(
+        toScreen(x + w / 2, botY, frontZ),
+        toScreen(x + w / 2, botY + h, frontZ),
+        tapePaint);
+    // Horizontal center tape
+    canvas.drawLine(
+        toScreen(x, botY + h / 2, frontZ),
+        toScreen(x + w, botY + h / 2, frontZ),
+        tapePaint);
+  }
+
+  void _drawCampingFrontTexture(
+      Canvas canvas,
+      double x,
+      double botY,
+      double frontZ,
+      double w,
+      double h,
+      Color baseColor,
+      String label,
+      double origWcm,
+      double origDcm,
+      double origHcm) {
+    final subType = _inferCampingSubType(label, origWcm, origDcm, origHcm);
+
+    switch (subType) {
+      case _CampingSubType.tentBag:
+        // Slightly darker ends — already handled by face shading
+        // Draw end cap circle on front face (cylindrical look)
+        final cx = x + w / 2, cy = botY + h / 2;
+        final r = math.min(w, h) * 0.35;
+        final circleSegs = 12;
+        final circlePts = <Offset>[];
+        for (int i = 0; i < circleSegs; i++) {
+          final a = 2 * math.pi * i / circleSegs;
+          circlePts.add(toScreen(
+              cx + r * math.cos(a), cy + r * math.sin(a), frontZ));
+        }
+        final circlePaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.15)!.withAlpha(0x66)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..strokeCap = StrokeCap.round;
+        canvas.drawPath(buildPath(circlePts), circlePaint);
+
+      case _CampingSubType.cooler:
+        // Handle U-shapes on front face (two handles)
+        final handlePaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.30)!
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8
+          ..strokeCap = StrokeCap.round;
+        final hw = w * 0.12;
+        final hh = h * 0.08;
+        // Left handle
+        final lx = x + w * 0.2;
+        final hy = botY + h * 0.88;
+        canvas.drawLine(
+            toScreen(lx, hy, frontZ),
+            toScreen(lx, hy + hh, frontZ), handlePaint);
+        canvas.drawLine(
+            toScreen(lx, hy + hh, frontZ),
+            toScreen(lx + hw, hy + hh, frontZ), handlePaint);
+        canvas.drawLine(
+            toScreen(lx + hw, hy + hh, frontZ),
+            toScreen(lx + hw, hy, frontZ), handlePaint);
+        // Right handle
+        final rx = x + w * 0.68;
+        canvas.drawLine(
+            toScreen(rx, hy, frontZ),
+            toScreen(rx, hy + hh, frontZ), handlePaint);
+        canvas.drawLine(
+            toScreen(rx, hy + hh, frontZ),
+            toScreen(rx + hw, hy + hh, frontZ), handlePaint);
+        canvas.drawLine(
+            toScreen(rx + hw, hy + hh, frontZ),
+            toScreen(rx + hw, hy, frontZ), handlePaint);
+        // Lid line
+        final lidPaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.22)!.withAlpha(0xAA)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2;
+        canvas.drawLine(
+            toScreen(x + w * 0.05, botY + h * 0.78, frontZ),
+            toScreen(x + w * 0.95, botY + h * 0.78, frontZ),
+            lidPaint);
+
+      case _CampingSubType.chairBag:
+        // Fabric bag cross-hatch on front face
+        final hatchPaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.15)!.withAlpha(0x55)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.7
+          ..strokeCap = StrokeCap.round;
+        final count = 4;
+        for (int i = 0; i <= count; i++) {
+          final frac = i / count;
+          canvas.drawLine(
+              toScreen(x, botY + h * frac, frontZ),
+              toScreen(x + w * frac, botY, frontZ),
+              hatchPaint);
+          canvas.drawLine(
+              toScreen(x + w * frac, botY + h, frontZ),
+              toScreen(x + w, botY + h * frac, frontZ),
+              hatchPaint);
+        }
+        // Drawstring circle at top-center
+        final dsCx = x + w / 2, dsCy = botY + h * 0.88;
+        final dsR = math.min(w, h) * 0.12;
+        final dsSegs = 10;
+        final dsPts = <Offset>[];
+        for (int i = 0; i < dsSegs; i++) {
+          final a = 2 * math.pi * i / dsSegs;
+          dsPts.add(toScreen(
+              dsCx + dsR * math.cos(a), dsCy + dsR * math.sin(a), frontZ));
+        }
+        canvas.drawPath(
+            buildPath(dsPts),
+            Paint()
+              ..color = Color.lerp(baseColor, Colors.black, 0.25)!
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.0);
+
+      case _CampingSubType.container:
+        // Horizontal ridge lines (3-4 lines)
+        final ridgePaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.18)!.withAlpha(0xAA)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0
+          ..strokeCap = StrokeCap.round;
+        for (int i = 1; i <= 4; i++) {
+          final frac = i / 5;
+          canvas.drawLine(
+              toScreen(x + w * 0.05, botY + h * frac, frontZ),
+              toScreen(x + w * 0.95, botY + h * frac, frontZ),
+              ridgePaint);
+        }
+        // Latch/handle rectangle indicators
+        final latchPaint = Paint()
+          ..color = Color.lerp(baseColor, Colors.black, 0.30)!
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..strokeCap = StrokeCap.round;
+        // Center latch
+        final lw2 = w * 0.10, lh2 = h * 0.06;
+        final lcx = x + w * 0.5, lcy = botY + h * 0.5;
+        canvas.drawPath(
+            buildPath([
+              toScreen(lcx - lw2, lcy - lh2, frontZ),
+              toScreen(lcx + lw2, lcy - lh2, frontZ),
+              toScreen(lcx + lw2, lcy + lh2, frontZ),
+              toScreen(lcx - lw2, lcy + lh2, frontZ),
+            ]),
+            latchPaint);
+
+      case _CampingSubType.defaultCamping:
+        // X-strap on front face + buckle
+        final strapColor = Color.lerp(baseColor, Colors.black, 0.25)!;
+        final strapPaint = Paint()
+          ..color = strapColor.withAlpha(0x88)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round;
+        canvas.drawLine(
+            toScreen(x, botY, frontZ),
+            toScreen(x + w, botY + h, frontZ),
+            strapPaint);
+        canvas.drawLine(
+            toScreen(x + w, botY, frontZ),
+            toScreen(x, botY + h, frontZ),
+            strapPaint);
+        // Buckle at center
+        final bcx = x + w / 2, bcy = botY + h / 2;
+        final bw2 = w * 0.06, bh2 = h * 0.06;
+        canvas.drawPath(
+            buildPath([
+              toScreen(bcx - bw2, bcy - bh2, frontZ),
+              toScreen(bcx + bw2, bcy - bh2, frontZ),
+              toScreen(bcx + bw2, bcy + bh2, frontZ),
+              toScreen(bcx - bw2, bcy + bh2, frontZ),
+            ]),
+            Paint()
+              ..color = Color.lerp(baseColor, Colors.black, 0.35)!
+              ..style = PaintingStyle.fill);
+    }
+  }
+
+  /// Render label text ON the front face of the box
+  void _drawFrontFaceLabel(Canvas canvas, String label, double x, double botY,
+      double frontZ, double w, double h, Color baseColor) {
+    // Compute front face width and height in screen space
+    final bl = toScreen(x, botY, frontZ);
+    final br = toScreen(x + w, botY, frontZ);
+    final tl = toScreen(x, botY + h, frontZ);
+    final faceScreenW = (br.dx - bl.dx).abs();
+    final faceScreenH = (bl.dy - tl.dy).abs();
+
+    // Skip if face too small for text
+    if (faceScreenW < 20 || faceScreenH < 12) return;
+
+    // Scale font to fit — max 13px, min 7px
+    final maxFontForWidth = faceScreenW * 0.8 / math.max(label.length * 0.55, 1);
+    final maxFontForHeight = faceScreenH * 0.35;
+    final fontSize = maxFontForWidth.clamp(7.0, 13.0).clamp(7.0, maxFontForHeight);
+
+    if (fontSize < 7.0) return;
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: const Color(0x99FFFFFF),
+          fontSize: fontSize,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: '..',
+    )..layout(maxWidth: faceScreenW * 0.9);
+
+    // If laid out text is wider than face, skip (fallback to floating pill)
+    if (tp.width > faceScreenW * 0.9) return;
+
+    // Center of front face in screen coords
+    final faceCenterX = (bl.dx + br.dx) / 2;
+    final faceCenterY = (bl.dy + tl.dy) / 2;
+
+    tp.paint(
+      canvas,
+      Offset(faceCenterX - tp.width / 2, faceCenterY - tp.height / 2),
     );
   }
 
-  /// 선택된 박스 치수 라벨
-  void drawBoxLabelAt(Canvas canvas, TrimBox box,
-      ({double vx, double vz, double vw, double vd}) vb) {
-    final center = toIso(
-      vb.vx + vb.vw / 2,
-      box.y + box.h,
-      vb.vz + vb.vd / 2,
+  // ── Load Order Badge ──
+  void drawLoadOrderBadge(
+      Canvas canvas, TrimBox box, double bx, double bz, double bw, double bd) {
+    if (box.loadOrder == null) return;
+
+    // Center of the top face in screen space
+    final topY = box.y + box.h;
+    final center = toScreen(bx + bw / 2, topY, bz + bd / 2);
+
+    // Calculate perspective-aware size: use distance between two top-face corners
+    final left = toScreen(bx, topY, bz + bd / 2);
+    final right = toScreen(bx + bw, topY, bz + bd / 2);
+    final faceWidth = (right.dx - left.dx).abs();
+
+    // Circle radius: proportional to face width, with min/max
+    final radius = (faceWidth * 0.18).clamp(10.0, 22.0);
+    final fontSize = (radius * 1.1).clamp(12.0, 20.0);
+
+    // White circle background
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = const Color(0xEEFFFFFF)
+        ..style = PaintingStyle.fill,
     );
 
+    // Thin dark border
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = const Color(0x55000000)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0,
+    );
+
+    // Number text
+    final tp = TextPainter(
+      text: TextSpan(
+        text: '${box.loadOrder}',
+        style: TextStyle(
+          color: const Color(0xFF222222),
+          fontSize: fontSize,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    tp.paint(
+      canvas,
+      Offset(center.dx - tp.width / 2, center.dy - tp.height / 2),
+    );
+  }
+
+  // ── Labels ──
+  void drawBoxLabelAt(
+      Canvas canvas, TrimBox box, double bx, double bz, double bw, double bd) {
+    final center = toScreen(bx + bw / 2, box.y + box.h, bz + bd / 2);
     final text =
         '${(box.effectiveW * 100).round()}×${(box.effectiveD * 100).round()}×${(box.h * 100).round()}cm';
     final tp = TextPainter(
       text: TextSpan(
         text: text,
         style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.bold,
-        ),
+            color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -321,23 +920,16 @@ extension BoxRendering on IsometricPainter {
       width: tp.width + 8,
       height: tp.height + 4,
     );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(bg, const Radius.circular(4)),
-      Paint()..color = const Color(0xCC000000),
-    );
+    canvas.drawRRect(RRect.fromRectAndRadius(bg, const Radius.circular(4)),
+        Paint()..color = const Color(0xCC000000));
     tp.paint(canvas, Offset(bg.left + 4, bg.top + 2));
   }
 
-  /// 비선택 박스 이름 라벨
-  void drawBoxNameLabelAt(Canvas canvas, TrimBox box,
-      ({double vx, double vz, double vw, double vd}) vb) {
-    final center = toIso(
-      vb.vx + vb.vw / 2,
-      box.y + box.h,
-      vb.vz + vb.vd / 2,
-    );
+  void drawBoxNameLabelAt(
+      Canvas canvas, TrimBox box, double bx, double bz, double bw, double bd) {
+    final center = toScreen(bx + bw / 2, box.y + box.h, bz + bd / 2);
 
-    final topArea = vb.vw * vb.vd;
+    final topArea = bw * bd;
     final double fontSize;
     if (topArea < 0.04) {
       fontSize = 9;
@@ -351,186 +943,32 @@ extension BoxRendering on IsometricPainter {
       text: TextSpan(
         text: box.label,
         style: TextStyle(
-          color: const Color(0xEEFFFFFF),
-          fontSize: fontSize,
-          fontWeight: FontWeight.w600,
-        ),
+            color: const Color(0xEEFFFFFF),
+            fontSize: fontSize,
+            fontWeight: FontWeight.w600),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
 
-    final isoTopWidth = (toIso(vb.vx + vb.vw, box.y + box.h, vb.vz).dx -
-            toIso(vb.vx, box.y + box.h, vb.vz + vb.vd).dx)
-        .abs();
-    if (tp.width > isoTopWidth) return;
+    // Skip if label wider than box front face
+    final frontW =
+        (toScreen(bx + bw, box.y + box.h, bz + bd).dx -
+                toScreen(bx, box.y + box.h, bz + bd).dx)
+            .abs();
+    if (tp.width > frontW) return;
 
     final labelCenter = Offset(center.dx, center.dy - 12);
     final bg = RRect.fromRectAndRadius(
       Rect.fromCenter(
-        center: labelCenter,
-        width: tp.width + 10,
-        height: tp.height + 6,
-      ),
+          center: labelCenter,
+          width: tp.width + 10,
+          height: tp.height + 6),
       const Radius.circular(3),
     );
     canvas.drawRRect(bg, Paint()..color = const Color(0x99000000));
     tp.paint(
-      canvas,
-      Offset(labelCenter.dx - tp.width / 2, labelCenter.dy - tp.height / 2),
-    );
-  }
-
-  /// 휠하우스 전용 렌더링 — 둥근 모서리 + 약간의 역사다리꼴
-  void drawWheelhouse(
-    Canvas canvas, {
-    required double x,
-    required double z,
-    required double w,
-    required double h,
-    required double d,
-    required Color fillColor,
-    required Color strokeColor,
-  }) {
-    // 역사다리꼴: 상단이 약간 안쪽 (~1cm)
-    final topInset = 0.01;
-
-    // 바닥 꼭짓점 (y=0)
-    final b1 = toIso(x + w, 0, z);
-    final b2 = toIso(x + w, 0, z + d);
-    final b3 = toIso(x, 0, z + d);
-
-    // 상단 꼭짓점 (y=h, 약간 안쪽)
-    final t0 = toIso(x + topInset, h, z + topInset);
-    final t1 = toIso(x + w - topInset, h, z + topInset);
-    final t2 = toIso(x + w - topInset, h, z + d - topInset);
-    final t3 = toIso(x + topInset, h, z + d - topInset);
-
-    final fill = Paint()..style = PaintingStyle.fill;
-
-    // 바닥 그림자
-    final so = 0.01;
-    final shadow = Path()
-      ..moveTo(toIso(x - so, -0.002, z - so).dx,
-          toIso(x - so, -0.002, z - so).dy)
-      ..lineTo(toIso(x + w + so, -0.002, z - so).dx,
-          toIso(x + w + so, -0.002, z - so).dy)
-      ..lineTo(toIso(x + w + so, -0.002, z + d + so).dx,
-          toIso(x + w + so, -0.002, z + d + so).dy)
-      ..lineTo(toIso(x - so, -0.002, z + d + so).dx,
-          toIso(x - so, -0.002, z + d + so).dy)
-      ..close();
-    canvas.drawPath(
-      shadow,
-      Paint()
-        ..color = const Color(0x33000000)
-        ..style = PaintingStyle.fill,
-    );
-
-    final topColor = Color.lerp(fillColor, Colors.white, 0.05)!;
-    final rightColor = Color.lerp(fillColor, Colors.black, 0.20)!;
-    final leftColor = Color.lerp(fillColor, Colors.black, 0.40)!;
-
-    // 왼쪽 면 (z+d 쪽) — 역사다리꼴
-    final leftPath = Path()
-      ..moveTo(b3.dx, b3.dy)
-      ..lineTo(b2.dx, b2.dy)
-      ..lineTo(t2.dx, t2.dy)
-      ..lineTo(t3.dx, t3.dy)
-      ..close();
-    fill.color = leftColor;
-    canvas.drawPath(leftPath, fill);
-
-    // 오른쪽 면 (x+w 쪽) — 역사다리꼴
-    final rightPath = Path()
-      ..moveTo(b1.dx, b1.dy)
-      ..lineTo(b2.dx, b2.dy)
-      ..lineTo(t2.dx, t2.dy)
-      ..lineTo(t1.dx, t1.dy)
-      ..close();
-    fill.color = rightColor;
-    canvas.drawPath(rightPath, fill);
-
-    // 상단면 (둥근 모서리) — quadraticBezierTo로 라운딩
-    final r = 0.03 * scale; // 화면 기준 라운딩 반경
-    final topPath = _roundedTopFace(t0, t1, t2, t3, r);
-    fill.color = topColor;
-    canvas.drawPath(topPath, fill);
-
-    // 외곽선
-    final outlinePaint = Paint()
-      ..color = strokeColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2
-      ..strokeJoin = StrokeJoin.round;
-
-    // 헥사곤 외곽
-    final hex = Path()
-      ..moveTo(t0.dx, t0.dy)
-      ..lineTo(t1.dx, t1.dy)
-      ..lineTo(b1.dx, b1.dy)
-      ..lineTo(b2.dx, b2.dy)
-      ..lineTo(b3.dx, b3.dy)
-      ..lineTo(t3.dx, t3.dy)
-      ..close();
-    canvas.drawPath(hex, outlinePaint);
-
-    // 내부 분리선: b2→t2
-    canvas.drawLine(b2, t2, outlinePaint);
-
-    // 상단 뒤쪽 엣지
-    canvas.drawLine(t0, t1, outlinePaint);
-    canvas.drawLine(t0, t3, outlinePaint);
-
-    // S10: 휠하우스 상단 엣지 하이라이트
-    final highlightPaint = Paint()
-      ..color = const Color(0x40FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawLine(t0, t1, highlightPaint);
-    canvas.drawLine(t1, t2, highlightPaint);
-  }
-
-  /// 상단면 4 코너에 둥근 모서리 적용
-  Path _roundedTopFace(Offset p0, Offset p1, Offset p2, Offset p3, double r) {
-    final points = [p0, p1, p2, p3];
-    final n = points.length;
-    final path = Path();
-
-    for (int i = 0; i < n; i++) {
-      final prev = points[(i - 1 + n) % n];
-      final curr = points[i];
-      final next = points[(i + 1) % n];
-
-      final dx1 = prev.dx - curr.dx;
-      final dy1 = prev.dy - curr.dy;
-      final len1 = math.sqrt(dx1 * dx1 + dy1 * dy1);
-      final dx2 = next.dx - curr.dx;
-      final dy2 = next.dy - curr.dy;
-      final len2 = math.sqrt(dx2 * dx2 + dy2 * dy2);
-
-      if (len1 < 0.001 || len2 < 0.001) {
-        if (i == 0) {
-          path.moveTo(curr.dx, curr.dy);
-        } else {
-          path.lineTo(curr.dx, curr.dy);
-        }
-        continue;
-      }
-
-      final clampR = math.min(r, math.min(len1 / 3, len2 / 3));
-      final startX = curr.dx + (dx1 / len1) * clampR;
-      final startY = curr.dy + (dy1 / len1) * clampR;
-      final endX = curr.dx + (dx2 / len2) * clampR;
-      final endY = curr.dy + (dy2 / len2) * clampR;
-
-      if (i == 0) {
-        path.moveTo(startX, startY);
-      } else {
-        path.lineTo(startX, startY);
-      }
-      path.quadraticBezierTo(curr.dx, curr.dy, endX, endY);
-    }
-    path.close();
-    return path;
+        canvas,
+        Offset(labelCenter.dx - tp.width / 2,
+            labelCenter.dy - tp.height / 2));
   }
 }

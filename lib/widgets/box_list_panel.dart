@@ -16,6 +16,10 @@ class BoxListPanel extends StatelessWidget {
   final VoidCallback onSave;
   final VoidCallback onLoad;
   final VoidCallback? onScreenshot;
+  final VoidCallback? onAutoLayout;
+  final VoidCallback? onQuickCheck;
+  final VoidCallback? onStepView;
+  final VoidCallback? onShareCard;
   final ScrollController? scrollController;
   final bool showDragHandle;
 
@@ -32,6 +36,10 @@ class BoxListPanel extends StatelessWidget {
     required this.onSave,
     required this.onLoad,
     this.onScreenshot,
+    this.onAutoLayout,
+    this.onQuickCheck,
+    this.onStepView,
+    this.onShareCard,
     this.scrollController,
     this.showDragHandle = false,
   });
@@ -60,6 +68,10 @@ class BoxListPanel extends StatelessWidget {
                     itemBuilder: (_, i) => _boxTile(boxes[i]),
                   ),
           ),
+          // 히어로 자동 배치 버튼
+          if (boxes.isNotEmpty && onAutoLayout != null) _heroAutoLayoutButton(),
+          // 적재 순서 가이드 버튼
+          if (boxes.isNotEmpty && onStepView != null && _hasLoadOrders()) _stepViewButton(),
           // 하단 통계
           if (boxes.isNotEmpty) _statsBar(),
         ],
@@ -89,6 +101,10 @@ class BoxListPanel extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: _boxTile(b),
                 )),
+          // 히어로 자동 배치 버튼
+          if (boxes.isNotEmpty && onAutoLayout != null) _heroAutoLayoutButton(),
+          // 적재 순서 가이드 버튼
+          if (boxes.isNotEmpty && onStepView != null && _hasLoadOrders()) _stepViewButton(),
           if (boxes.isNotEmpty) _statsBar(),
         ],
       ),
@@ -127,12 +143,20 @@ class BoxListPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _actionButton(Icons.save, '저장', onSave),
+          _actionButton(Icons.save, '배치 저장', onSave),
           const SizedBox(width: 8),
           _actionButton(Icons.folder_open, '불러오기', onLoad),
           if (onScreenshot != null) ...[
             const SizedBox(width: 8),
             _actionButton(Icons.photo_camera, '스크린샷', onScreenshot!),
+          ],
+          if (onAutoLayout != null) ...[
+            const SizedBox(width: 8),
+            _actionButton(Icons.auto_fix_high, '자동 배치', onAutoLayout!),
+          ],
+          if (onShareCard != null) ...[
+            const SizedBox(width: 8),
+            _actionButton(Icons.share, '공유 카드', onShareCard!),
           ],
         ],
       ),
@@ -146,21 +170,113 @@ class BoxListPanel extends StatelessWidget {
         children: [
           Icon(Icons.inventory_2_outlined,
               color: Colors.grey[700], size: 48),
-          const SizedBox(height: 12),
+          const SizedBox(height: 16),
           const Text(
-            '아직 박스가 없습니다',
-            style: TextStyle(
-                color: Colors.grey, fontSize: 14,
-                fontWeight: FontWeight.w500),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '상단의 "박스 추가" 버튼으로\n시작하세요',
+            '캠핑 장비를 선택하고\n트렁크에 들어가는지 확인하세요',
             textAlign: TextAlign.center,
             style: TextStyle(
-                color: Colors.grey[600], fontSize: 12),
+                color: Colors.grey, fontSize: 14,
+                fontWeight: FontWeight.w500,
+                height: 1.5),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4DA3FF),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: onAddBox,
+            icon: const Icon(Icons.backpack, size: 20),
+            label: const Text('캠핑 장비 선택하기', style: TextStyle(fontSize: 14)),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _heroAutoLayoutButton() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          // Quick check button
+          if (onQuickCheck != null)
+            SizedBox(
+              height: 48,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF6BD06B),
+                  side: const BorderSide(color: Color(0xFF6BD06B), width: 1.5),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                ),
+                onPressed: onQuickCheck,
+                icon: const Icon(Icons.check_circle_outline, size: 20),
+                label: const Text(
+                  '들어갈까?',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          if (onQuickCheck != null) const SizedBox(width: 8),
+          // Auto layout button
+          Expanded(
+            child: SizedBox(
+              height: 48,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 2,
+                ),
+                onPressed: onAutoLayout,
+                icon: const Icon(Icons.auto_fix_high, size: 22),
+                label: const Text(
+                  '자동 배치',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _hasLoadOrders() {
+    return boxes.any((b) => b.loadOrder != null);
+  }
+
+  Widget _stepViewButton() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: SizedBox(
+        width: double.infinity,
+        height: 36,
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF00E676),
+            side: const BorderSide(color: Color(0xFF00E676), width: 1),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          onPressed: onStepView,
+          icon: const Icon(Icons.format_list_numbered, size: 18),
+          label: const Text(
+            '적재 순서 가이드',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          ),
+        ),
       ),
     );
   }
@@ -204,15 +320,35 @@ class BoxListPanel extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
-              // 색상 인디케이터
-              Container(
-                width: 16,
-                height: 16,
-                decoration: BoxDecoration(
-                  color: box.color,
-                  borderRadius: BorderRadius.circular(4),
+              // Load order badge or color indicator
+              if (box.loadOrder != null)
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: box.color.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: box.color, width: 1),
+                  ),
+                  child: Text(
+                    '${box.loadOrder}',
+                    style: TextStyle(
+                      color: box.color,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: box.color,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
                 ),
-              ),
               const SizedBox(width: 10),
               // 정보
               Expanded(

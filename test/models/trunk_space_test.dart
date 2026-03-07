@@ -13,35 +13,35 @@ void main() {
       expect(s.leftWheelhouse.h, 0.35);
       expect(s.rightWheelhouse.w, 0.14);
       expect(s.gridUnit, 0.01);
-      // body profile
-      expect(s.bodyWidth, 1.82);
+      // body profile (visual bodyWidth for proportional rendering)
+      expect(s.bodyWidth, 1.40);
       expect(s.trunkLipHeight, 0.55);
-      expect(s.bodyExtX, closeTo(0.39, 0.01));
+      expect(s.bodyExtX, closeTo(0.18, 0.01));
     });
 
     test('쏘렌토 치수 검증', () {
       final s = TrunkSpace.sorento();
-      expect(s.w, 1.05);
-      expect(s.d, 1.00);
-      expect(s.h, 0.77);
-      expect(s.leftWheelhouse.w, 0.15);
-      expect(s.leftWheelhouse.h, 0.35);
+      expect(s.w, 1.08);
+      expect(s.d, 1.10);
+      expect(s.h, 0.78);
+      expect(s.leftWheelhouse.w, 0.08);
+      expect(s.leftWheelhouse.h, 0.30);
       // body profile
-      expect(s.bodyWidth, 1.90);
+      expect(s.bodyWidth, 1.44);
       expect(s.trunkLipHeight, 0.58);
-      expect(s.bodyExtX, closeTo(0.425, 0.01));
+      expect(s.bodyExtX, closeTo(0.18, 0.01));
     });
 
     test('싼타페 치수 검증', () {
       final s = TrunkSpace.santafe();
-      expect(s.w, 1.09);
+      expect(s.w, 1.11);
       expect(s.d, 1.05);
       expect(s.h, 0.80);
-      expect(s.leftWheelhouse.w, 0.10);
+      expect(s.leftWheelhouse.w, 0.13);
       // body profile
-      expect(s.bodyWidth, 1.88);
+      expect(s.bodyWidth, 1.45);
       expect(s.trunkLipHeight, 0.56);
-      expect(s.bodyExtX, closeTo(0.395, 0.01));
+      expect(s.bodyExtX, closeTo(0.17, 0.01));
     });
 
     test('카니발 치수 검증', () {
@@ -53,9 +53,9 @@ void main() {
       expect(s.leftWheelhouse.d, 0.30);
       expect(s.leftWheelhouse.h, 0.25);
       // body profile
-      expect(s.bodyWidth, 1.95);
+      expect(s.bodyWidth, 1.63);
       expect(s.trunkLipHeight, 0.50);
-      expect(s.bodyExtX, closeTo(0.35, 0.01));
+      expect(s.bodyExtX, closeTo(0.19, 0.01));
     });
 
     test('아이오닉5 치수 검증', () {
@@ -67,9 +67,9 @@ void main() {
       expect(s.leftWheelhouse.d, 0.35);
       expect(s.leftWheelhouse.h, 0.30);
       // body profile
-      expect(s.bodyWidth, 1.89);
+      expect(s.bodyWidth, 1.38);
       expect(s.trunkLipHeight, 0.55);
-      expect(s.bodyExtX, closeTo(0.445, 0.01));
+      expect(s.bodyExtX, closeTo(0.19, 0.01));
     });
 
     test('아반떼 치수 검증', () {
@@ -81,9 +81,9 @@ void main() {
       expect(s.leftWheelhouse.d, 0.30);
       expect(s.leftWheelhouse.h, 0.25);
       // body profile
-      expect(s.bodyWidth, 1.82);
+      expect(s.bodyWidth, 1.34);
       expect(s.trunkLipHeight, 0.45);
-      expect(s.bodyExtX, closeTo(0.40, 0.01));
+      expect(s.bodyExtX, closeTo(0.16, 0.01));
     });
 
     test('custom 생성', () {
@@ -139,11 +139,11 @@ void main() {
       expect(s.d, 0.8);
       expect(s.h, 0.7);
       // body profile 필드 없으면 기본값
-      expect(s.bodyWidth, 1.90);
+      expect(s.bodyWidth, 1.40);
       expect(s.trunkLipHeight, 0.55);
       expect(s.roofExtension, 0.12);
       expect(s.bumperDepth, 0.07);
-      expect(s.bodyDepth, 0.30);
+      expect(s.bodyDepth, 0.55);
     });
   });
 
@@ -153,7 +153,7 @@ void main() {
       expect(TrunkPreset.tucson.label, contains('104'));
       expect(TrunkPreset.sorento.label, contains('쏘렌토'));
       expect(TrunkPreset.santafe.label, contains('싼타페'));
-      expect(TrunkPreset.santafe.label, contains('109'));
+      expect(TrunkPreset.santafe.label, contains('111'));
       expect(TrunkPreset.carnival.label, contains('카니발'));
       expect(TrunkPreset.ioniq5.label, contains('아이오닉5'));
       expect(TrunkPreset.avante.label, contains('아반떼'));

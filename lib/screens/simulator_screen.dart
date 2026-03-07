@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import '../models/auto_layout.dart';
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import '../models/scene.dart';
@@ -12,6 +13,7 @@ import '../painters/isometric_painter.dart';
 import '../utils/collision.dart';
 import '../utils/file_io.dart' as file_io;
 import '../utils/json_io.dart';
+import '../utils/scene_storage.dart' as storage;
 import '../widgets/add_box_dialog.dart';
 import '../widgets/box_list_panel.dart';
 import '../widgets/keyboard_shortcuts_dialog.dart';
@@ -36,30 +38,27 @@ class SimulatorScreen extends StatefulWidget {
   State<SimulatorScreen> createState() => _SimulatorScreenState();
 }
 
-class _SimulatorScreenState extends State<SimulatorScreen>
-    with TickerProviderStateMixin {
+class _SimulatorScreenState extends State<SimulatorScreen> {
   late TrunkSpace _space;
   final List<TrimBox> _boxes = [];
   String? _selectedBoxId;
   Set<String> _collidingIds = {};
   int _boxCounter = 0;
-  TrunkPreset _selectedPreset = TrunkPreset.tucson;
+  TrunkPreset _selectedPreset = TrunkPreset.sorento;
 
   // 온보딩
   bool _showOnboarding = true;
   bool _hasEverAddedBox = false;
 
-  // 카메라 방향 + 회전 애니메이션
-  CameraDirection _cameraDir = CameraDirection.dir0;
-  late final AnimationController _rotationController;
-  CameraDirection _pendingDir = CameraDirection.dir0;
-  bool _hasSwitchedDir = false;
+  // Camera (fixed for perspective — no orbit)
+  final double _cameraYaw = 0.0; // unused but kept for painter API compat
 
   // 드래그 상태
   bool _isDragging = false;
   Offset? _dragStartScreen;
   double _dragStartX = 0;
   double _dragStartZ = 0;
+  double _dragStartY = 0;
 
   // 줌 & 패닝
   double _zoomLevel = 1.0;
@@ -72,12 +71,12 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   Offset _gestureStartPanOffset = Offset.zero;
   Offset _gestureStartFocalPoint = Offset.zero;
 
-  // 우클릭/미들클릭 패닝
+  // 미들클릭 / 우클릭 패닝
   bool _isPanning = false;
   Offset _panStartScreenPos = Offset.zero;
   Offset _panStartPanOffset = Offset.zero;
 
-  // Undo/Redo 스택 (박스 리스트 스냅샷)
+  // Undo/Redo 스택
   static const int _maxUndoSteps = 50;
   final List<List<TrimBox>> _undoStack = [];
   final List<List<TrimBox>> _redoStack = [];
@@ -85,10 +84,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   // 터치/마우스 판별
   bool _lastPointerIsTouch = false;
 
-  // 아이소메트릭 변환에 사용하는 상수
-  static const double _isoAngle = 30.0 * math.pi / 180.0;
-  static final double _cosA = math.cos(_isoAngle);
-  static final double _sinA = math.sin(_isoAngle);
+  // Step-by-step loading guide
+  bool _stepViewActive = false;
+  int _stepViewCurrentStep = 1; // 1-based load order
+
   double _lastScale = 280.0;
   Size _lastCanvasSize = Size.zero;
 
@@ -99,34 +98,23 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   @override
   void initState() {
     super.initState();
-    _space = TrunkPreset.tucson.toTrunkSpace()!;
+    _space = TrunkPreset.sorento.toTrunkSpace()!;
     _detector = CollisionDetector(_space);
 
-    _rotationController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 250),
-    )..addListener(() {
-        if (_rotationController.value >= 0.5 && !_hasSwitchedDir) {
-          _hasSwitchedDir = true;
-          setState(() {
-            _cameraDir = _pendingDir;
-          });
-        }
-      });
   }
 
   @override
   void dispose() {
-    _rotationController.dispose();
     _canvasFocusNode.dispose();
     super.dispose();
   }
 
   double _calculateScale(Size canvasSize) {
-    final isoWidth = (_space.w + _space.d) * _cosA;
-    final isoHeight = (_space.w + _space.d) * _sinA + _space.h;
-    final scaleX = canvasSize.width * 0.8 / isoWidth;
-    final scaleY = canvasSize.height * 0.8 / isoHeight;
+    // In perspective, scale = pixels per meter at the opening (z=d).
+    // Opening dimensions are space.w × space.h.
+    // Fit the opening to ~70% of canvas.
+    final scaleX = canvasSize.width * 0.70 / _space.w;
+    final scaleY = canvasSize.height * 0.70 / _space.h;
     return math.min(scaleX, scaleY);
   }
 
@@ -182,7 +170,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         builder: (context, constraints) {
           final w = constraints.maxWidth;
           if (w > 900) {
-            // 태블릿/데스크톱: 넓은 패널
             return Row(
               children: [
                 Expanded(flex: 3, child: _buildCanvas()),
@@ -190,7 +177,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               ],
             );
           } else if (w >= 600) {
-            // 중간: 좁은 패널
             return Row(
               children: [
                 Expanded(flex: 3, child: _buildCanvas()),
@@ -198,7 +184,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               ],
             );
           } else {
-            // 모바일: 전체 캔버스 + 하단 드래그 시트
             return Stack(
               children: [
                 _buildCanvas(),
@@ -229,7 +214,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
         return Stack(
           children: [
-            // 캔버스 + 제스처
             Listener(
               onPointerSignal: _onPointerSignal,
               onPointerDown: _onPointerDown,
@@ -244,55 +228,248 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                   onScaleStart: _onScaleStart,
                   onScaleUpdate: _onScaleUpdate,
                   onScaleEnd: _onScaleEnd,
-                  child: AnimatedBuilder(
-                    animation: _rotationController,
-                    builder: (context, child) {
-                      final t = _rotationController.isAnimating
-                          ? (1.0 -
-                              (2.0 * _rotationController.value - 1.0).abs())
-                          : 0.0;
-                      return Opacity(
-                        opacity: 1.0 - 0.5 * t,
-                        child: Transform.scale(
-                          scale: 1.0 - 0.05 * t,
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: RepaintBoundary(
-                      key: _canvasKey,
-                      child: CustomPaint(
-                        painter: IsometricPainter(
-                          space: _space,
-                          boxes: _boxes,
-                          selectedBoxId: _selectedBoxId,
-                          collidingBoxIds: _collidingIds,
-                          scale: effectiveScale,
-                          panOffset: _panOffset,
-                          direction: _cameraDir,
-                          draggingBoxId:
-                              _isDragging ? _selectedBoxId : null,
-                          zoomLevel: _zoomLevel,
-                        ),
-                        size: Size.infinite,
+                  child: RepaintBoundary(
+                    key: _canvasKey,
+                    child: CustomPaint(
+                      painter: IsometricPainter(
+                        space: _space,
+                        boxes: _boxes,
+                        selectedBoxId: _selectedBoxId,
+                        collidingBoxIds: _collidingIds,
+                        scale: effectiveScale,
+                        panOffset: _panOffset,
+                        cameraYaw: _cameraYaw,
+                        draggingBoxId: _isDragging ? _selectedBoxId : null,
+                        zoomLevel: _zoomLevel,
+                        highlightLoadOrder: _stepViewActive ? _stepViewCurrentStep : null,
                       ),
+                      size: Size.infinite,
                     ),
                   ),
                 ),
               ),
             ),
-            // 회전 컨트롤 오버레이
-            Positioned(
-              bottom: 16,
-              left: 16,
-              child: _buildRotationControls(),
-            ),
-            // 온보딩 오버레이
+            // Utilization progress bar (top)
+            if (_boxes.isNotEmpty)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: _buildUtilizationBar(),
+              ),
+            // Utilization info overlay (top-right)
+            if (_boxes.isNotEmpty)
+              Positioned(
+                top: 12,
+                right: 12,
+                child: _buildUtilizationOverlay(),
+              ),
+            // Step view controls
+            if (_stepViewActive)
+              Positioned(
+                bottom: 16,
+                left: 0,
+                right: 0,
+                child: _buildStepViewControls(),
+              ),
+            // Onboarding
             if (_showOnboarding && _boxes.isEmpty)
               _buildOnboardingOverlay(canvasSize),
           ],
         );
       },
+    );
+  }
+
+  // ──── 적재율 계산 ────
+
+  double _totalTrunkVolume() {
+    final lhVol = _space.leftWheelhouse.w * _space.leftWheelhouse.d * _space.leftWheelhouse.h;
+    final rhVol = _space.rightWheelhouse.w * _space.rightWheelhouse.d * _space.rightWheelhouse.h;
+    return _space.w * _space.d * _space.h - lhVol - rhVol;
+  }
+
+  double _usedVolume() {
+    return _boxes.fold<double>(0.0, (sum, b) => sum + b.w * b.d * b.h);
+  }
+
+  double _utilizationPercent() {
+    final total = _totalTrunkVolume();
+    if (total <= 0) return 0;
+    return (_usedVolume() / total * 100).clamp(0, 999);
+  }
+
+  Color _utilizationColor(double pct) {
+    if (pct < 70) return const Color(0xFF4CAF50);
+    if (pct < 90) return const Color(0xFFFFC107);
+    return const Color(0xFFFF5252);
+  }
+
+  Widget _buildUtilizationBar() {
+    final pct = _utilizationPercent();
+    final color = _utilizationColor(pct);
+    return SizedBox(
+      height: 3,
+      child: LinearProgressIndicator(
+        value: (pct / 100).clamp(0.0, 1.0),
+        backgroundColor: const Color(0x33FFFFFF),
+        valueColor: AlwaysStoppedAnimation<Color>(color),
+        minHeight: 3,
+      ),
+    );
+  }
+
+  Widget _buildUtilizationOverlay() {
+    final pct = _utilizationPercent();
+    final color = _utilizationColor(pct);
+    final totalLiters = (_totalTrunkVolume() * 1000).round();
+    final usedLiters = (_usedVolume() * 1000).round();
+    final remainingLiters = (totalLiters - usedLiters).clamp(0, 999999);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xCC1C1C1C),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '적재율 ',
+                style: TextStyle(color: Colors.grey[400], fontSize: 12),
+              ),
+              Text(
+                '${pct.toStringAsFixed(1)}%',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '총 짐: ${_boxes.length}개',
+            style: TextStyle(color: Colors.grey[400], fontSize: 11),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '남은 공간: ~${remainingLiters}L',
+            style: TextStyle(color: Colors.grey[400], fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ──── Step View Controls ────
+
+  int get _maxLoadOrder {
+    int max = 0;
+    for (final b in _boxes) {
+      if (b.loadOrder != null && b.loadOrder! > max) max = b.loadOrder!;
+    }
+    return max;
+  }
+
+  void _enterStepView() {
+    if (_maxLoadOrder < 1) return;
+    setState(() {
+      _stepViewActive = true;
+      _stepViewCurrentStep = 1;
+    });
+  }
+
+  void _exitStepView() {
+    setState(() {
+      _stepViewActive = false;
+    });
+  }
+
+  Widget _buildStepViewControls() {
+    final maxStep = _maxLoadOrder;
+    final currentBox = _boxes.where((b) => b.loadOrder == _stepViewCurrentStep).firstOrNull;
+    final boxName = currentBox != null
+        ? (currentBox.label.isNotEmpty ? currentBox.label : currentBox.id)
+        : '';
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xEE1C1C1C),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Close button
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white70, size: 20),
+              tooltip: '스텝뷰 닫기',
+              onPressed: _exitStepView,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            ),
+            const SizedBox(width: 8),
+            // Previous
+            IconButton(
+              icon: const Icon(Icons.chevron_left, color: Colors.white, size: 28),
+              onPressed: _stepViewCurrentStep > 1
+                  ? () => setState(() => _stepViewCurrentStep--)
+                  : null,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
+            const SizedBox(width: 8),
+            // Step info
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'STEP $_stepViewCurrentStep / $maxStep',
+                  style: const TextStyle(
+                    color: Color(0xFF00E676),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                if (boxName.isNotEmpty)
+                  Text(
+                    boxName,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+            const SizedBox(width: 8),
+            // Next
+            IconButton(
+              icon: const Icon(Icons.chevron_right, color: Colors.white, size: 28),
+              onPressed: _stepViewCurrentStep < maxStep
+                  ? () => setState(() => _stepViewCurrentStep++)
+                  : null,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -318,24 +495,15 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.inventory_2_outlined,
-                      color: Color(0xFF4DA3FF), size: 48),
+                  const Icon(Icons.inventory_2_outlined, color: Color(0xFF4DA3FF), size: 48),
                   const SizedBox(height: 16),
                   const Text(
                     '박스를 추가하여\n시뮬레이션을 시작하세요',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 8),
-                  Icon(
-                    isNarrow ? Icons.arrow_downward : Icons.arrow_forward,
-                    color: const Color(0xFF4DA3FF),
-                    size: 28,
-                  ),
+                  Icon(isNarrow ? Icons.arrow_downward : Icons.arrow_forward, color: const Color(0xFF4DA3FF), size: 28),
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -346,11 +514,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('조작법',
-                            style: TextStyle(
-                                color: Color(0xFF4DA3FF),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600)),
+                        const Text('조작법', style: TextStyle(color: Color(0xFF4DA3FF), fontSize: 12, fontWeight: FontWeight.w600)),
                         const SizedBox(height: 8),
                         if (isTouch) ...[
                           _controlRow('드래그', '박스 이동'),
@@ -360,17 +524,14 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                           _controlRow('클릭 + 드래그', '박스 이동'),
                           _controlRow('마우스 휠', '줌 인/아웃'),
                           _controlRow('우클릭 드래그', '패닝'),
-                          _controlRow('Q / E', '카메라 회전'),
+                          _controlRow('R', '박스 회전'),
                           _controlRow('?', '단축키 도움말'),
                         ],
                       ],
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Text(
-                    '아무 곳이나 탭하여 닫기',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 11),
-                  ),
+                  Text('아무 곳이나 탭하여 닫기', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                 ],
               ),
             ),
@@ -385,75 +546,13 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       padding: const EdgeInsets.only(bottom: 4),
       child: Row(
         children: [
-          SizedBox(
-            width: 120,
-            child: Text(key,
-                style: const TextStyle(color: Colors.white70, fontSize: 11)),
-          ),
-          Expanded(
-            child: Text(desc,
-                style: const TextStyle(color: Colors.grey, fontSize: 11)),
-          ),
+          SizedBox(width: 120, child: Text(key, style: const TextStyle(color: Colors.white70, fontSize: 11))),
+          Expanded(child: Text(desc, style: const TextStyle(color: Colors.grey, fontSize: 11))),
         ],
       ),
     );
   }
 
-  Widget _buildRotationControls() {
-    const dirLabels = ['0°', '90°', '180°', '270°'];
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xCC1A1A1A),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.rotate_left, size: 18),
-            color: Colors.white70,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            padding: EdgeInsets.zero,
-            splashRadius: 18,
-            tooltip: '좌회전 (Q)',
-            onPressed: () => _rotateCamera(-1),
-          ),
-          Container(
-            width: 32,
-            alignment: Alignment.center,
-            child: Transform.rotate(
-              angle: _cameraDir.index * math.pi / 2,
-              child: const Icon(
-                Icons.navigation,
-                color: Colors.white54,
-                size: 16,
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Text(
-              dirLabels[_cameraDir.index],
-              style: const TextStyle(
-                color: Colors.white38,
-                fontSize: 10,
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.rotate_right, size: 18),
-            color: Colors.white70,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            padding: EdgeInsets.zero,
-            splashRadius: 18,
-            tooltip: '우회전 (E)',
-            onPressed: () => _rotateCamera(1),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildPanel() {
     return BoxListPanel(
@@ -468,6 +567,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       onSave: _saveScene,
       onLoad: _loadScene,
       onScreenshot: _takeScreenshot,
+      onAutoLayout: _boxes.isNotEmpty ? _showAutoLayoutDialog : null,
+      onQuickCheck: _boxes.isNotEmpty ? _showQuickFitCheck : null,
+      onStepView: _boxes.isNotEmpty ? _enterStepView : null,
+      onShareCard: _boxes.isNotEmpty ? _generateShareCard : null,
     );
   }
 
@@ -484,25 +587,17 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       onSave: _saveScene,
       onLoad: _loadScene,
       onScreenshot: _takeScreenshot,
+      onAutoLayout: _boxes.isNotEmpty ? _showAutoLayoutDialog : null,
+      onQuickCheck: _boxes.isNotEmpty ? _showQuickFitCheck : null,
+      onStepView: _boxes.isNotEmpty ? _enterStepView : null,
+      onShareCard: _boxes.isNotEmpty ? _generateShareCard : null,
       scrollController: scrollCtrl,
       showDragHandle: true,
     );
   }
 
   void _showKeyboardShortcuts() {
-    showDialog(
-      context: context,
-      builder: (_) => const KeyboardShortcutsDialog(),
-    );
-  }
-
-  // ──── 카메라 회전 (애니메이션) ────
-
-  void _rotateCamera(int delta) {
-    if (_rotationController.isAnimating) return;
-    _pendingDir = CameraDirection.values[(_cameraDir.index + delta + 4) % 4];
-    _hasSwitchedDir = false;
-    _rotationController.forward(from: 0);
+    showDialog(context: context, builder: (_) => const KeyboardShortcutsDialog());
   }
 
   // ──── 이벤트 핸들러 ────
@@ -523,7 +618,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       final newZoom = (oldZoom * factor).clamp(_minZoom, _maxZoom);
       if (newZoom == oldZoom) return;
 
-      // 커서 중심 줌: 커서 아래 월드 포인트가 줌 후에도 동일 위치에 유지
       final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
       final r = newZoom / oldZoom;
       setState(() {
@@ -533,7 +627,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     }
   }
 
-  // ──── 패닝: 우클릭/미들클릭 드래그 ────
+  // ──── 우클릭/미들클릭 = pan ────
 
   void _onPointerDown(PointerDownEvent event) {
     if (event.buttons == kSecondaryMouseButton ||
@@ -547,16 +641,14 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   void _onPointerMove(PointerMoveEvent event) {
     if (_isPanning) {
       setState(() {
-        _panOffset =
-            _panStartPanOffset + (event.localPosition - _panStartScreenPos);
+        _panOffset = _panStartPanOffset +
+            (event.localPosition - _panStartScreenPos);
       });
     }
   }
 
   void _onPointerUp(PointerUpEvent event) {
-    if (_isPanning) {
-      _isPanning = false;
-    }
+    _isPanning = false;
   }
 
   // ──── 제스처: 박스 드래그 + 핀치 줌 ────
@@ -566,12 +658,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     _gestureStartPanOffset = _panOffset;
     _gestureStartFocalPoint = details.localFocalPoint;
 
-    // 포인터 종류 기록 (터치 오프셋용)
     if (details.pointerCount == 1) {
       _lastPointerIsTouch = details.kind == PointerDeviceKind.touch;
     }
 
-    // 싱글 터치: 박스 드래그 시작 시도
     if (details.pointerCount == 1) {
       final hit = _hitTest(details.localFocalPoint);
       if (hit != null) {
@@ -581,24 +671,26 @@ class _SimulatorScreenState extends State<SimulatorScreen>
           _dragStartScreen = details.localFocalPoint;
           _dragStartX = hit.x;
           _dragStartZ = hit.z;
+          _dragStartY = hit.y;
+          // Clear all loadOrder values — manual drag invalidates auto-layout
+          for (final b in _boxes) {
+            b.loadOrder = null;
+          }
         });
       }
     }
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
-    // 멀티 터치: 핀치 줌 + 패닝
     if (details.pointerCount >= 2) {
       if (_isDragging) {
         _isDragging = false;
         _dragStartScreen = null;
       }
-      final newZoom =
-          (_gestureStartZoom * details.scale).clamp(_minZoom, _maxZoom);
+      final newZoom = (_gestureStartZoom * details.scale).clamp(_minZoom, _maxZoom);
       final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
       final r = newZoom / _gestureStartZoom;
-      final zoomPan = (_gestureStartFocalPoint - sc) * (1 - r) +
-          _gestureStartPanOffset * r;
+      final zoomPan = (_gestureStartFocalPoint - sc) * (1 - r) + _gestureStartPanOffset * r;
       final focalDelta = details.localFocalPoint - _gestureStartFocalPoint;
 
       setState(() {
@@ -608,23 +700,21 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       return;
     }
 
-    // 싱글 터치: 박스 드래그
-    if (!_isDragging || _selectedBoxId == null || _dragStartScreen == null) {
-      return;
-    }
-    final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
-    // 터치 시 손가락 아래가 보이도록 Y 오프셋 보정
+    if (!_isDragging || _selectedBoxId == null || _dragStartScreen == null) return;
+    final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
+    if (boxIndex == -1) return;
+    final box = _boxes[boxIndex];
     final focalPoint = _lastPointerIsTouch
         ? details.localFocalPoint - const Offset(0, 40)
         : details.localFocalPoint;
-    final delta = focalPoint - _dragStartScreen!;
-
-    final dx3d = _screenToWorldDX(delta.dx, delta.dy);
-    final dz3d = _screenToWorldDZ(delta.dx, delta.dy);
+    final startWorld = _screenToPlane(_dragStartScreen!, _dragStartY);
+    final curWorld = _screenToPlane(focalPoint, _dragStartY);
 
     setState(() {
-      box.x = _dragStartX + dx3d;
-      box.z = _dragStartZ + dz3d;
+      if (startWorld != null && curWorld != null) {
+        box.x = _dragStartX + (curWorld.dx - startWorld.dx);
+        box.z = _dragStartZ + (curWorld.dy - startWorld.dy);
+      }
       box.clampTo(_space.w, _space.d);
       _resolveStackingY(box);
       _updateCollisions();
@@ -633,7 +723,13 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
   void _onScaleEnd(ScaleEndDetails details) {
     if (_isDragging && _selectedBoxId != null) {
-      final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
+      final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
+      if (boxIndex == -1) {
+        _isDragging = false;
+        _dragStartScreen = null;
+        return;
+      }
+      final box = _boxes[boxIndex];
       _pushUndo();
       setState(() {
         box.snapToGrid(_space.gridUnit);
@@ -652,13 +748,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     final isCtrl = HardwareKeyboard.instance.isControlPressed;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
 
-    // Ctrl+Z = Undo, Ctrl+Shift+Z / Ctrl+Y = Redo
     if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
-      if (isShift) {
-        _redo();
-      } else {
-        _undo();
-      }
+      if (isShift) { _redo(); } else { _undo(); }
       return;
     }
     if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyY) {
@@ -666,23 +757,11 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       return;
     }
 
-    // Q: 좌회전 (CCW), E: 우회전 (CW)
-    if (event.logicalKey == LogicalKeyboardKey.keyQ) {
-      _rotateCamera(-1);
-      return;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.keyE) {
-      _rotateCamera(1);
-      return;
-    }
-
-    // ?: 키보드 단축키 도움말
     if (event.character == '?') {
       _showKeyboardShortcuts();
       return;
     }
 
-    // 숫자 0: 줌/패닝 리셋
     if (event.logicalKey == LogicalKeyboardKey.digit0 ||
         event.logicalKey == LogicalKeyboardKey.numpad0) {
       setState(() {
@@ -693,7 +772,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     }
 
     if (_selectedBoxId == null) return;
-    final box = _boxes.firstWhere((b) => b.id == _selectedBoxId);
+    final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
+    if (boxIndex == -1) return;
+    final box = _boxes[boxIndex];
     final unit = _space.gridUnit;
 
     _pushUndo();
@@ -722,7 +803,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
           _updateCollisions();
           return;
         default:
-          // 알 수 없는 키 → undo 스택에서 불필요한 스냅샷 제거
           if (_undoStack.isNotEmpty) _undoStack.removeLast();
           return;
       }
@@ -733,79 +813,68 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     });
   }
 
-  // ──── 역 아이소메트릭 변환 (direction-aware) ────
+  // ──── 역 투시 변환 (perspective inverse) ────
 
-  /// Screen delta → view-space delta (X axis)
-  double _screenToViewDX(double sx, double sy) {
-    return (sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
+  /// Project screen position to the y=planeY horizontal plane
+  Offset? _screenToPlane(Offset screenPos, double planeY) {
+    final cx = _lastCanvasSize.width / 2 + _panOffset.dx;
+    final cy = _lastCanvasSize.height / 2 + _panOffset.dy;
+    final sx = screenPos.dx - cx;
+    final sy = screenPos.dy - cy;
+
+    final camY = _space.h * 1.05;
+    final focalLen = _space.d * 1.0;
+    final camZ = _space.d + focalLen;
+    final camX = _space.w / 2;
+
+    // sy = -(planeY - camY) * focalLen / (camZ - z) * scale
+    // => (camZ - z) = -(planeY - camY) * focalLen * scale / sy
+    //              = (camY - planeY) * focalLen * scale / sy
+    final effectiveCamY = camY - planeY;
+    if (sy.abs() < 0.001) return null; // at horizon
+    final dz = effectiveCamY * focalLen * _lastScale / sy;
+    if (dz <= 0) return null; // behind camera
+    final worldZ = camZ - dz;
+
+    // sx = (x - camX) * focalLen / dz * scale
+    final worldX = sx * dz / (focalLen * _lastScale) + camX;
+
+    return Offset(worldX, worldZ);
   }
 
-  /// Screen delta → view-space delta (Z axis)
-  double _screenToViewDZ(double sx, double sy) {
-    return (-sx / (_cosA * _lastScale) + sy / (_sinA * _lastScale)) / 2;
-  }
-
-  /// Screen delta → world-space delta X
-  double _screenToWorldDX(double sx, double sy) {
-    final dvx = _screenToViewDX(sx, sy);
-    final dvz = _screenToViewDZ(sx, sy);
-    switch (_cameraDir) {
-      case CameraDirection.dir0: return dvx;
-      case CameraDirection.dir1: return -dvz;
-      case CameraDirection.dir2: return -dvx;
-      case CameraDirection.dir3: return dvz;
-    }
-  }
-
-  /// Screen delta → world-space delta Z
-  double _screenToWorldDZ(double sx, double sy) {
-    final dvx = _screenToViewDX(sx, sy);
-    final dvz = _screenToViewDZ(sx, sy);
-    switch (_cameraDir) {
-      case CameraDirection.dir0: return dvz;
-      case CameraDirection.dir1: return dvx;
-      case CameraDirection.dir2: return -dvz;
-      case CameraDirection.dir3: return -dvx;
-    }
-  }
-
-  // ──── 히트 테스트: 탭 위치에서 박스 찾기 ────
+  // ──── 히트 테스트 ────
 
   TrimBox? _hitTest(Offset localPos) {
     if (_lastCanvasSize == Size.zero) return null;
 
-    // painter와 동일한 중심점 계산 (panOffset 포함)
     final center = IsometricPainter.computeCenter(
-        _lastCanvasSize, _space, _lastScale, _cameraDir);
+        _lastCanvasSize, _space, _lastScale, _cameraYaw);
     final adjusted = Offset(
       localPos.dx - center.dx - _panOffset.dx,
       localPos.dy - center.dy - _panOffset.dy,
     );
 
-    // 앞에 그려진 것부터 (뒤에서부터) 검사
     for (final box in _boxes.reversed) {
       if (_isPointInBox(adjusted, box)) return box;
     }
     return null;
   }
 
-  /// 박스의 보이는 헥사곤(6각형) 외곽선 안에 포인트가 있는지 판정
   bool _isPointInBox(Offset pt, TrimBox box) {
     final w = box.effectiveW;
     final d = box.effectiveD;
-    // 헥사곤 꼭짓점: p4→p5→p1→p2→p3→p7 (시계 방향, p2가 정면 아래)
+    // Visible polygon: front face + top face outline
     final polygon = [
-      _toIso(box.x, box.y + box.h, box.z),             // p4 윗면-뒤
-      _toIso(box.x + w, box.y + box.h, box.z),         // p5 윗면-오른
-      _toIso(box.x + w, box.y, box.z),                  // p1 바닥-오른
-      _toIso(box.x + w, box.y, box.z + d),              // p2 바닥-앞 (정면)
-      _toIso(box.x, box.y, box.z + d),                  // p3 바닥-왼
-      _toIso(box.x, box.y + box.h, box.z + d),          // p7 윗면-왼
+      _toScreen(box.x, box.y, box.z + d),       // front-bottom-left
+      _toScreen(box.x + w, box.y, box.z + d),   // front-bottom-right
+      _toScreen(box.x + w, box.y + box.h, box.z + d), // front-top-right
+      _toScreen(box.x + w, box.y + box.h, box.z),     // back-top-right
+      _toScreen(box.x, box.y + box.h, box.z),         // back-top-left
+      _toScreen(box.x, box.y + box.h, box.z + d),     // front-top-left
     ];
     return _pointInPolygon(pt, polygon);
   }
 
-  /// Ray-casting 알고리즘으로 폴리곤 내부 판정
   static bool _pointInPolygon(Offset pt, List<Offset> polygon) {
     bool inside = false;
     for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -819,30 +888,22 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     return inside;
   }
 
-  Offset _toIso(double x, double y, double z) {
-    // World → view-space transform
-    double vx, vz;
-    switch (_cameraDir) {
-      case CameraDirection.dir0:
-        vx = x; vz = z;
-      case CameraDirection.dir1:
-        vx = z; vz = _space.w - x;
-      case CameraDirection.dir2:
-        vx = _space.w - x; vz = _space.d - z;
-      case CameraDirection.dir3:
-        vx = _space.d - z; vz = x;
-    }
-    final sx = (vx - vz) * _cosA * _lastScale;
-    final sy = (vx + vz) * _sinA * _lastScale - y * _lastScale;
-    return Offset(sx, sy);
+  /// World → screen (1-point perspective, same formula as painter's toScreen)
+  Offset _toScreen(double x, double y, double z) {
+    final camX = _space.w / 2;
+    final camY = _space.h * 1.05;
+    final focalLen = _space.d * 1.0;
+    final camZ = _space.d + focalLen;
+    final dz = camZ - z;
+    if (dz < 0.001) return Offset.zero;
+    final f = focalLen / dz * _lastScale;
+    return Offset((x - camX) * f, -(y - camY) * f);
   }
 
   // ──── 박스 CRUD ────
 
   void _selectBox(String id) {
-    setState(() {
-      _selectedBoxId = _selectedBoxId == id ? null : id;
-    });
+    setState(() { _selectedBoxId = _selectedBoxId == id ? null : id; });
   }
 
   void _rotateBox(String id) {
@@ -868,37 +929,53 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   }
 
   Future<void> _showAddDialog() async {
-    final result = await showDialog<Map<String, dynamic>>(
+    final result = await showDialog<List<Map<String, dynamic>>>(
       context: context,
       builder: (_) => const AddBoxDialog(),
     );
-    if (result == null) return;
-
-    _boxCounter++;
-    final colorIndex = (_boxCounter - 1) % _boxColors.length;
-    final selectedColor = result['color'] != null
-        ? Color(result['color'] as int)
-        : _boxColors[colorIndex];
-    final catIndex = result['category'] as int?;
-    final boxCategory = catIndex != null
-        ? BoxCategory.values[catIndex.clamp(0, BoxCategory.values.length - 1)]
-        : BoxCategory.custom;
-    final newBox = TrimBox(
-      id: 'box-${_boxCounter.toString().padLeft(3, '0')}',
-      label: result['label'] as String? ?? 'Box $_boxCounter',
-      w: result['w'] as double,
-      d: result['d'] as double,
-      h: result['h'] as double,
-      color: selectedColor,
-      category: boxCategory,
-    );
-    newBox.snapToGrid(_space.gridUnit);
+    if (result == null || result.isEmpty) return;
 
     _pushUndo();
     setState(() {
-      _boxes.add(newBox);
-      _resolveStackingY(newBox);
-      _selectedBoxId = newBox.id;
+      String? lastBoxId;
+      for (int i = 0; i < result.length; i++) {
+        final item = result[i];
+        _boxCounter++;
+        final colorIndex = (_boxCounter - 1) % _boxColors.length;
+        final selectedColor = item['color'] != null
+            ? Color(item['color'] as int)
+            : _boxColors[colorIndex];
+        final catIndex = item['category'] as int?;
+        final boxCategory = catIndex != null
+            ? BoxCategory.values[
+                catIndex.clamp(0, BoxCategory.values.length - 1)]
+            : BoxCategory.custom;
+
+        final newBox = TrimBox(
+          id: 'box-${_boxCounter.toString().padLeft(3, '0')}',
+          label: item['label'] as String? ?? 'Box $_boxCounter',
+          w: item['w'] as double,
+          d: item['d'] as double,
+          h: item['h'] as double,
+          color: selectedColor,
+          category: boxCategory,
+        );
+
+        // 여러 개 추가 시 위치를 약간씩 오프셋
+        if (result.length > 1) {
+          final gridUnit = _space.gridUnit;
+          newBox.x = (i % 3) * gridUnit * 2;
+          newBox.z = (i ~/ 3) * gridUnit * 2;
+        }
+
+        newBox.snapToGrid(_space.gridUnit);
+        newBox.clampTo(_space.w, _space.d);
+        _boxes.add(newBox);
+        _resolveStackingY(newBox);
+        lastBoxId = newBox.id;
+      }
+
+      _selectedBoxId = lastBoxId;
       _updateCollisions();
       if (!_hasEverAddedBox) {
         _hasEverAddedBox = true;
@@ -909,7 +986,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
   // ──── 트렁크 프리셋 변경 ────
 
-  /// 카테고리별 그룹 구분이 포함된 차종 메뉴 항목
   List<PopupMenuEntry<TrunkPreset>> _buildVehicleMenuItems() {
     final items = <PopupMenuEntry<TrunkPreset>>[];
     VehicleCategory? lastCat;
@@ -917,7 +993,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     for (final p in TrunkPreset.values) {
       final cat = p.category;
 
-      // 카테고리 변경 시 구분 헤더
       if (cat != null && cat != lastCat) {
         if (items.isNotEmpty) {
           items.add(const PopupMenuDivider(height: 1));
@@ -925,14 +1000,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         items.add(PopupMenuItem<TrunkPreset>(
           enabled: false,
           height: 28,
-          child: Text(
-            cat.label,
-            style: const TextStyle(
-              color: Color(0xFF999999),
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          child: Text(cat.label, style: const TextStyle(color: Color(0xFF999999), fontSize: 11, fontWeight: FontWeight.bold)),
         ));
       }
       lastCat = cat;
@@ -942,17 +1010,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         value: p,
         child: Row(
           children: [
-            Expanded(
-              child: Text(
-                p.label,
-                style: const TextStyle(color: Colors.white, fontSize: 13),
-              ),
-            ),
-            if (vol != null)
-              Text(
-                '${vol}L',
-                style: const TextStyle(color: Color(0xFF888888), fontSize: 11),
-              ),
+            Expanded(child: Text(p.label, style: const TextStyle(color: Colors.white, fontSize: 13))),
+            if (vol != null) Text('${vol}L', style: const TextStyle(color: Color(0xFF888888), fontSize: 11)),
           ],
         ),
       ));
@@ -964,10 +1023,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     TrunkSpace? newSpace;
 
     if (preset == TrunkPreset.custom) {
-      newSpace = await showDialog<TrunkSpace>(
-        context: context,
-        builder: (_) => const TrunkSizeDialog(),
-      );
+      newSpace = await showDialog<TrunkSpace>(context: context, builder: (_) => const TrunkSizeDialog());
       if (newSpace == null) return;
     } else {
       newSpace = preset.toTrunkSpace();
@@ -987,9 +1043,128 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     });
   }
 
-  // ──── 저장/불러오기 (파일 기반) ────
+  // ──── 저장/불러오기 ────
+
+  String get _currentVehicleName {
+    if (_selectedPreset == TrunkPreset.custom) return '커스텀';
+    return _selectedPreset.label.split(' (').first;
+  }
 
   Future<void> _saveScene() async {
+    final defaultName = '$_currentVehicleName - ${_boxes.length}개 적재';
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        final controller = TextEditingController(text: defaultName);
+        return AlertDialog(
+          backgroundColor: const Color(0xFF333333),
+          title: const Text('배치 저장', style: TextStyle(color: Colors.white)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              labelText: '배치 이름',
+              labelStyle: TextStyle(color: Colors.grey),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF555555)),
+              ),
+              focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF4DA3FF)),
+              ),
+            ),
+            onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('취소', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _saveSceneToFile();
+              },
+              child: const Text('파일로 내보내기',
+                  style: TextStyle(color: Colors.white70)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4DA3FF),
+              ),
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('저장'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (name == null || name.isEmpty) return;
+
+    try {
+      // Check for duplicate name and confirm overwrite
+      final existingScenes = storage.listSavedScenes();
+      final hasDuplicate = existingScenes.any((s) => s.name == name);
+      if (hasDuplicate && mounted) {
+        final overwrite = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF333333),
+            title: const Text('배치 덮어쓰기', style: TextStyle(color: Colors.white)),
+            content: Text(
+              "'$name' 배치가 이미 존재합니다. 덮어쓰시겠습니까?",
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('취소', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFFAA33),
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('덮어쓰기'),
+              ),
+            ],
+          ),
+        );
+        if (overwrite != true) return;
+      }
+
+      final scene = Scene(space: _space, boxes: _boxes);
+      final jsonStr = JsonIO.exportScene(scene);
+      storage.saveSceneToStorage(
+          name, jsonStr, _currentVehicleName, _boxes.length);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('"$name" 저장 완료'),
+              backgroundColor: const Color(0xFF6BD06B)),
+        );
+      }
+    } on UnsupportedError {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('이 플랫폼에서는 저장 기능을 지원하지 않습니다'),
+              backgroundColor: Color(0xFFFF4D4D)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('저장 실패: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
+        );
+      }
+    }
+  }
+
+  void _saveSceneToFile() {
     final scene = Scene(space: _space, boxes: _boxes);
     final jsonStr = JsonIO.exportScene(scene);
     final timestamp = DateTime.now()
@@ -1004,36 +1179,66 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('$filename 저장 완료'),
-            backgroundColor: const Color(0xFF6BD06B),
-          ),
+              content: Text('$filename 저장 완료'),
+              backgroundColor: const Color(0xFF6BD06B)),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('저장 실패: $e'),
-            backgroundColor: const Color(0xFFFF4D4D),
-          ),
+              content: Text('파일 저장 실패: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
         );
       }
     }
   }
 
   Future<void> _loadScene() async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) =>
+          _SavedScenesDialog(onLoadFile: () => _loadSceneFromFile(ctx)),
+    );
+
+    if (result == null || result.isEmpty) return;
+    _applySceneJson(result);
+  }
+
+  Future<void> _loadSceneFromFile(BuildContext dialogContext) async {
+    if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+
     try {
       final jsonStr = await file_io.pickJsonFile();
       if (jsonStr == null || jsonStr.isEmpty) return;
+      _applySceneJson(jsonStr);
+    } on FormatException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('잘못된 파일 형식: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('불러오기 실패: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
+        );
+      }
+    }
+  }
 
+  void _applySceneJson(String jsonStr) {
+    try {
       final scene = JsonIO.importScene(jsonStr);
       setState(() {
         _space = scene.space;
         _detector = CollisionDetector(_space);
         _selectedPreset = TrunkPreset.custom;
-        _boxes
-          ..clear()
-          ..addAll(scene.boxes);
+        _boxes..clear()..addAll(scene.boxes);
         int maxId = 0;
         for (final b in _boxes) {
           final match = RegExp(r'box-(\d+)').firstMatch(b.id);
@@ -1053,27 +1258,24 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${scene.boxes.length}개 박스를 불러왔습니다'),
-            backgroundColor: const Color(0xFF6BD06B),
-          ),
+              content: Text('${scene.boxes.length}개 박스를 불러왔습니다'),
+              backgroundColor: const Color(0xFF6BD06B)),
         );
       }
     } on FormatException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('잘못된 파일 형식: $e'),
-            backgroundColor: const Color(0xFFFF4D4D),
-          ),
+              content: Text('잘못된 파일 형식: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('불러오기 실패: $e'),
-            backgroundColor: const Color(0xFFFF4D4D),
-          ),
+              content: Text('불러오기 실패: $e'),
+              backgroundColor: const Color(0xFFFF4D4D)),
         );
       }
     }
@@ -1082,122 +1284,204 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   // ──── 스크린샷 ────
 
   Future<void> _takeScreenshot() async {
-    // 해상도 선택 다이얼로그
     final pixelRatio = await showDialog<double>(
       context: context,
       builder: (ctx) => SimpleDialog(
-        title: const Text('스크린샷 해상도',
-            style: TextStyle(color: Colors.white)),
+        title: const Text('스크린샷 해상도', style: TextStyle(color: Colors.white)),
         backgroundColor: const Color(0xFF333333),
         children: [
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 1.0),
-            child: const Text('1x (표준)', style: TextStyle(color: Colors.white70)),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 2.0),
-            child: const Text('2x (고해상도)', style: TextStyle(color: Colors.white)),
-          ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, 3.0),
-            child: const Text('3x (최고해상도)', style: TextStyle(color: Colors.white70)),
-          ),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 1.0), child: const Text('1x (표준)', style: TextStyle(color: Colors.white70))),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 2.0), child: const Text('2x (고해상도)', style: TextStyle(color: Colors.white))),
+          SimpleDialogOption(onPressed: () => Navigator.pop(ctx, 3.0), child: const Text('3x (최고해상도)', style: TextStyle(color: Colors.white70))),
         ],
       ),
     );
     if (pixelRatio == null) return;
 
     try {
-      final boundary = _canvasKey.currentContext?.findRenderObject()
-          as RenderRepaintBoundary?;
+      final boundary = _canvasKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
 
       final rawImage = await boundary.toImage(pixelRatio: pixelRatio);
 
-      // 워터마크 합성
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       final imgW = rawImage.width.toDouble();
       final imgH = rawImage.height.toDouble();
 
-      // 원본 이미지 그리기
       canvas.drawImage(rawImage, Offset.zero, Paint());
 
-      // 하단 반투명 바
       const barHeight = 32.0;
-      canvas.drawRect(
-        Rect.fromLTWH(0, imgH - barHeight, imgW, barHeight),
-        Paint()..color = const Color(0x66000000),
-      );
+      canvas.drawRect(Rect.fromLTWH(0, imgH - barHeight, imgW, barHeight), Paint()..color = const Color(0x66000000));
 
-      // 워터마크 텍스트
-      final presetName = _selectedPreset == TrunkPreset.custom
-          ? '커스텀'
-          : _selectedPreset.label.split(' (').first;
-      final totalBoxVol = _boxes.fold<double>(
-          0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
-      final lhVol = _space.leftWheelhouse.w *
-          _space.leftWheelhouse.d *
-          _space.leftWheelhouse.h;
-      final rhVol = _space.rightWheelhouse.w *
-          _space.rightWheelhouse.d *
-          _space.rightWheelhouse.h;
+      final presetName = _selectedPreset == TrunkPreset.custom ? '커스텀' : _selectedPreset.label.split(' (').first;
+      final totalBoxVol = _boxes.fold<double>(0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
+      final lhVol = _space.leftWheelhouse.w * _space.leftWheelhouse.d * _space.leftWheelhouse.h;
+      final rhVol = _space.rightWheelhouse.w * _space.rightWheelhouse.d * _space.rightWheelhouse.h;
       final totalSpaceVol = _space.w * _space.d * _space.h - lhVol - rhVol;
-      final volPct = totalSpaceVol > 0
-          ? ((totalBoxVol / totalSpaceVol) * 100).round()
-          : 0;
+      final volPct = totalSpaceVol > 0 ? ((totalBoxVol / totalSpaceVol) * 100).round() : 0;
 
       final leftText = '$presetName | ${_boxes.length}개 | 점유율 $volPct%';
       const rightText = 'TrimBox';
 
-      final textStyle = ui.TextStyle(
-        color: const Color(0xCCFFFFFF),
-        fontSize: 14 * pixelRatio,
-      );
+      final textStyle = ui.TextStyle(color: const Color(0xCCFFFFFF), fontSize: 14 * pixelRatio);
 
-      final leftParagraph = (ui.ParagraphBuilder(ui.ParagraphStyle())
-            ..pushStyle(textStyle)
-            ..addText(leftText))
-          .build()
+      final leftParagraph = (ui.ParagraphBuilder(ui.ParagraphStyle())..pushStyle(textStyle)..addText(leftText)).build()
         ..layout(ui.ParagraphConstraints(width: imgW - 20));
-      canvas.drawParagraph(
-          leftParagraph,
-          Offset(8 * pixelRatio,
-              imgH - barHeight + (barHeight - leftParagraph.height) / 2));
+      canvas.drawParagraph(leftParagraph, Offset(8 * pixelRatio, imgH - barHeight + (barHeight - leftParagraph.height) / 2));
 
-      final rightParagraph = (ui.ParagraphBuilder(
-              ui.ParagraphStyle(textAlign: TextAlign.right))
-            ..pushStyle(textStyle)
-            ..addText(rightText))
-          .build()
+      final rightParagraph = (ui.ParagraphBuilder(ui.ParagraphStyle(textAlign: TextAlign.right))..pushStyle(textStyle)..addText(rightText)).build()
         ..layout(ui.ParagraphConstraints(width: imgW - 20));
-      canvas.drawParagraph(
-          rightParagraph,
-          Offset(imgW - rightParagraph.maxIntrinsicWidth - 8 * pixelRatio,
-              imgH - barHeight + (barHeight - rightParagraph.height) / 2));
+      canvas.drawParagraph(rightParagraph, Offset(imgW - rightParagraph.maxIntrinsicWidth - 8 * pixelRatio, imgH - barHeight + (barHeight - rightParagraph.height) / 2));
 
       final picture = recorder.endRecording();
-      final finalImage =
-          await picture.toImage(imgW.toInt(), imgH.toInt());
-      final byteData =
-          await finalImage.toByteData(format: ui.ImageByteFormat.png);
+      final finalImage = await picture.toImage(imgW.toInt(), imgH.toInt());
+      final byteData = await finalImage.toByteData(format: ui.ImageByteFormat.png);
       if (byteData == null) return;
 
       final bytes = byteData.buffer.asUint8List();
-      final timestamp = DateTime.now()
-          .toIso8601String()
-          .replaceAll(':', '-')
-          .split('.')
-          .first;
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
       final filename = 'trimbox-$timestamp.png';
 
       await file_io.shareOrDownloadImage(bytes, filename, 'image/png');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$filename 저장 완료'),
-            backgroundColor: const Color(0xFF6BD06B),
+          SnackBar(content: Text('$filename 저장 완료'), backgroundColor: const Color(0xFF6BD06B)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('스크린샷 실패: $e'), backgroundColor: const Color(0xFFFF4D4D)),
+        );
+      }
+    }
+  }
+
+  // ──── 공유 카드 ────
+
+  Future<void> _generateShareCard() async {
+    try {
+      final boundary = _canvasKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      const pixelRatio = 2.0;
+      final rawImage = await boundary.toImage(pixelRatio: pixelRatio);
+      final imgW = rawImage.width.toDouble();
+      final imgH = rawImage.height.toDouble();
+
+      // Share card layout: rendering on top, info panel at bottom
+      const panelH = 180.0 * pixelRatio;
+      final cardW = imgW;
+      final cardH = imgH + panelH;
+
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+
+      // Draw trunk rendering
+      canvas.drawImage(rawImage, Offset.zero, Paint());
+
+      // Info panel background
+      final panelRect = Rect.fromLTWH(0, imgH, cardW, panelH);
+      canvas.drawRect(panelRect, Paint()..color = const Color(0xFF1C1C1C));
+
+      // Divider line
+      canvas.drawLine(
+        Offset(0, imgH),
+        Offset(cardW, imgH),
+        Paint()..color = const Color(0xFF4DA3FF)..strokeWidth = 3 * pixelRatio,
+      );
+
+      // Calculate stats
+      final presetName = _selectedPreset == TrunkPreset.custom
+          ? '커스텀'
+          : _selectedPreset.label.split(' (').first;
+      final volPct = _utilizationPercent().round();
+      final totalLiters = (_totalTrunkVolume() * 1000).round();
+      final usedLiters = (_usedVolume() * 1000).round();
+      final remainLiters = totalLiters - usedLiters;
+
+      final r = pixelRatio;
+
+      // Vehicle name + box count (title row)
+      _drawShareText(canvas, '$presetName 트렁크', Offset(20 * r, imgH + 16 * r),
+          fontSize: 22 * r, color: Colors.white, bold: true);
+      _drawShareText(canvas, '${_boxes.length}개 장비 적재', Offset(20 * r, imgH + 48 * r),
+          fontSize: 14 * r, color: Colors.white70);
+
+      // Utilization bar
+      final barX = 20 * r;
+      final barY = imgH + 78 * r;
+      final barW = cardW - 40 * r;
+      const barH = 12.0;
+      final barHScaled = barH * r;
+
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(barX, barY, barW, barHScaled), Radius.circular(barHScaled / 2)),
+        Paint()..color = const Color(0xFF444444),
+      );
+      final filledW = barW * (volPct / 100).clamp(0.0, 1.0);
+      final barColor = volPct < 70
+          ? const Color(0xFF4CAF50)
+          : volPct < 90
+              ? const Color(0xFFFFC107)
+              : const Color(0xFFFF5252);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTWH(barX, barY, filledW, barHScaled), Radius.circular(barHScaled / 2)),
+        Paint()..color = barColor,
+      );
+
+      // Stats row
+      _drawShareText(canvas, '적재율 $volPct%',
+          Offset(20 * r, barY + barHScaled + 10 * r),
+          fontSize: 16 * r, color: barColor, bold: true);
+      _drawShareText(canvas, '사용 ${usedLiters}L / 총 ${totalLiters}L | 남은 공간 ${remainLiters}L',
+          Offset(20 * r, barY + barHScaled + 34 * r),
+          fontSize: 12 * r, color: Colors.grey);
+
+      // Box list (compact, max 6)
+      final boxLines = <String>[];
+      for (int i = 0; i < _boxes.length && i < 6; i++) {
+        final b = _boxes[i];
+        final name = b.label.isNotEmpty ? b.label : b.id;
+        final dims = '${(b.w * 100).round()}x${(b.d * 100).round()}x${(b.h * 100).round()}cm';
+        boxLines.add('$name ($dims)');
+      }
+      if (_boxes.length > 6) boxLines.add('...외 ${_boxes.length - 6}개');
+      final boxListStr = boxLines.join(' | ');
+      _drawShareText(canvas, boxListStr,
+          Offset(20 * r, barY + barHScaled + 58 * r),
+          fontSize: 10 * r, color: const Color(0xFF888888), maxWidth: cardW - 40 * r);
+
+      // TrimBox branding
+      _drawShareText(canvas, 'TrimBox',
+          Offset(cardW - 90 * r, imgH + 16 * r),
+          fontSize: 18 * r, color: const Color(0xFF4DA3FF), bold: true);
+
+      final picture = recorder.endRecording();
+      final finalImage = await picture.toImage(cardW.toInt(), cardH.toInt());
+      final byteData = await finalImage.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+
+      final bytes = byteData.buffer.asUint8List();
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+      final filename = 'trimbox-share-$timestamp.png';
+
+      await file_io.shareOrDownloadImage(bytes, filename, 'image/png');
+
+      // Also copy text summary to clipboard
+      final textSummary = _buildShareText();
+      await Clipboard.setData(ClipboardData(text: textSummary));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('공유 카드 저장 완료! (텍스트도 클립보드에 복사됨)'),
+            backgroundColor: Color(0xFF6BD06B),
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -1205,7 +1489,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('스크린샷 실패: $e'),
+            content: Text('공유 카드 생성 실패: $e'),
             backgroundColor: const Color(0xFFFF4D4D),
           ),
         );
@@ -1213,9 +1497,550 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     }
   }
 
+  void _drawShareText(Canvas canvas, String text, Offset pos, {
+    required double fontSize,
+    Color color = Colors.white,
+    bool bold = false,
+    double? maxWidth,
+  }) {
+    final style = ui.TextStyle(
+      color: color,
+      fontSize: fontSize,
+      fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+    );
+    final para = (ui.ParagraphBuilder(ui.ParagraphStyle(maxLines: 1, ellipsis: '...'))
+          ..pushStyle(style)
+          ..addText(text))
+        .build()
+      ..layout(ui.ParagraphConstraints(width: maxWidth ?? 1000));
+    canvas.drawParagraph(para, pos);
+  }
+
+  String _buildShareText() {
+    final presetName = _selectedPreset == TrunkPreset.custom
+        ? '커스텀'
+        : _selectedPreset.label.split(' (').first;
+    final volPct = _utilizationPercent().round();
+    final totalLiters = (_totalTrunkVolume() * 1000).round();
+    final usedLiters = (_usedVolume() * 1000).round();
+
+    final sb = StringBuffer();
+    sb.writeln('$presetName 트렁크 적재 시뮬레이션');
+    sb.writeln('적재율: $volPct% (${usedLiters}L / ${totalLiters}L)');
+    sb.writeln('장비 ${_boxes.length}개:');
+    for (final b in _boxes) {
+      final name = b.label.isNotEmpty ? b.label : b.id;
+      sb.writeln('  - $name (${(b.w * 100).round()}x${(b.d * 100).round()}x${(b.h * 100).round()}cm)');
+    }
+    sb.writeln('#TrimBox #캠핑 #트렁크패킹');
+    return sb.toString();
+  }
+
+  // ──── 자동 배치 ────
+
+  Future<void> _showAutoLayoutDialog() async {
+    if (_boxes.isEmpty) return;
+
+    // 계산 시간 측정
+    final sw = Stopwatch()..start();
+    final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes);
+    sw.stop();
+    final computeMs = sw.elapsedMilliseconds;
+
+    if (!mounted) return;
+
+    final selected = await showDialog<AutoLayoutResult>(
+      context: context,
+      builder: (ctx) => _AutoLayoutDialog(
+        alternatives: alternatives,
+        computeTimeMs: computeMs,
+        trunkVolumeLiters: (_totalTrunkVolume() * 1000).round(),
+      ),
+    );
+
+    if (selected != null) {
+      _applyAutoLayout(selected);
+    }
+  }
+
+  /// Quick fit check — just validates without applying layout
+  void _showQuickFitCheck() {
+    if (_boxes.isEmpty) return;
+
+    final sw = Stopwatch()..start();
+    final result = AutoLayoutEngine.computeLayout(_space, _boxes);
+    sw.stop();
+
+    if (!mounted) return;
+    _showVerdictDialog(result, computeTimeMs: sw.elapsedMilliseconds);
+  }
+
+  void _applyAutoLayout(AutoLayoutResult result) {
+    _pushUndo();
+    setState(() {
+      for (final placement in result.placements) {
+        final box = _boxes.firstWhere((b) => b.id == placement.box.id);
+        box.x = placement.x;
+        box.y = placement.y;
+        box.z = placement.z;
+        if (placement.rotated && box.rotY % 180 == 0) {
+          box.rotY = 90;
+        } else if (!placement.rotated && box.rotY % 180 != 0) {
+          box.rotY = 0;
+        }
+        box.snapToGrid(_space.gridUnit);
+        box.clampTo(_space.w, _space.d);
+        box.loadOrder = placement.loadOrder;
+      }
+
+      // Move unfit boxes to overflow area (just outside trunk opening, spread apart)
+      for (int i = 0; i < result.unfitBoxes.length; i++) {
+        final box = _boxes.firstWhere((b) => b.id == result.unfitBoxes[i].id);
+        box.x = _space.w * 0.1 + i * _space.gridUnit;
+        box.z = _space.d + 0.05;
+        box.y = 0;
+        box.loadOrder = null;
+      }
+
+      _selectedBoxId = null;
+      _updateCollisions();
+    });
+
+    if (mounted) {
+      _showVerdictDialog(result);
+      _showVerdictSnackBar(result);
+    }
+  }
+
+  void _showVerdictSnackBar(AutoLayoutResult result) {
+    final pct = result.utilizationPercent.round();
+    final placed = result.placements.length;
+    final total = placed + result.unfitBoxes.length;
+    final msg = result.allBoxesFit
+        ? '${result.strategy.label}: $total개 배치 완료 (적재율 $pct%)'
+        : '${result.strategy.label}: $placed/$total개 배치 (적재율 $pct%)';
+
+    String snackMsg = msg;
+    if (result.unfitBoxes.isNotEmpty) {
+      final unfitLabels = result.unfitBoxes
+          .map((b) => b.label.isNotEmpty ? b.label : b.id)
+          .join(', ');
+      snackMsg = '$msg\n적재 불가: $unfitLabels';
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(snackMsg),
+        backgroundColor:
+            result.allBoxesFit ? const Color(0xFF6BD06B) : const Color(0xFFFFAA33),
+        duration: const Duration(seconds: 5),
+        dismissDirection: DismissDirection.horizontal,
+      ),
+    );
+  }
+
+  void _showVerdictDialog(AutoLayoutResult result, {int? computeTimeMs}) {
+    final pct = result.utilizationPercent.round();
+    final placed = result.placements.length;
+    final total = placed + result.unfitBoxes.length;
+
+    // 남은 공간 계산
+    final totalSpaceVol = _totalTrunkVolume();
+    final totalBoxVol = result.placements.fold<double>(
+        0.0, (sum, p) => sum + p.box.w * p.box.d * p.box.h);
+    final remainingLiters = ((totalSpaceVol - totalBoxVol) * 1000).round();
+    final capacityLiters = (totalSpaceVol * 1000).round();
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        // Shared utilization bar widget
+        Widget utilizationVisual() {
+          final ratio = (pct / 100).clamp(0.0, 1.0);
+          final barColor = pct < 70
+              ? const Color(0xFF4CAF50)
+              : pct < 90
+                  ? const Color(0xFFFFC107)
+                  : const Color(0xFFFF5252);
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '적재율',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                  ),
+                  Text(
+                    '$pct%',
+                    style: TextStyle(
+                      color: barColor,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: ratio,
+                  backgroundColor: const Color(0xFF444444),
+                  valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                  minHeight: 8,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '사용: ${(totalBoxVol * 1000).round()}L',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                  ),
+                  Text(
+                    '남은 공간: ${remainingLiters}L / ${capacityLiters}L',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                  ),
+                ],
+              ),
+            ],
+          );
+        }
+
+        Widget computeTimeBadge() {
+          if (computeTimeMs == null) return const SizedBox.shrink();
+          final timeStr = computeTimeMs < 1000
+              ? '${computeTimeMs}ms'
+              : '${(computeTimeMs / 1000).toStringAsFixed(1)}s';
+          return Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.bolt, color: Colors.grey[600], size: 14),
+                const SizedBox(width: 4),
+                Text(
+                  '$timeStr 만에 계산 완료',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                ),
+              ],
+            ),
+          );
+        }
+
+        if (result.placements.isEmpty && result.unfitBoxes.isNotEmpty) {
+          // NO boxes fit
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2A2A),
+            title: Row(
+              children: [
+                Container(
+                  width: 14, height: 14,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFF4D4D),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  '적재 불가',
+                  style: TextStyle(color: Colors.white, fontSize: 18),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '선택한 장비가 트렁크에 맞지 않습니다.',
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
+                ),
+                const SizedBox(height: 12),
+                utilizationVisual(),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2A1E1E),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.lightbulb_outline,
+                          color: Color(0xFFFFD700), size: 18),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '장비 크기를 확인하거나\n더 큰 차량을 선택하세요.',
+                          style: TextStyle(
+                              color: Colors.white70, fontSize: 12, height: 1.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                computeTimeBadge(),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                ),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('확인'),
+              ),
+            ],
+          );
+        } else if (result.allBoxesFit) {
+          // ALL boxes fit
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2A2A),
+            title: Row(
+              children: [
+                Container(
+                  width: 14, height: 14,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF6BD06B),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  '모두 적재 가능!',
+                  style: TextStyle(color: Colors.white, fontSize: 18),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                utilizationVisual(),
+                const SizedBox(height: 12),
+                _verdictInfoRow('적재 장비', '$total개 모두 트렁크에 들어갑니다'),
+                if (result.placements.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _verdictLoadOrderSummary(result),
+                ],
+                computeTimeBadge(),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('확인', style: TextStyle(color: Colors.grey)),
+              ),
+              if (_maxLoadOrder > 1)
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF00E676),
+                    side: const BorderSide(color: Color(0xFF00E676)),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _enterStepView();
+                  },
+                  child: const Text('순서 가이드'),
+                ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _saveScene();
+                },
+                child: const Text('배치 저장'),
+              ),
+            ],
+          );
+        } else {
+          // SOME boxes don't fit
+          final unfitLabels = result.unfitBoxes
+              .map((b) => b.label.isNotEmpty ? b.label : b.id)
+              .toList();
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2A2A),
+            title: Row(
+              children: [
+                Container(
+                  width: 14, height: 14,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFFAA33),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '$placed/$total개 적재 가능',
+                  style: const TextStyle(color: Colors.white, fontSize: 18),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                utilizationVisual(),
+                const SizedBox(height: 12),
+                const Text(
+                  '적재 불가 장비:',
+                  style: TextStyle(color: Color(0xFFFF6B6B), fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                ...unfitLabels.map((name) => Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.close, color: Color(0xFFFF6B6B), size: 14),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                  color: Color(0xFFFF6B6B), fontSize: 13),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E2A1E),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.lightbulb_outline,
+                          color: Color(0xFFFFD700), size: 18),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '더 작은 장비를 선택하거나\n시트를 접어보세요.',
+                          style: TextStyle(
+                              color: Colors.white70, fontSize: 12, height: 1.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                computeTimeBadge(),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('확인', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _showAutoLayoutDialog();
+                },
+                child: const Text('다시 배치'),
+              ),
+            ],
+          );
+        }
+      },
+    );
+  }
+
+  Widget _verdictLoadOrderSummary(AutoLayoutResult result) {
+    final sorted = List<BoxPlacement>.from(result.placements)
+      ..sort((a, b) => a.loadOrder.compareTo(b.loadOrder));
+    final displayCount = sorted.length > 5 ? 5 : sorted.length;
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E2A),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '적재 순서 (안쪽부터)',
+            style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          ...List.generate(displayCount, (i) {
+            final p = sorted[i];
+            final name = p.box.label.isNotEmpty ? p.box.label : p.box.id;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Row(
+                children: [
+                  Container(
+                    width: 20, height: 20,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF4DA3FF).withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '${p.loadOrder}',
+                      style: const TextStyle(color: Color(0xFF4DA3FF), fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      name,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          if (sorted.length > 5)
+            Text(
+              '...외 ${sorted.length - 5}개',
+              style: TextStyle(color: Colors.grey[600], fontSize: 11),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _verdictInfoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.grey, fontSize: 13),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+          ),
+        ),
+      ],
+    );
+  }
+
   // ──── Undo/Redo ────
 
-  /// 현재 박스 상태를 undo 스택에 저장 (변경 전 호출)
   void _pushUndo() {
     _undoStack.add(_boxes.map((b) => b.copyWith()).toList());
     if (_undoStack.length > _maxUndoSteps) _undoStack.removeAt(0);
@@ -1223,47 +2048,39 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   }
 
   void _undo() {
+    _exitStepView();
     if (_undoStack.isEmpty) return;
-    // 현재 상태를 redo에 저장
     _redoStack.add(_boxes.map((b) => b.copyWith()).toList());
     final prev = _undoStack.removeLast();
     setState(() {
-      _boxes
-        ..clear()
-        ..addAll(prev);
+      _boxes..clear()..addAll(prev);
       _selectedBoxId = null;
       _updateCollisions();
     });
   }
 
   void _redo() {
+    _exitStepView();
     if (_redoStack.isEmpty) return;
     _undoStack.add(_boxes.map((b) => b.copyWith()).toList());
     final next = _redoStack.removeLast();
     setState(() {
-      _boxes
-        ..clear()
-        ..addAll(next);
+      _boxes..clear()..addAll(next);
       _selectedBoxId = null;
       _updateCollisions();
     });
   }
 
-  // ──── 스태킹 Y 해소 ────
+  // ──── 스태킹 ────
 
-  /// 박스의 Y를 XZ 겹침 기반으로 계산 (50% 이상 겹치면 위에 적재)
   void _resolveStackingY(TrimBox box) {
     double supportY = 0;
     final boxArea = box.effectiveW * box.effectiveD;
 
     for (final other in _boxes) {
       if (other.id == box.id) continue;
-      final overlapX =
-          math.min(box.x + box.effectiveW, other.x + other.effectiveW) -
-              math.max(box.x, other.x);
-      final overlapZ =
-          math.min(box.z + box.effectiveD, other.z + other.effectiveD) -
-              math.max(box.z, other.z);
+      final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
+      final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
 
       if (overlapX > 0 && overlapZ > 0) {
         final overlapArea = overlapX * overlapZ;
@@ -1273,17 +2090,12 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         }
       }
     }
-
     box.y = supportY;
   }
 
-  /// 모든 박스의 Y를 아래에서 위로 재계산 (중력)
   void _resolveGravity() {
-    // 원래 Y 순서(아래→위)로 정렬
-    final sorted = List<TrimBox>.from(_boxes)
-      ..sort((a, b) => a.y.compareTo(b.y));
+    final sorted = List<TrimBox>.from(_boxes)..sort((a, b) => a.y.compareTo(b.y));
 
-    // 아래에서 위로 순차 처리: 이미 정착된 아래 박스만 지지면으로 사용
     for (int i = 0; i < sorted.length; i++) {
       final box = sorted[i];
       double supportY = 0;
@@ -1291,12 +2103,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
       for (int j = 0; j < i; j++) {
         final other = sorted[j];
-        final overlapX = math.min(
-                box.x + box.effectiveW, other.x + other.effectiveW) -
-            math.max(box.x, other.x);
-        final overlapZ = math.min(
-                box.z + box.effectiveD, other.z + other.effectiveD) -
-            math.max(box.z, other.z);
+        final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
+        final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
         if (overlapX > 0 && overlapZ > 0) {
           final overlapArea = overlapX * overlapZ;
           if (overlapArea >= boxArea * 0.5) {
@@ -1313,5 +2121,437 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
   void _updateCollisions() {
     _collidingIds = _detector.findAllCollisions(_boxes);
+  }
+}
+
+// ──── 자동 배치 대안 선택 다이얼로그 ────
+
+class _AutoLayoutDialog extends StatefulWidget {
+  final List<AutoLayoutResult> alternatives;
+  final int computeTimeMs;
+  final int trunkVolumeLiters;
+
+  const _AutoLayoutDialog({
+    required this.alternatives,
+    required this.computeTimeMs,
+    required this.trunkVolumeLiters,
+  });
+
+  @override
+  State<_AutoLayoutDialog> createState() => _AutoLayoutDialogState();
+}
+
+class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
+  int _selectedIndex = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    // Find the best strategy (highest utilization with all fit, or most placed)
+    int bestIdx = 0;
+    for (int i = 1; i < widget.alternatives.length; i++) {
+      final curr = widget.alternatives[i];
+      final best = widget.alternatives[bestIdx];
+      if (curr.allBoxesFit && !best.allBoxesFit) {
+        bestIdx = i;
+      } else if (curr.allBoxesFit == best.allBoxesFit) {
+        if (curr.placements.length > best.placements.length ||
+            (curr.placements.length == best.placements.length &&
+                curr.utilizationPercent > best.utilizationPercent)) {
+          bestIdx = i;
+        }
+      }
+    }
+
+    final timeStr = widget.computeTimeMs < 1000
+        ? '${widget.computeTimeMs}ms'
+        : '${(widget.computeTimeMs / 1000).toStringAsFixed(1)}s';
+
+    // Max utilization for bar scaling
+    double maxPct = 1;
+    for (final a in widget.alternatives) {
+      if (a.utilizationPercent > maxPct) maxPct = a.utilizationPercent;
+    }
+
+    return AlertDialog(
+      backgroundColor: const Color(0xFF2A2A2A),
+      title: Row(
+        children: [
+          const Icon(Icons.auto_fix_high, color: Color(0xFF4DA3FF), size: 22),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              '자동 배치',
+              style: TextStyle(color: Colors.white, fontSize: 18),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.bolt, color: Color(0xFF6BD06B), size: 14),
+                const SizedBox(width: 3),
+                Text(
+                  timeStr,
+                  style: const TextStyle(color: Color(0xFF6BD06B), fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '배치 전략을 선택하세요:',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            ...List.generate(widget.alternatives.length, (i) {
+              final result = widget.alternatives[i];
+              final isSelected = i == _selectedIndex;
+              final isBest = i == bestIdx;
+              final pct = result.utilizationPercent.round();
+              final placed = result.placements.length;
+              final total = placed + result.unfitBoxes.length;
+              final barRatio = maxPct > 0
+                  ? (result.utilizationPercent / maxPct).clamp(0.0, 1.0)
+                  : 0.0;
+
+              final statusColor = result.allBoxesFit
+                  ? const Color(0xFF6BD06B)
+                  : const Color(0xFFFFAA33);
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap: () => setState(() => _selectedIndex = i),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? const Color(0xFF333355)
+                          : const Color(0xFF333333),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isSelected
+                            ? const Color(0xFF4DA3FF)
+                            : const Color(0xFF444444),
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              isSelected
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_unchecked,
+                              color: isSelected
+                                  ? const Color(0xFF4DA3FF)
+                                  : Colors.grey,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Text(
+                                    result.strategy.label,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: isSelected
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                  if (isBest) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF4DA3FF)
+                                            .withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text(
+                                        '추천',
+                                        style: TextStyle(
+                                          color: Color(0xFF4DA3FF),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            Text(
+                              result.allBoxesFit
+                                  ? '$total개 모두'
+                                  : '$placed/$total개',
+                              style: TextStyle(color: statusColor, fontSize: 12),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E1E1E),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '$pct%',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        // Utilization bar
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: barRatio,
+                            backgroundColor: const Color(0xFF444444),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              result.allBoxesFit
+                                  ? const Color(0xFF4DA3FF)
+                                  : const Color(0xFFFFAA33),
+                            ),
+                            minHeight: 5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+            if (widget.alternatives.isNotEmpty &&
+                widget.alternatives[_selectedIndex].unfitBoxes.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3A2A1A),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: Color(0xFFFFAA33), size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '배치 불가: ${widget.alternatives[_selectedIndex].unfitBoxes.map((b) => b.label.isNotEmpty ? b.label : b.id).join(", ")}',
+                        style: const TextStyle(
+                            color: Color(0xFFFFAA33), fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child:
+              const Text('취소', style: TextStyle(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF4DA3FF),
+          ),
+          onPressed: () =>
+              Navigator.pop(context, widget.alternatives[_selectedIndex]),
+          child: const Text('적용'),
+        ),
+      ],
+    );
+  }
+}
+
+// ──── 저장된 배치 목록 다이얼로그 ────
+
+class _SavedScenesDialog extends StatefulWidget {
+  final VoidCallback onLoadFile;
+
+  const _SavedScenesDialog({required this.onLoadFile});
+
+  @override
+  State<_SavedScenesDialog> createState() => _SavedScenesDialogState();
+}
+
+class _SavedScenesDialogState extends State<_SavedScenesDialog> {
+  late List<storage.SavedSceneMeta> _scenes;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshList();
+  }
+
+  void _refreshList() {
+    try {
+      _scenes = storage.listSavedScenes();
+    } catch (_) {
+      _scenes = [];
+    }
+  }
+
+  String _formatDate(String isoDate) {
+    try {
+      final dt = DateTime.parse(isoDate);
+      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-'
+          '${dt.day.toString().padLeft(2, '0')} '
+          '${dt.hour.toString().padLeft(2, '0')}:'
+          '${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return isoDate;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF333333),
+      title: const Text(
+        '저장된 배치 불러오기',
+        style: TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      content: SizedBox(
+        width: 400,
+        height: 360,
+        child: _scenes.isEmpty
+            ? Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.inbox_outlined,
+                        color: Colors.grey[700], size: 48),
+                    const SizedBox(height: 12),
+                    const Text(
+                      '저장된 배치가 없습니다',
+                      style: TextStyle(color: Colors.grey, fontSize: 14),
+                    ),
+                  ],
+                ),
+              )
+            : ListView.builder(
+                itemCount: _scenes.length,
+                itemBuilder: (ctx, i) {
+                  final scene = _scenes[i];
+                  return Card(
+                    color: const Color(0xFF2E2E2E),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ListTile(
+                      onTap: () {
+                        try {
+                          final jsonStr =
+                              storage.loadSceneFromStorage(scene.key);
+                          if (jsonStr != null) {
+                            Navigator.pop(context, jsonStr);
+                          }
+                        } on UnsupportedError {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('이 플랫폼에서는 저장 기능을 지원하지 않습니다'),
+                                backgroundColor: Color(0xFFFF4D4D)),
+                          );
+                        }
+                      },
+                      title: Text(
+                        scene.name,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 14),
+                      ),
+                      subtitle: Text(
+                        '${scene.vehicle} | ${scene.boxCount}개 | '
+                        '${_formatDate(scene.date)}',
+                        style: const TextStyle(
+                            color: Colors.grey, fontSize: 11),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline,
+                            color: Color(0xFFFF6B6B), size: 20),
+                        tooltip: '삭제',
+                        onPressed: () => _confirmDelete(scene),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('취소', style: TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: widget.onLoadFile,
+          child: const Text(
+            '파일에서 불러오기',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmDelete(storage.SavedSceneMeta scene) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF333333),
+        title: const Text('배치 삭제', style: TextStyle(color: Colors.white)),
+        content: Text(
+          '"${scene.name}"을(를) 삭제하시겠습니까?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFF4D4D),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      storage.deleteSceneFromStorage(scene.key);
+      setState(_refreshList);
+    }
   }
 }

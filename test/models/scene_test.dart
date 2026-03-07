@@ -83,12 +83,12 @@ void main() {
       final json = scene.toJson();
       final restored = Scene.fromJson(json);
 
-      expect(restored.space.w, 1.09);
-      expect(restored.space.bodyWidth, 1.88);
+      expect(restored.space.w, 1.11);
+      expect(restored.space.bodyWidth, 1.45);
       expect(restored.space.trunkLipHeight, 0.56);
       expect(restored.space.roofExtension, 0.12);
       expect(restored.space.bumperDepth, 0.07);
-      expect(restored.space.bodyDepth, 0.30);
+      expect(restored.space.bodyDepth, 0.60);
     });
 
     test('이전 포맷 Scene JSON (body profile 없음) 역호환', () {
@@ -108,9 +108,9 @@ void main() {
       };
       final restored = Scene.fromJson(oldJson);
       expect(restored.space.w, 1.0);
-      expect(restored.space.bodyWidth, 1.90); // default
+      expect(restored.space.bodyWidth, 1.40); // default
       expect(restored.space.trunkLipHeight, 0.55); // default
-      expect(restored.space.bodyDepth, 0.30); // default
+      expect(restored.space.bodyDepth, 0.55); // default
     });
   });
 }

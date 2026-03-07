@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,187 +5,128 @@ import 'package:trimbox/models/trunk_space.dart';
 import 'package:trimbox/painters/isometric_painter.dart';
 
 void main() {
-  // Isometric angle constants (must match IsometricPainter)
-  final cosA = math.cos(30.0 * math.pi / 180.0);
-  final sinA = math.sin(30.0 * math.pi / 180.0);
-
   IsometricPainter makePainter({
-    double cameraYaw = 0.0,
     double scale = 100.0,
   }) =>
       IsometricPainter(
         space: TrunkSpace.tucson(),
         boxes: [],
         scale: scale,
-        cameraYaw: cameraYaw,
       );
 
-  group('toIso 투영', () {
-    test('yaw=0: origin (0,0,0) → Offset(0,0)', () {
+  group('toScreen 1-point perspective 투영', () {
+    test('vanishing point: (camX, camY, 0) → Offset(0, 0)', () {
+      // At z=0, camZ - z = camZ = d + focalLen = 2*d
+      // f = focalLen / (2*d) * scale = d / (2*d) * scale = 0.5 * scale
+      // sx = (camX - camX) * f = 0, sy = -(camY - camY) * f = 0
       final p = makePainter();
-      final o = p.toIso(0, 0, 0);
+      final o = p.toScreen(p.camX, p.camY, 0);
       expect(o.dx, closeTo(0, 0.001));
       expect(o.dy, closeTo(0, 0.001));
     });
 
-    test('yaw=0: (1,0,0) → positive sx, positive sy', () {
+    test('opening center: (camX, camY, d) → Offset(0, 0)', () {
+      // At z=d, camZ - z = focalLen, f = focalLen/focalLen * scale = scale
+      // sx = (camX - camX) * scale = 0
       final p = makePainter();
-      final o = p.toIso(1, 0, 0);
-      // rx=1, rz=0 → sx=(1-0)*cosA*scale, sy=(1+0)*sinA*scale
-      expect(o.dx, closeTo(1 * cosA * 100, 0.01));
-      expect(o.dy, closeTo(1 * sinA * 100, 0.01));
-    });
-
-    test('yaw=0: (0,1,0) → sx=0, sy=-scale (y축은 위로)', () {
-      final p = makePainter();
-      final o = p.toIso(0, 1, 0);
+      final o = p.toScreen(p.camX, p.camY, p.space.d);
       expect(o.dx, closeTo(0, 0.001));
-      expect(o.dy, closeTo(-100, 0.01)); // -y*scale
+      expect(o.dy, closeTo(0, 0.001));
     });
 
-    test('yaw=0: (0,0,1) → negative sx, positive sy', () {
+    test('opening edge: objects at z=d have f=scale', () {
       final p = makePainter();
-      final o = p.toIso(0, 0, 1);
-      // rx=0, rz=1 → sx=(0-1)*cosA*scale, sy=(0+1)*sinA*scale
-      expect(o.dx, closeTo(-1 * cosA * 100, 0.01));
-      expect(o.dy, closeTo(1 * sinA * 100, 0.01));
+      final d = p.space.d;
+      // At opening: f = focalLen / (camZ - d) * scale = focalLen / focalLen * scale = scale
+      final o = p.toScreen(p.camX + 1.0, p.camY, d);
+      // sx = 1.0 * scale = 100
+      expect(o.dx, closeTo(100.0, 0.01));
+      expect(o.dy, closeTo(0, 0.001));
     });
 
-    test('yaw=π/2: 90° 회전 시 (1,0,0) 결과 검증', () {
-      final p = makePainter(cameraYaw: math.pi / 2);
-      final o = p.toIso(1, 0, 0);
-      // cosYaw=0, sinYaw=1 → rx=1*0 - 0*1 = 0, rz=1*1 + 0*0 = 1
-      // sx=(0-1)*cosA*100, sy=(0+1)*sinA*100
-      expect(o.dx, closeTo(-cosA * 100, 0.01));
-      expect(o.dy, closeTo(sinA * 100, 0.01));
+    test('back wall: objects at z=0 appear smaller (f < scale)', () {
+      final p = makePainter();
+      // At z=0: f = focalLen / camZ * scale = focalLen / (d + focalLen) * scale
+      // = d / (2d) * scale = 0.5 * scale
+      final oFront = p.toScreen(p.camX + 1.0, p.camY, p.space.d);
+      final oBack = p.toScreen(p.camX + 1.0, p.camY, 0);
+      // Front should be larger (farther from vanishing pt in screen)
+      expect(oFront.dx.abs(), greaterThan(oBack.dx.abs()));
+      expect(oFront.dx / oBack.dx, closeTo(2.0, 0.01));
     });
 
-    test('yaw=-π/4: -45° 회전 시 대칭 검증', () {
-      final p = makePainter(cameraYaw: -math.pi / 4);
-      final cosY = math.cos(-math.pi / 4);
-      final sinY = math.sin(-math.pi / 4);
-      final o = p.toIso(1, 0, 0);
-      final rx = 1 * cosY;
-      final rz = 1 * sinY;
-      expect(o.dx, closeTo((rx - rz) * cosA * 100, 0.01));
-      expect(o.dy, closeTo((rx + rz) * sinA * 100, 0.01));
+    test('y축: 위로 갈수록 sy 음수', () {
+      final p = makePainter();
+      // Point above camY at opening
+      final o = p.toScreen(p.camX, p.camY + 0.5, p.space.d);
+      // sy = -(0.5) * scale = -50
+      expect(o.dy, closeTo(-50.0, 0.01));
+    });
+
+    test('y축: 아래로 갈수록 sy 양수', () {
+      final p = makePainter();
+      final o = p.toScreen(p.camX, p.camY - 0.3, p.space.d);
+      // sy = -(-0.3) * scale = 30
+      expect(o.dy, closeTo(30.0, 0.01));
     });
 
     test('스케일 변경 시 비례 확인', () {
       final p1 = makePainter(scale: 100);
       final p2 = makePainter(scale: 200);
-      final o1 = p1.toIso(1, 0, 1);
-      final o2 = p2.toIso(1, 0, 1);
+      final o1 = p1.toScreen(1, 0.2, 0.5);
+      final o2 = p2.toScreen(1, 0.2, 0.5);
       expect(o2.dx, closeTo(o1.dx * 2, 0.01));
       expect(o2.dy, closeTo(o1.dy * 2, 0.01));
     });
   });
 
   group('isFaceVisible 면 가시성', () {
-    test('yaw=0: left(-1,0)=visible, right(1,0)=hidden', () {
+    test('fixed perspective: all faces visible', () {
       final p = makePainter();
-      // rnx = -1*1 - 0*0 = -1, rnz = -1*0 + 0*1 = 0 → sum=-1 < 0 → visible
+      // In 1-point perspective from fixed camera, all interior faces are visible
       expect(p.isFaceVisible(-1, 0), true);
-      // rnx = 1*1 - 0*0 = 1, rnz = 1*0 + 0*1 = 0 → sum=1 > 0 → hidden
-      expect(p.isFaceVisible(1, 0), false);
-    });
-
-    test('yaw=0: front(0,1)=hidden, back(0,-1)=visible', () {
-      final p = makePainter();
-      // front: rnx=0, rnz=1 → sum=1 > 0 → hidden
-      expect(p.isFaceVisible(0, 1), false);
-      // back: rnx=0, rnz=-1 → sum=-1 < 0 → visible
+      expect(p.isFaceVisible(1, 0), true);
+      expect(p.isFaceVisible(0, 1), true);
       expect(p.isFaceVisible(0, -1), true);
-    });
-
-    test('yaw=π/2: left=hidden, right=visible', () {
-      final p = makePainter(cameraYaw: math.pi / 2);
-      // cosYaw≈0, sinYaw≈1
-      // left: rnx = -1*0 - 0*1 = 0, rnz = -1*1 + 0*0 = -1 → sum=-1 < 0 → visible? No...
-      // Actually at yaw=π/2, camera rotated 90° right, so right face should become visible
-      // left(-1,0): rnx=-1*0 - 0*1 = 0, rnz=-1*1 + 0*0 = -1 → sum=-1 < 0 → visible
-      // right(1,0): rnx=1*0 - 0*1 = 0, rnz=1*1 + 0*0 = 1 → sum=1 > 0 → hidden
-      // Hmm, let me reconsider. At yaw=π/2 the world is rotated, so what was "left" in world space
-      // is now pointing in a different direction relative to camera.
-      // Actually the math says: left is still visible at π/2 because the rotated normal still faces camera.
-      // Let me check: front(0,1) at yaw=π/2:
-      // rnx=0*0 - 1*1 = -1, rnz=0*1 + 1*0 = 0 → sum=-1 < 0 → visible
-      // back(0,-1) at yaw=π/2:
-      // rnx=0*0 - (-1)*1 = 1, rnz=0*1 + (-1)*0 = 0 → sum=1 > 0 → hidden
-      // So at yaw=π/2, front becomes visible and back becomes hidden (camera rotated to see front)
-      expect(p.isFaceVisible(0, 1), true); // front now visible
-      expect(p.isFaceVisible(0, -1), false); // back now hidden
-    });
-
-    test('yaw=π/4: left=visible, front=visible (두 면 다 보임)', () {
-      final p = makePainter(cameraYaw: math.pi / 4);
-      final cosY = math.cos(math.pi / 4);
-      final sinY = math.sin(math.pi / 4);
-
-      // left(-1,0): rnx=-cosY, rnz=-sinY → sum=-(cosY+sinY) < 0 → visible
-      expect(p.isFaceVisible(-1, 0), true);
-
-      // front(0,1): rnx=-sinY, rnz=cosY → sum=cosY-sinY ≈ 0
-      // At exactly π/4, cosY==sinY so sum=0, which is NOT < 0 → hidden at boundary
-      // The face is visible only when sum < 0 (strict)
-      final frontSum = -sinY + cosY;
-      // At π/4, this is ~0, so let's test slightly past π/4
-      final p2 = makePainter(cameraYaw: math.pi / 4 + 0.01);
-      expect(p2.isFaceVisible(0, 1), true);
-    });
-
-    test('yaw=-π/4: back=visible, left 경계', () {
-      final p = makePainter(cameraYaw: -math.pi / 4);
-      // back(0,-1) clearly visible: sum = -√2 ≈ -1.414
-      expect(p.isFaceVisible(0, -1), true);
-      // left(-1,0) at boundary (sum≈0), slightly toward 0 makes it visible
-      final p2 = makePainter(cameraYaw: -math.pi / 4 + 0.01);
-      expect(p2.isFaceVisible(-1, 0), true);
-    });
-
-    test('경계값 (정확히 합이 0인 경우)', () {
-      // At yaw=π/4, front(0,1) → sum ≈ 0 → NOT visible (strict <)
-      final p = makePainter(cameraYaw: math.pi / 4);
-      // sum = cos(π/4) - sin(π/4) ≈ 0
-      expect(p.isFaceVisible(0, 1), false);
     });
   });
 
   group('computeCenter 중심점', () {
     final size = const Size(800, 600);
 
-    test('yaw=0: 반환값이 화면 크기 범위 내', () {
+    test('returns canvas center', () {
       final center = IsometricPainter.computeCenter(
           size, TrunkSpace.tucson(), 280.0, 0.0);
-      expect(center.dx, greaterThan(0));
-      expect(center.dx, lessThan(size.width));
-      expect(center.dy, greaterThan(0));
-      expect(center.dy, lessThan(size.height));
+      expect(center.dx, closeTo(400.0, 0.001));
+      expect(center.dy, closeTo(300.0, 0.001));
     });
 
-    test('yaw=π/4: 다른 중심점 반환', () {
+    test('cameraYaw has no effect (perspective ignores yaw)', () {
       final c0 = IsometricPainter.computeCenter(
           size, TrunkSpace.tucson(), 280.0, 0.0);
       final c45 = IsometricPainter.computeCenter(
-          size, TrunkSpace.tucson(), 280.0, math.pi / 4);
-      // Different yaw should produce different center
-      expect((c0.dx - c45.dx).abs() + (c0.dy - c45.dy).abs(), greaterThan(1));
+          size, TrunkSpace.tucson(), 280.0, 0.785);
+      expect(c0.dx, closeTo(c45.dx, 0.001));
+      expect(c0.dy, closeTo(c45.dy, 0.001));
     });
 
-    test('대칭: yaw=α와 yaw=-α의 centerY 근사 동일', () {
-      final cPos = IsometricPainter.computeCenter(
-          size, TrunkSpace.tucson(), 280.0, 0.3);
-      final cNeg = IsometricPainter.computeCenter(
-          size, TrunkSpace.tucson(), 280.0, -0.3);
-      // Y should be close (not exactly equal due to asymmetric body geometry)
-      expect(cPos.dy, closeTo(cNeg.dy, 30.0));
-    });
-
-    test('스케일 변경 시에도 중심 범위 내', () {
-      final center = IsometricPainter.computeCenter(
+    test('스케일 변경 시에도 중심 동일', () {
+      final c1 = IsometricPainter.computeCenter(
           size, TrunkSpace.tucson(), 150.0, 0.0);
-      expect(center.dx, greaterThan(0));
-      expect(center.dx, lessThan(size.width));
+      final c2 = IsometricPainter.computeCenter(
+          size, TrunkSpace.tucson(), 280.0, 0.0);
+      expect(c1.dx, closeTo(c2.dx, 0.001));
+      expect(c1.dy, closeTo(c2.dy, 0.001));
+    });
+  });
+
+  group('toIso alias', () {
+    test('toIso returns same result as toScreen', () {
+      final p = makePainter();
+      final a = p.toScreen(0.5, 0.3, 0.7);
+      final b = p.toIso(0.5, 0.3, 0.7);
+      expect(a.dx, closeTo(b.dx, 0.001));
+      expect(a.dy, closeTo(b.dy, 0.001));
     });
   });
 }

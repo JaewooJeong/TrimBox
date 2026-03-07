@@ -1,104 +1,115 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
 ## Project Overview
 
-TrimBox Simulator is a Flutter application for simulating trunk/cargo space packing with boxes in an isometric 3D view. Users can add boxes with custom dimensions, drag and position them in a virtual SUV trunk space, and visualize packing efficiency.
+TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
+캠퍼가 자신의 차량(쏘렌토, 싼타페 등)을 선택하고, 캠핑 장비를 목록에서 골라 트렁크에 자동/수동 배치하여 적재 가능 여부를 시각적으로 확인하는 앱입니다.
 
-## Project Requirements
+**핵심 가치**: "내 캠핑 짐이 내 차 트렁크에 들어가는지 3초 안에 확인"
+**타겟 유저**: 주말 캠퍼, 캠핑 입문자(캠린이), 미니멀 캠퍼
+**경쟁자**: 없음 (세계 최초 소비자용 3D 트렁크 패킹 시뮬레이터)
 
-Based on the backlog files in `/backlog/`:
+## Architecture
 
-### Core Features (from PRD)
-- **Isometric trunk visualization**: 3D-like view of trunk space with floor grid (10cm units)
-- **Box management**: Create, rotate (90°), move, and delete boxes with custom W×D×H dimensions
-- **Collision detection**: Visual feedback (red borders) when boxes overlap or exceed boundaries
-- **Wheelhouse modeling**: Two protruding rectangular areas that boxes must avoid
-- **Save/Load**: JSON-based scene persistence
-- **Snap-to-grid**: Automatic 10cm grid alignment for precise placement
+- Flutter web app (package name: `trimbox`)
+- **1-point perspective** rendering via `CustomPainter` (class name `IsometricPainter` kept for compat)
+- Fixed camera behind trunk looking in
+- `toScreen(x,y,z)`: `f = focalLen/(camZ-z)*scale`, `sx = (x-camX)*f`, `sy = -(y-camY)*f`
 
-### Target Trunk Sizes
-- Small: 2×2m
-- Medium: 3×3m  
-- Large: 4×4m
+### Key Files
+| File | Purpose |
+|------|---------|
+| `lib/screens/simulator_screen.dart` | Main screen, interaction, state management |
+| `lib/painters/isometric_painter.dart` | Paint orchestrator, perspective projection |
+| `lib/painters/trunk_renderer.dart` | Trunk interior (walls, floor, ceiling, seat) |
+| `lib/painters/box_renderer.dart` | Box/item rendering with face shading |
+| `lib/painters/vehicle_body_renderer.dart` | Opening frame, bumper lip, body surround |
+| `lib/painters/guide_renderer.dart` | Grid, labels, stacking guides |
+| `lib/models/trunk_space.dart` | Trunk dimensions, shape helpers, presets |
+| `lib/models/trim_box.dart` | Box model with position, rotation, category |
+| `lib/models/collision_detector.dart` | AABB collision: box-box, bounds, wheelhouse |
+| `lib/widgets/add_box_dialog.dart` | Box creation dialog with 48 camping presets |
 
-### Architecture Focus
-- Use Flutter's rendering engine (Impeller preferred) for 2D/isometric graphics
-- Custom painting with `CustomPainter` for trunk floor, grid, and wheelhouse visualization
-- Physics-based drag & drop with constraint validation
-- JSON serialization for save/load functionality
+### Vehicle Presets (6 Korean cars + custom)
+| Preset | W(m) | D(m) | H(m) | WH(w×d×h) | Taper | CeilDrop |
+|--------|------|------|------|-----------|-------|----------|
+| 투싼 | 1.04 | 0.91 | 0.73 | 0.14×0.40×0.35 | 0.06 | 0.08 |
+| **쏘렌토** (default) | 1.08 | 1.10 | 0.78 | 0.08×0.40×0.30 | 0.07 | 0.12 |
+| 싼타페 | 1.11 | 1.05 | 0.80 | 0.13×0.40×0.35 | 0.06 | 0.10 |
+| 카니발 | 1.25 | 0.85 | 0.88 | 0.10×0.30×0.25 | 0.03 | 0.04 |
+| 아이오닉5 | 1.00 | 0.95 | 0.73 | 0.15×0.35×0.30 | 0.07 | 0.10 |
+| 아반떼 | 1.02 | 0.71 | 0.43 | 0.05×0.30×0.25 | 0.12 | 0.06 |
+
+### Trunk Shape Model
+- `ceilingHeightAt(z)`: quadratic ceiling drop toward rear
+- `topNarrowAt(z)`: C-pillar linear narrowing
+- `taperAt(z)`: bottom-edge linear taper
+- Collision detection uses AABB (visual shape != collision geometry)
 
 ## Development Commands
 
-This is a Flutter project. Common commands include:
-
 ```bash
-# Get dependencies
-flutter pub get
-
-# Run in debug mode
-flutter run
-
-# Run tests
-flutter test
-
-# Build for release
-flutter build apk    # Android
-flutter build ipa    # iOS
-flutter build web    # Web
-
-# Analyze code
-flutter analyze
-
-# Format code
-dart format .
+flutter pub get          # Get dependencies
+flutter run              # Run in debug mode
+flutter test             # Run tests (74 tests)
+flutter analyze          # Analyze code
+dart format .            # Format code
+flutter build web        # Build for web
 ```
 
-## Key Technical Considerations
+## Current Backlog — MVP Commercialization Roadmap
 
-### Flutter Rendering
-- Use `CustomPainter` for isometric trunk visualization
-- Implement drag gesture detection with `GestureDetector`
-- Use `Transform` widgets for box positioning and rotation
-- Consider `RepaintBoundary` for performance optimization
+Based on comprehensive research (2026-03-07):
+- Research docs: `backlog/competitive-research.md`, `backlog/research-trunk-dimensions.md`, `backlog/research-auto-layout-algorithms.md`
 
-### 3D/Isometric Rendering
-- Implement isometric projection using matrix transformations
-- Use Flutter's built-in graphics capabilities rather than external 3D engines
-- Custom fragment shaders may be useful for advanced visual effects
+### Phase 0: Immediate Fixes (parallel, <1 day)
+- [x] P0-1: Camping gear presets expanded to 48 items (DONE)
+- [ ] P0-2: Preset dimension corrections (Sorento h→0.78, Santa Fe w→1.11/wh→0.13)
+- [ ] P0-3: Named save/load (배치 이름 지정 + 시나리오별 저장)
 
-### State Management
-- Manage box positions, rotations, and collision states
-- Track trunk dimensions and wheelhouse constraints
-- Handle save/load state persistence
+### Phase 1: Core MVP (1 week)
+- [ ] P1-1: Gear preset UI with category tree + sub-categories + multi-select
+- [ ] P1-2: Auto-layout algorithm (Extreme Point + Best Fit Decreasing)
+  - Dart implementation ~200-300 lines
+  - Validate placements against ceilingHeightAt/topNarrowAt/taperAt + wheelhouse
+  - Treat wheelhouses as pre-placed virtual items
+  - Priority packing: heavy→deep+low, fragile→top, frequent→near opening
+  - Generate 3-5 alternative layouts, score by utilization/access/stability
+- [ ] P1-3: Auto-layout property-based tests
 
-### Testing Strategy
-- Aim for 95% unit test coverage
-- Test collision detection algorithms
-- Test JSON serialization/deserialization
-- Test drag & drop gesture handling
-- Test grid snapping logic
+### Phase 2: Usability (1 week)
+- [ ] P2-1: Loading order visualization (step-by-step numbered guide)
+- [ ] P2-2: Space utilization % + remaining space indicator
+- [ ] P2-3: Share card (image + summary "쏘렌토 + 4인 캠핑 → 92% 적재")
 
-## Project Structure
+### Phase 3: Realism (post-MVP)
+- [ ] P3-1: Trunk material textures (carpet floor, plastic walls)
+- [ ] P3-2: Vehicle body exterior rendering (bumper, taillights)
+- [ ] P3-3: Box shape variety (cylinders for tents, soft shapes for sleeping bags)
+- [ ] P3-4: Seat folding visualization
+- [ ] P3-5: Alignment snap-to-neighbor guides
+- [ ] P3-6: Fix stacked-box drag (screenToFloor for y>0)
 
-The project follows Flutter's standard structure with additional focus on:
-- Custom painters for isometric rendering
-- Geometry utilities for collision detection
-- JSON models for data persistence
-- Widget hierarchy for interactive 3D-like UI
+### Legacy Epics (deprioritized)
+- Epic 07: Camera polish → Phase 3+
+- Epic 08: 2D floorplan → Phase 2 candidate
+- Epic 10: UX polish → Phase 2-3
+
+## Key Technical Decisions
+- Auto-layout algorithm: EP-BFD (Extreme Point + Best Fit Decreasing)
+- Non-rectangular trunk: pack in bounding box, validate against shape helpers
+- No 3D engine needed — CustomPainter is sufficient
+- Camping color palette: olive, dark slate, orange, dark green (not pastels)
+- `shouldRepaint` should compare fields instead of always returning true
+
+## Testing Strategy
+- 74 tests currently passing (models, painters, collision, stacking)
+- Auto-layout needs property-based tests: bounds, no-overlap, ceiling, wheelhouse
+- Target: 95% unit test coverage
 
 ## Commit Strategy
-
-Work in incremental steps with focused commits:
-1. Set up basic Flutter project structure
-2. Implement isometric trunk visualization
-3. Add box creation and basic positioning
-4. Implement drag & drop with grid snapping
-5. Add collision detection and visual feedback
-6. Implement rotation functionality
-7. Add save/load JSON persistence
-8. Create comprehensive tests
-9. Polish UI and add wheelhouse constraints
-
-Focus on getting each feature working completely before moving to the next step.
+- Incremental commits per feature
+- Run `flutter test` and `flutter analyze` before each commit
+- Korean commit messages preferred

@@ -5,15 +5,13 @@ import 'package:flutter/material.dart';
 import '../models/trunk_space.dart';
 import '../models/trim_box.dart';
 
-// Extension renderers
 part 'trunk_renderer.dart';
 part 'box_renderer.dart';
 part 'guide_renderer.dart';
+part 'vehicle_body_renderer.dart';
 
-/// 카메라 방향 (0°, 90°, 180°, 270°)
-enum CameraDirection { dir0, dir1, dir2, dir3 }
-
-/// 3D 좌표 → 2D 아이소메트릭 변환 및 전체 씬 페인팅
+/// 1-Point Perspective trunk interior painter
+/// (class name retained for API compatibility)
 class IsometricPainter extends CustomPainter {
   final TrunkSpace space;
   final List<TrimBox> boxes;
@@ -21,13 +19,12 @@ class IsometricPainter extends CustomPainter {
   final Set<String> collidingBoxIds;
   final double scale;
   final Offset panOffset;
-  final CameraDirection direction;
-
-  /// 드래그 중인 박스 ID (null이면 드래그 중 아님)
+  final double cameraYaw; // retained for API compat (unused in projection)
   final String? draggingBoxId;
-
-  /// 줌 레벨 (실루엣 페이드 계산용)
   final double zoomLevel;
+  /// When non-null, only boxes with this loadOrder are fully visible;
+  /// boxes with lower loadOrder are dimmed, higher are hidden.
+  final int? highlightLoadOrder;
 
   IsometricPainter({
     required this.space,
@@ -36,134 +33,83 @@ class IsometricPainter extends CustomPainter {
     this.collidingBoxIds = const {},
     this.scale = 280.0,
     this.panOffset = Offset.zero,
-    this.direction = CameraDirection.dir0,
+    this.cameraYaw = 0.0,
     this.draggingBoxId,
     this.zoomLevel = 1.0,
+    this.highlightLoadOrder,
   });
 
-  // 아이소메트릭 각도 (30도)
-  static const double _angle = 30.0 * math.pi / 180.0;
-  static final double _cosA = math.cos(_angle);
-  static final double _sinA = math.sin(_angle);
+  // ── Camera parameters ──
+  late final double camX = space.w / 2;
+  late final double camY = space.h * 1.05;
+  late final double focalLen = space.d * 1.0;
+  late final double camZ = space.d + focalLen;
 
-  /// View-space projected dimensions
-  double get projW =>
-      (direction == CameraDirection.dir1 || direction == CameraDirection.dir3)
-          ? space.d
-          : space.w;
-  double get projD =>
-      (direction == CameraDirection.dir1 || direction == CameraDirection.dir3)
-          ? space.w
-          : space.d;
-
-  /// Pure isometric projection (view-space coords → 2D screen)
-  Offset toIso(double x, double y, double z) {
-    final sx = (x - z) * _cosA * scale;
-    final sy = (x + z) * _sinA * scale - y * scale;
-    return Offset(sx, sy);
+  /// 1-point perspective projection: world → screen
+  Offset toScreen(double x, double y, double z) {
+    final dz = camZ - z;
+    if (dz < 0.001) return Offset.zero;
+    final f = focalLen / dz * scale;
+    return Offset((x - camX) * f, -(y - camY) * f);
   }
 
-  /// World-space box → view-space box
-  ({double vx, double vz, double vw, double vd}) boxToView(
-      double x, double z, double w, double d) {
-    switch (direction) {
-      case CameraDirection.dir0:
-        return (vx: x, vz: z, vw: w, vd: d);
-      case CameraDirection.dir1:
-        return (vx: z, vz: space.w - x - w, vw: d, vd: w);
-      case CameraDirection.dir2:
-        return (vx: space.w - x - w, vz: space.d - z - d, vw: w, vd: d);
-      case CameraDirection.dir3:
-        return (vx: space.d - z - d, vz: x, vw: d, vd: w);
+  /// Alias for backward compatibility
+  Offset toIso(double x, double y, double z) => toScreen(x, y, z);
+
+  /// Face visibility — fixed perspective, all interior faces visible
+  bool isFaceVisible(double nx, double nz) => true;
+
+  /// Build a closed path from screen-space points
+  Path buildPath(List<Offset> pts) {
+    final p = Path()..moveTo(pts[0].dx, pts[0].dy);
+    for (int i = 1; i < pts.length; i++) {
+      p.lineTo(pts[i].dx, pts[i].dy);
     }
+    p.close();
+    return p;
   }
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.save();
-    final center = computeCenter(size, space, scale, direction);
-    canvas.translate(center.dx + panOffset.dx, center.dy + panOffset.dy);
+    canvas.translate(
+      size.width / 2 + panOffset.dx,
+      size.height / 2 + panOffset.dy,
+    );
 
-    drawTrunkWalls(canvas);
+    // Draw order: back -> front
     drawSeatBackrest(canvas);
+    drawTrunkCeiling(canvas);
+    drawTrunkWalls(canvas);
+    drawCargoNetPoints(canvas);
+    drawTwelveVOutlet(canvas);
     drawTrunkFloor(canvas);
-    drawFloorStep(canvas);
-    drawFloorLogo(canvas);
+    drawCargoHooks(canvas);
+    drawTrunkLight(canvas);
     drawGrid(canvas);
     drawObjects(canvas);
     if (draggingBoxId != null) drawStackingGuides(canvas);
-    drawTrunkRim(canvas);
-    drawTrunkLidSilhouette(canvas);
+    drawOpeningFrame(canvas);
     drawDimensionLabels(canvas);
 
     canvas.restore();
   }
 
-  /// 씬 중심점 계산 (direction-aware)
+  /// Scene center (for simulator_screen compat)
   static Offset computeCenter(
-      Size size, TrunkSpace space, double scale, CameraDirection direction) {
-    final projW =
-        (direction == CameraDirection.dir1 || direction == CameraDirection.dir3)
-            ? space.d
-            : space.w;
-    final projD =
-        (direction == CameraDirection.dir1 || direction == CameraDirection.dir3)
-            ? space.w
-            : space.d;
-
-    final sceneTop = space.h * scale;
-    final sceneBottom = (projW + projD) * _sinA * scale;
-    final sceneHeight = sceneTop + sceneBottom;
-    final centerY = (size.height - sceneHeight) / 2 + sceneTop;
-    final leftExtent = projD * _cosA * scale;
-    final rightExtent = projW * _cosA * scale;
-    final centerX = (size.width + leftExtent - rightExtent) / 2;
-    return Offset(centerX, centerY);
-  }
-
-  /// 꼭짓점에 미세 라운딩을 적용한 Path 생성
-  Path roundedPath(List<Offset> points) {
-    final r = scale * 0.005;
-    final path = Path();
-    final n = points.length;
-    for (int i = 0; i < n; i++) {
-      final prev = points[(i - 1 + n) % n];
-      final curr = points[i];
-      final next = points[(i + 1) % n];
-
-      final dx1 = prev.dx - curr.dx;
-      final dy1 = prev.dy - curr.dy;
-      final len1 = math.sqrt(dx1 * dx1 + dy1 * dy1);
-      final dx2 = next.dx - curr.dx;
-      final dy2 = next.dy - curr.dy;
-      final len2 = math.sqrt(dx2 * dx2 + dy2 * dy2);
-
-      if (len1 < 0.001 || len2 < 0.001) {
-        if (i == 0) {
-          path.moveTo(curr.dx, curr.dy);
-        } else {
-          path.lineTo(curr.dx, curr.dy);
-        }
-        continue;
-      }
-
-      final clampR = math.min(r, math.min(len1 / 3, len2 / 3));
-      final startX = curr.dx + (dx1 / len1) * clampR;
-      final startY = curr.dy + (dy1 / len1) * clampR;
-      final endX = curr.dx + (dx2 / len2) * clampR;
-      final endY = curr.dy + (dy2 / len2) * clampR;
-
-      if (i == 0) {
-        path.moveTo(startX, startY);
-      } else {
-        path.lineTo(startX, startY);
-      }
-      path.quadraticBezierTo(curr.dx, curr.dy, endX, endY);
-    }
-    path.close();
-    return path;
+      Size size, TrunkSpace space, double scale, double cameraYaw) {
+    return Offset(size.width / 2, size.height / 2);
   }
 
   @override
-  bool shouldRepaint(covariant IsometricPainter oldDelegate) => true;
+  bool shouldRepaint(covariant IsometricPainter oldDelegate) =>
+      space != oldDelegate.space ||
+      boxes != oldDelegate.boxes ||
+      selectedBoxId != oldDelegate.selectedBoxId ||
+      collidingBoxIds != oldDelegate.collidingBoxIds ||
+      scale != oldDelegate.scale ||
+      panOffset != oldDelegate.panOffset ||
+      draggingBoxId != oldDelegate.draggingBoxId ||
+      zoomLevel != oldDelegate.zoomLevel ||
+      highlightLoadOrder != oldDelegate.highlightLoadOrder;
 }

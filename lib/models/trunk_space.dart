@@ -15,8 +15,8 @@ enum TrunkPreset { tucson, sorento, santafe, carnival, ioniq5, avante, custom }
 extension TrunkPresetExt on TrunkPreset {
   String get label => switch (this) {
         TrunkPreset.tucson => '투싼 (104×91cm)',
-        TrunkPreset.sorento => '쏘렌토 (105×100cm)',
-        TrunkPreset.santafe => '싼타페 (128×105cm)',
+        TrunkPreset.sorento => '쏘렌토 (108×110cm)',
+        TrunkPreset.santafe => '싼타페 (111×105cm)',
         TrunkPreset.carnival => '카니발 (125×85cm)',
         TrunkPreset.ioniq5 => '아이오닉5 (100×95cm)',
         TrunkPreset.avante => '아반떼 (102×71cm)',
@@ -92,6 +92,44 @@ class TrunkSpace {
   /// 차종명 (바닥 로고 표시용, null이면 표시 안 함)
   final String? vehicleName;
 
+  /// 트렁크 내부 형상 파라미터 (리얼리즘 렌더링용)
+  final double ceilingDrop;    // 뒤쪽(z=0)에서 천장이 내려오는 량 (m)
+  final double rearTopNarrow;  // 뒤쪽 상단 추가 좁아짐 — C필러 효과 (m)
+
+  /// 차량 바디 프로필 치수
+  final double bodyWidth;      // 차량 전체 후면 폭 (m)
+  final double trunkLipHeight; // 지면~트렁크 바닥 높이 (m)
+  final double roofExtension;  // 트렁크 천장 위 루프 확장 (m)
+  final double bumperDepth;    // 범퍼 돌출 깊이 (m)
+  final double bodyDepth;      // 사이드 패널 깊이 (m)
+
+  /// 차량 외장 색상 (기본: 미드나잇 블랙 메탈릭)
+  final int bodyColor;
+
+  /// 계산된 바디 확장 (각 측면)
+  double get bodyExtX => (bodyWidth - w) / 2;
+
+  /// 깊이 z 위치에서의 천장 높이
+  double ceilingHeightAt(double z) {
+    if (d == 0 || ceilingDrop == 0) return h;
+    final t = (z / d).clamp(0.0, 1.0);
+    return h - ceilingDrop * (1 - t) * (1 - t);
+  }
+
+  /// 깊이 z 위치에서의 상단 추가 좁아짐
+  double topNarrowAt(double z) {
+    if (d == 0 || rearTopNarrow == 0) return 0;
+    final t = (z / d).clamp(0.0, 1.0);
+    return rearTopNarrow * (1 - t);
+  }
+
+  /// 깊이 z 위치에서의 하단 테이퍼
+  double taperAt(double z) {
+    if (d == 0 || taperRatio == 0) return 0;
+    final t = (z / d).clamp(0.0, 1.0);
+    return (w * taperRatio / 2) * (1 - t);
+  }
+
   const TrunkSpace({
     required this.w,
     required this.d,
@@ -102,6 +140,14 @@ class TrunkSpace {
     this.seatSplitRatio,
     this.taperRatio = 0.0,
     this.vehicleName,
+    this.ceilingDrop = 0.0,
+    this.rearTopNarrow = 0.0,
+    this.bodyWidth = 1.40,
+    this.trunkLipHeight = 0.55,
+    this.roofExtension = 0.12,
+    this.bumperDepth = 0.07,
+    this.bodyDepth = 0.55,
+    this.bodyColor = 0xFF1C2526,
   });
 
   /// 투싼 (좌석 올린 상태) — 6:4 분할
@@ -112,35 +158,57 @@ class TrunkSpace {
         leftWheelhouse: Wheelhouse(w: 0.14, d: 0.40, h: 0.35),
         rightWheelhouse: Wheelhouse(w: 0.14, d: 0.40, h: 0.35),
         seatSplitRatio: [0.6, 0.4],
-        taperRatio: 0.05,
+        taperRatio: 0.06,
+        ceilingDrop: 0.08,
+        rearTopNarrow: 0.04,
         vehicleName: 'TUCSON',
+        bodyWidth: 1.40,
+        trunkLipHeight: 0.55,
+        roofExtension: 0.12,
+        bumperDepth: 0.07,
+        bodyDepth: 0.55,
       );
 
-  /// 쏘렌토 — 4:2:4 분할
+  /// 쏘렌토 MQ4 — 4:2:4 분할 (리서치 기반 수정: carwow.de, cinch.co.uk, kia-forums)
+  /// 적재폭 1,080~1,100mm, 깊이 1,130~1,280mm, 높이 774mm
   factory TrunkSpace.sorento() => const TrunkSpace(
-        w: 1.05,
-        d: 1.00,
-        h: 0.77,
-        leftWheelhouse: Wheelhouse(w: 0.15, d: 0.40, h: 0.35),
-        rightWheelhouse: Wheelhouse(w: 0.15, d: 0.40, h: 0.35),
+        w: 1.08,
+        d: 1.10,
+        h: 0.78,
+        leftWheelhouse: Wheelhouse(w: 0.08, d: 0.40, h: 0.30),
+        rightWheelhouse: Wheelhouse(w: 0.08, d: 0.40, h: 0.30),
         seatSplitRatio: [0.4, 0.2, 0.4],
-        taperRatio: 0.04,
+        taperRatio: 0.07,
+        ceilingDrop: 0.12,
+        rearTopNarrow: 0.05,
         vehicleName: 'SORENTO',
+        bodyWidth: 1.44,
+        trunkLipHeight: 0.58,
+        roofExtension: 0.12,
+        bumperDepth: 0.07,
+        bodyDepth: 0.60,
       );
 
-  /// 싼타페 — 6:4 분할
+  /// 싼타페 — 6:4 분할 (w 수정: 1.09→1.11, WH 0.10→0.13)
   factory TrunkSpace.santafe() => const TrunkSpace(
-        w: 1.28,
+        w: 1.11,
         d: 1.05,
         h: 0.80,
-        leftWheelhouse: Wheelhouse(w: 0.10, d: 0.40, h: 0.35),
-        rightWheelhouse: Wheelhouse(w: 0.10, d: 0.40, h: 0.35),
+        leftWheelhouse: Wheelhouse(w: 0.13, d: 0.40, h: 0.35),
+        rightWheelhouse: Wheelhouse(w: 0.13, d: 0.40, h: 0.35),
         seatSplitRatio: [0.6, 0.4],
-        taperRatio: 0.04,
+        taperRatio: 0.06,
+        ceilingDrop: 0.10,
+        rearTopNarrow: 0.05,
         vehicleName: 'SANTA FE',
+        bodyWidth: 1.45,
+        trunkLipHeight: 0.56,
+        roofExtension: 0.12,
+        bumperDepth: 0.07,
+        bodyDepth: 0.60,
       );
 
-  /// 카니발 — 5:5 분할
+  /// 카니발 — 5:5 분할 (미니밴: 천장 거의 안 내려옴)
   factory TrunkSpace.carnival() => const TrunkSpace(
         w: 1.25,
         d: 0.85,
@@ -149,7 +217,14 @@ class TrunkSpace {
         rightWheelhouse: Wheelhouse(w: 0.10, d: 0.30, h: 0.25),
         seatSplitRatio: [0.5, 0.5],
         taperRatio: 0.03,
+        ceilingDrop: 0.04,
+        rearTopNarrow: 0.02,
         vehicleName: 'CARNIVAL',
+        bodyWidth: 1.63,
+        trunkLipHeight: 0.50,
+        roofExtension: 0.14,
+        bumperDepth: 0.08,
+        bodyDepth: 0.65,
       );
 
   /// 아이오닉5 — 6:4 분할
@@ -160,11 +235,18 @@ class TrunkSpace {
         leftWheelhouse: Wheelhouse(w: 0.15, d: 0.35, h: 0.30),
         rightWheelhouse: Wheelhouse(w: 0.15, d: 0.35, h: 0.30),
         seatSplitRatio: [0.6, 0.4],
-        taperRatio: 0.06,
+        taperRatio: 0.07,
+        ceilingDrop: 0.10,
+        rearTopNarrow: 0.05,
         vehicleName: 'IONIQ 5',
+        bodyWidth: 1.38,
+        trunkLipHeight: 0.55,
+        roofExtension: 0.10,
+        bumperDepth: 0.06,
+        bodyDepth: 0.55,
       );
 
-  /// 아반떼 (세단) — 분할 없음 (고정 뒷좌석)
+  /// 아반떼 (세단) — 분할 없음 (고정 뒷좌석), 트렁크 리드 때문에 앞뒤 폭 차이 큼
   factory TrunkSpace.avante() => const TrunkSpace(
         w: 1.02,
         d: 0.71,
@@ -172,7 +254,14 @@ class TrunkSpace {
         leftWheelhouse: Wheelhouse(w: 0.05, d: 0.30, h: 0.25),
         rightWheelhouse: Wheelhouse(w: 0.05, d: 0.30, h: 0.25),
         taperRatio: 0.12,
+        ceilingDrop: 0.06,
+        rearTopNarrow: 0.04,
         vehicleName: 'AVANTE',
+        bodyWidth: 1.34,
+        trunkLipHeight: 0.45,
+        roofExtension: 0.08,
+        bumperDepth: 0.06,
+        bodyDepth: 0.50,
       );
 
   factory TrunkSpace.custom({
@@ -200,7 +289,15 @@ class TrunkSpace {
         },
         if (seatSplitRatio != null) 'seatSplitRatio': seatSplitRatio,
         if (taperRatio != 0.0) 'taperRatio': taperRatio,
+        if (ceilingDrop != 0.0) 'ceilingDrop': ceilingDrop,
+        if (rearTopNarrow != 0.0) 'rearTopNarrow': rearTopNarrow,
         if (vehicleName != null) 'vehicleName': vehicleName,
+        'bodyWidth': bodyWidth,
+        'trunkLipHeight': trunkLipHeight,
+        'roofExtension': roofExtension,
+        'bumperDepth': bumperDepth,
+        'bodyDepth': bodyDepth,
+        'bodyColor': bodyColor,
       };
 
   factory TrunkSpace.fromJson(Map<String, dynamic> json) {
@@ -216,7 +313,15 @@ class TrunkSpace {
           Wheelhouse.fromJson(wh['right'] as Map<String, dynamic>),
       seatSplitRatio: rawSplit?.map((e) => (e as num).toDouble()).toList(),
       taperRatio: (json['taperRatio'] as num?)?.toDouble() ?? 0.0,
+      ceilingDrop: (json['ceilingDrop'] as num?)?.toDouble() ?? 0.0,
+      rearTopNarrow: (json['rearTopNarrow'] as num?)?.toDouble() ?? 0.0,
       vehicleName: json['vehicleName'] as String?,
+      bodyWidth: (json['bodyWidth'] as num?)?.toDouble() ?? 1.40,
+      trunkLipHeight: (json['trunkLipHeight'] as num?)?.toDouble() ?? 0.55,
+      roofExtension: (json['roofExtension'] as num?)?.toDouble() ?? 0.12,
+      bumperDepth: (json['bumperDepth'] as num?)?.toDouble() ?? 0.07,
+      bodyDepth: (json['bodyDepth'] as num?)?.toDouble() ?? 0.55,
+      bodyColor: (json['bodyColor'] as num?)?.toInt() ?? 0xFF1C2526,
     );
   }
 }

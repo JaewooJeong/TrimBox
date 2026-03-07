@@ -1,137 +1,172 @@
 part of 'isometric_painter.dart';
 
-/// 그리드, 오브젝트 배치, 스태킹 가이드, 치수 라벨 렌더링
+/// Grid, object drawing, stacking guides, dimension labels
 extension GuideRendering on IsometricPainter {
   void drawGrid(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
+    final w = space.w, d = space.d;
     const unit = 0.10;
     const majorUnit = 0.50;
 
     final minorPaint = Paint()
-      ..color = const Color(0x40999999)
+      ..color = const Color(0x25999999)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.5;
 
     final majorPaint = Paint()
-      ..color = const Color(0x80AAAAAA)
+      ..color = const Color(0x50AAAAAA)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
+      ..strokeWidth = 1.0;
 
-    for (double x = 0; x <= pw + 0.001; x += unit) {
-      final p1 = toIso(x, 0, 0);
-      final p2 = toIso(x, 0, pd);
-      final isMajor =
-          (x / majorUnit - (x / majorUnit).round()).abs() < 0.001;
-      canvas.drawLine(p1, p2, isMajor ? majorPaint : minorPaint);
-    }
-
-    for (double z = 0; z <= pd + 0.001; z += unit) {
-      final p1 = toIso(0, 0, z);
-      final p2 = toIso(pw, 0, z);
+    // Lines along X (at each Z depth) — follow floor taper
+    for (double z = 0; z <= d + 0.001; z += unit) {
+      final xLeft = space.taperAt(z);
+      final xRight = w - space.taperAt(z);
       final isMajor =
           (z / majorUnit - (z / majorUnit).round()).abs() < 0.001;
-      canvas.drawLine(p1, p2, isMajor ? majorPaint : minorPaint);
+      canvas.drawLine(
+        toScreen(xLeft, 0, z),
+        toScreen(xRight, 0, z),
+        isMajor ? majorPaint : minorPaint,
+      );
+    }
+
+    // Lines along Z (at each X position)
+    for (double x = 0; x <= w + 0.001; x += unit) {
+      final isMajor =
+          (x / majorUnit - (x / majorUnit).round()).abs() < 0.001;
+      canvas.drawLine(
+        toScreen(x, 0, 0),
+        toScreen(x, 0, d),
+        isMajor ? majorPaint : minorPaint,
+      );
     }
   }
 
-  /// 휠하우스 + 박스를 통합 depth sort하여 렌더링
+  /// Depth sort key: front face z = closer to camera = drawn later
+  double _objectDepth(double cx, double cz, [double cd = 0]) => cz + cd;
+
+  /// Render wheelhousees + boxes depth-sorted
   void drawObjects(Canvas canvas) {
     final lw = space.leftWheelhouse;
     final rw = space.rightWheelhouse;
 
     final List<({double depth, VoidCallback draw})> objects = [];
 
-    // 휠하우스 → view-space 변환
-    const whFill = Color(0xFF8A8A8A);
-    const whStroke = Color(0xFF666666);
+    // Wheelhouse color matches trunk interior walls
+    const whFill = Color(0xFF2D2A27);
+    const whStroke = Color(0xFF1E1C1A);
 
-    final lvw = boxToView(0, space.d - lw.d, lw.w, lw.d);
+    // Left wheelhouse
+    final lwx = 0.0, lwz = space.d - lw.d;
     objects.add((
-      depth: (lvw.vx + lvw.vw / 2) + (lvw.vz + lvw.vd / 2),
+      depth: _objectDepth(lwx + lw.w / 2, lwz, lw.d),
       draw: () {
-        drawWheelhouse(
-          canvas,
-          x: lvw.vx, z: lvw.vz,
-          w: lvw.vw, h: lw.h, d: lvw.vd,
-          fillColor: whFill,
-          strokeColor: whStroke,
-        );
-        drawWheelhouseTexture(canvas, lvw.vx, lw.h, lvw.vz, lvw.vw, lvw.vd);
+        drawWheelhouse(canvas,
+            x: lwx,
+            z: lwz,
+            w: lw.w,
+            h: lw.h,
+            d: lw.d,
+            fillColor: whFill,
+            strokeColor: whStroke);
       },
     ));
 
-    final rvw = boxToView(space.w - rw.w, space.d - rw.d, rw.w, rw.d);
+    // Right wheelhouse
+    final rwx = space.w - rw.w, rwz = space.d - rw.d;
     objects.add((
-      depth: (rvw.vx + rvw.vw / 2) + (rvw.vz + rvw.vd / 2),
+      depth: _objectDepth(rwx + rw.w / 2, rwz, rw.d),
       draw: () {
-        drawWheelhouse(
-          canvas,
-          x: rvw.vx, z: rvw.vz,
-          w: rvw.vw, h: rw.h, d: rvw.vd,
-          fillColor: whFill,
-          strokeColor: whStroke,
-        );
-        drawWheelhouseTexture(canvas, rvw.vx, rw.h, rvw.vz, rvw.vw, rvw.vd);
+        drawWheelhouse(canvas,
+            x: rwx,
+            z: rwz,
+            w: rw.w,
+            h: rw.h,
+            d: rw.d,
+            fillColor: whFill,
+            strokeColor: whStroke);
       },
     ));
 
-    // 박스 → view-space 변환
+    // Boxes
     for (final box in boxes) {
-      final vb = boxToView(box.x, box.z, box.effectiveW, box.effectiveD);
+      final bw = box.effectiveW;
+      final bd = box.effectiveD;
       final isSelected = box.id == selectedBoxId;
       final isColliding = collidingBoxIds.contains(box.id);
 
-      // S9: 위치 기반 밝기 조정 (앞쪽 밝음, 뒤쪽 약간 어두움)
-      final zNorm = projD > 0 ? (vb.vz + vb.vd / 2) / projD : 0.5;
-      final depthDarken = (1.0 - zNorm) * 0.03;
-      final adjustedColor = Color.lerp(box.color, Colors.black, depthDarken)!;
+      // Step view filtering
+      final stepMode = highlightLoadOrder != null;
+      final order = box.loadOrder;
+      if (stepMode && order == null) continue; // no load order → hide in step mode
+      if (stepMode && order != null && order > highlightLoadOrder!) continue; // future steps hidden
+
+      final isDimmed = stepMode && order != null && order < highlightLoadOrder!;
+      final isCurrentStep = stepMode && order == highlightLoadOrder;
 
       Color strokeColor;
       double strokeWidth;
-      if (isColliding) {
+      if (isCurrentStep) {
+        strokeColor = const Color(0xFF00E676);
+        strokeWidth = 3.0;
+      } else if (isColliding) {
         strokeColor = const Color(0xFFFF4D4D);
         strokeWidth = 2.5;
       } else if (isSelected) {
         strokeColor = const Color(0xFF4DA3FF);
         strokeWidth = 2.5;
       } else {
-        strokeColor = Color.lerp(adjustedColor, Colors.black, 0.35)!;
+        strokeColor = Color.lerp(box.color, Colors.black, 0.35)!;
         strokeWidth = 1.2;
       }
 
+      final effectiveColor = isDimmed
+          ? Color.lerp(box.color, const Color(0xFF333333), 0.65)!
+          : box.color;
+
       objects.add((
-        depth: (vb.vx + vb.vw / 2) + (vb.vz + vb.vd / 2),
+        depth: _objectDepth(box.x + bw / 2, box.z, bd),
         draw: () {
-          drawIsometricBox(
-            canvas,
-            x: vb.vx, y: box.y, z: vb.vz,
-            w: vb.vw, h: box.h, d: vb.vd,
-            fillColor: adjustedColor,
-            strokeColor: strokeColor,
-            strokeWidth: strokeWidth,
-            isSelected: isSelected,
-            category: box.category,
-          );
-          if (isSelected) {
-            drawBoxLabelAt(canvas, box, vb);
-          } else {
-            drawBoxNameLabelAt(canvas, box, vb);
+          drawIsometricBox(canvas,
+              x: box.x,
+              y: box.y,
+              z: box.z,
+              w: bw,
+              h: box.h,
+              d: bd,
+              fillColor: effectiveColor,
+              strokeColor: isDimmed
+                  ? Color.lerp(strokeColor, const Color(0xFF333333), 0.5)!
+                  : strokeColor,
+              strokeWidth: strokeWidth,
+              isSelected: isSelected && !stepMode,
+              category: box.category,
+              label: box.label,
+              origWcm: box.w * 100,
+              origDcm: box.d * 100,
+              origHcm: box.h * 100);
+          if (isSelected && !stepMode) {
+            drawBoxLabelAt(canvas, box, box.x, box.z, bw, bd);
           }
+          if (isCurrentStep) {
+            drawBoxLabelAt(canvas, box, box.x, box.z, bw, bd);
+          }
+          drawLoadOrderBadge(canvas, box, box.x, box.z, bw, bd);
         },
       ));
     }
 
-    // Painter's algorithm: depth 작은 것(뒤쪽)부터 그리기
+    // Painter's algorithm: lower depth drawn first
     objects.sort((a, b) => a.depth.compareTo(b.depth));
     for (final obj in objects) {
       obj.draw();
     }
   }
 
-  /// 드래그 중 스태킹 가이드 렌더링
+  /// Stacking guides during drag
   void drawStackingGuides(Canvas canvas) {
-    final dragBox = boxes.where((b) => b.id == draggingBoxId).firstOrNull;
+    final dragBox =
+        boxes.where((b) => b.id == draggingBoxId).firstOrNull;
     if (dragBox == null) return;
 
     final dragArea = dragBox.effectiveW * dragBox.effectiveD;
@@ -140,10 +175,12 @@ extension GuideRendering on IsometricPainter {
       if (other.id == dragBox.id) continue;
 
       final overlapX =
-          math.min(dragBox.x + dragBox.effectiveW, other.x + other.effectiveW) -
+          math.min(dragBox.x + dragBox.effectiveW,
+                  other.x + other.effectiveW) -
               math.max(dragBox.x, other.x);
       final overlapZ =
-          math.min(dragBox.z + dragBox.effectiveD, other.z + other.effectiveD) -
+          math.min(dragBox.z + dragBox.effectiveD,
+                  other.z + other.effectiveD) -
               math.max(dragBox.z, other.z);
 
       if (overlapX <= 0 || overlapZ <= 0) continue;
@@ -151,81 +188,66 @@ extension GuideRendering on IsometricPainter {
       final overlapArea = overlapX * overlapZ;
       final isStackable = overlapArea >= dragArea * 0.5;
       final topY = other.y + other.h;
-
       final wouldExceed = topY + dragBox.h > space.h + 0.001;
+
       final guideColor = (isStackable && !wouldExceed)
           ? const Color(0x6600CC66)
           : const Color(0x55FF4444);
 
-      final vb =
-          boxToView(other.x, other.z, other.effectiveW, other.effectiveD);
-      final p4 = toIso(vb.vx, topY, vb.vz);
-      final p5 = toIso(vb.vx + vb.vw, topY, vb.vz);
-      final p6 = toIso(vb.vx + vb.vw, topY, vb.vz + vb.vd);
-      final p7 = toIso(vb.vx, topY, vb.vz + vb.vd);
-
-      final topFace = Path()
-        ..moveTo(p4.dx, p4.dy)
-        ..lineTo(p5.dx, p5.dy)
-        ..lineTo(p6.dx, p6.dy)
-        ..lineTo(p7.dx, p7.dy)
-        ..close();
+      final ow = other.effectiveW, od = other.effectiveD;
+      final topFace = buildPath([
+        toScreen(other.x, topY, other.z),
+        toScreen(other.x + ow, topY, other.z),
+        toScreen(other.x + ow, topY, other.z + od),
+        toScreen(other.x, topY, other.z + od),
+      ]);
 
       canvas.drawPath(
-        topFace,
-        Paint()
-          ..color = guideColor
-          ..style = PaintingStyle.fill,
-      );
-
+          topFace,
+          Paint()
+            ..color = guideColor
+            ..style = PaintingStyle.fill);
       canvas.drawPath(
-        topFace,
-        Paint()
-          ..color = (isStackable && !wouldExceed)
-              ? const Color(0xAA00CC66)
-              : const Color(0xAAFF4444)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
-      );
+          topFace,
+          Paint()
+            ..color = (isStackable && !wouldExceed)
+                ? const Color(0xAA00CC66)
+                : const Color(0xAAFF4444)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
     }
   }
 
-  /// 트렁크 치수 라벨
+  /// Dimension labels at trunk opening edges
   void drawDimensionLabels(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
+    final w = space.w, d = space.d, h = space.h;
 
-    final wMid = toIso(pw / 2, 0, pd);
-    paintDimLabel(
-      canvas,
-      '${(pw * 100).round()}cm',
-      Offset(wMid.dx, wMid.dy + 16),
-    );
+    // Width at bottom of opening
+    final wMid = toScreen(w / 2, 0, d);
+    _paintDimLabel(
+        canvas, '${(w * 100).round()}cm', Offset(wMid.dx, wMid.dy + 16));
 
-    final dMid = toIso(pw, 0, pd / 2);
-    paintDimLabel(
-      canvas,
-      '${(pd * 100).round()}cm',
-      Offset(dMid.dx + 10, dMid.dy + 8),
-    );
+    // Depth on right side
+    final dMid = toScreen(w, 0, d / 2);
+    _paintDimLabel(
+        canvas, '${(d * 100).round()}cm', Offset(dMid.dx + 16, dMid.dy));
 
-    final hMid = toIso(0, space.h / 2, 0);
-    paintDimLabel(
-      canvas,
-      '↕${(space.h * 100).round()}cm',
-      Offset(hMid.dx + 8, hMid.dy - 6),
-    );
+    // Height on left edge of opening
+    final hBot = toScreen(0, 0, d);
+    final hTop = toScreen(0, h, d);
+    final hMid = Offset(
+        (hBot.dx + hTop.dx) / 2 - 20, (hBot.dy + hTop.dy) / 2);
+    _paintDimLabel(canvas, '↕${(h * 100).round()}cm', hMid);
   }
 
-  void paintDimLabel(Canvas canvas, String text, Offset pos) {
+  void _paintDimLabel(Canvas canvas, String text, Offset pos) {
     final tp = TextPainter(
       text: TextSpan(
         text: text,
         style: const TextStyle(
-          color: Color(0x99FFFFFF),
-          fontSize: 10,
-          fontWeight: FontWeight.w400,
-        ),
+            color: Color(0x99FFFFFF),
+            fontSize: 10,
+            fontWeight: FontWeight.w400),
       ),
       textDirection: TextDirection.ltr,
     )..layout();

@@ -17,6 +17,10 @@ class TrimBox {
   Color color;
   BoxCategory category;
 
+  /// Transient display property: load order from auto-layout (1-based).
+  /// Not persisted in JSON.
+  int? loadOrder;
+
   TrimBox({
     required this.id,
     required this.label,
@@ -29,6 +33,7 @@ class TrimBox {
     this.rotY = 0,
     required this.color,
     this.category = BoxCategory.custom,
+    this.loadOrder,
   });
 
   /// 회전 적용 후 실제 폭/깊이
@@ -64,8 +69,9 @@ class TrimBox {
     int? rotY,
     Color? color,
     BoxCategory? category,
-  }) =>
-      TrimBox(
+    int? loadOrder,
+  }) {
+      final copy = TrimBox(
         id: id ?? this.id,
         label: label ?? this.label,
         w: w ?? this.w,
@@ -78,6 +84,9 @@ class TrimBox {
         color: color ?? this.color,
         category: category ?? this.category,
       );
+      copy.loadOrder = loadOrder ?? this.loadOrder;
+      return copy;
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,

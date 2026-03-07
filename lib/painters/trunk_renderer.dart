@@ -1,196 +1,357 @@
 part of 'isometric_painter.dart';
 
-/// 트렁크 구조물 렌더링 (벽, 바닥, 림, 등받이, 실루엣, 립, 단차, 로고)
+/// Trunk interior rendering — walls, floor, ceiling, seat backrest
+/// Supports curved ceiling (ceilingDrop), C-pillar narrowing (rearTopNarrow),
+/// and bottom taper (taperRatio) for realistic car trunk shapes.
 extension TrunkRendering on IsometricPainter {
-  /// 테이퍼 인셋 (뒷벽이 좁아지는 양, 각 측면)
-  double get _taperInset => projW * space.taperRatio / 2;
+  static const int _shapeSegs = 10;
 
-  /// 트렁크 뒷벽 2개 (view-space) — 테이퍼링 적용
-  void drawTrunkWalls(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
-    final h = space.h;
-    final inset = _taperInset;
+  // ── Shape helpers ──
 
-    final wallStroke = Paint()
-      ..color = const Color(0xFF505050)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
+  /// Left wall X at bottom for depth z
+  double _wallLeftBot(double z) => space.taperAt(z);
 
-    // 왼쪽 뒷벽 (viewX=0, z방향) — 어두운 면
-    final leftWall = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(toIso(0, 0, pd).dx, toIso(0, 0, pd).dy)
-      ..lineTo(toIso(0, h, pd).dx, toIso(0, h, pd).dy)
-      ..lineTo(toIso(inset, h, 0).dx, toIso(inset, h, 0).dy)
-      ..close();
+  /// Right wall X at bottom for depth z
+  double _wallRightBot(double z) => space.w - space.taperAt(z);
 
-    canvas.drawPath(
-      leftWall,
-      Paint()
-        ..color = const Color(0xFF2A2825)
-        ..style = PaintingStyle.fill,
-    );
-    canvas.drawPath(leftWall, wallStroke);
+  /// Left wall X at ceiling for depth z
+  double _wallLeftTop(double z) =>
+      space.taperAt(z) + space.topNarrowAt(z);
 
-    // S9: 왼쪽 벽 높이 그라데이션 (상단 밝음 → 하단 어두움)
-    canvas.drawPath(
-      leftWall,
-      Paint()
-        ..shader = ui.Gradient.linear(
-          toIso(inset / 2, h, pd / 2),
-          toIso(inset / 2, 0, pd / 2),
-          [const Color(0x00000000), const Color(0x18000000)],
-        )
-        ..style = PaintingStyle.fill,
-    );
+  /// Right wall X at ceiling for depth z
+  double _wallRightTop(double z) =>
+      space.w - space.taperAt(z) - space.topNarrowAt(z);
 
-    // 오른쪽 뒷벽 (viewZ=0, x방향) — 밝은 면
-    final rightWall = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(toIso(pw - inset, 0, 0).dx, toIso(pw - inset, 0, 0).dy)
-      ..lineTo(toIso(pw - inset, h, 0).dx, toIso(pw - inset, h, 0).dy)
-      ..lineTo(toIso(inset, h, 0).dx, toIso(inset, h, 0).dy)
-      ..close();
+  /// Ceiling height at depth z
+  double _ceilH(double z) => space.ceilingHeightAt(z);
 
-    canvas.drawPath(
-      rightWall,
-      Paint()
-        ..color = const Color(0xFF3A3835)
-        ..style = PaintingStyle.fill,
-    );
-    canvas.drawPath(rightWall, wallStroke);
+  // ── Ceiling ──
+  void drawTrunkCeiling(Canvas canvas) {
+    final d = space.d;
+    final hasCurve =
+        space.ceilingDrop > 0 || space.rearTopNarrow > 0;
 
-    // S9: 오른쪽 벽 높이 그라데이션
-    canvas.drawPath(
-      rightWall,
-      Paint()
-        ..shader = ui.Gradient.linear(
-          toIso(pw / 2, h, 0),
-          toIso(pw / 2, 0, 0),
-          [const Color(0x00000000), const Color(0x18000000)],
-        )
-        ..style = PaintingStyle.fill,
-    );
-
-    // S8: 벽면 직물/트림 질감 — 가는 수평 패턴
-    final wallMinorPaint = Paint()
-      ..color = const Color(0x12FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
-    final wallMajorPaint = Paint()
-      ..color = const Color(0x28FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    const wallUnit = 0.10;
-    const wallMajorUnit = 0.50;
-
-    for (double py = wallUnit; py < h - 0.001; py += wallUnit) {
-      final isMajor =
-          (py / wallMajorUnit - (py / wallMajorUnit).round()).abs() < 0.001;
-      final paint = isMajor ? wallMajorPaint : wallMinorPaint;
-      canvas.drawLine(toIso(inset, py, 0), toIso(0, py, pd), paint);
-      canvas.drawLine(
-          toIso(inset, py, 0), toIso(pw - inset, py, 0), paint);
+    if (!hasCurve) {
+      // Legacy flat ceiling
+      final inset = space.w * space.taperRatio / 2;
+      _drawQuadFace(canvas, [
+        toScreen(inset, space.h, 0),
+        toScreen(space.w - inset, space.h, 0),
+        toScreen(space.w, space.h, d),
+        toScreen(0, space.h, d),
+      ], const Color(0xFF222020));
+      return;
     }
 
-    // S8: 벽면 미세 직물 패턴 (2cm 간격 세밀 수평선)
-    final fabricPaint = Paint()
-      ..color = const Color(0x08FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.3;
-    for (double py = 0.02; py < h - 0.001; py += 0.02) {
-      // 10cm 단위와 겹치지 않을 때만
-      if ((py * 10).round() % 1 == 0 && (py * 100).round() % 10 != 0) {
-        canvas.drawLine(toIso(inset, py, 0), toIso(0, py, pd), fabricPaint);
-        canvas.drawLine(
-            toIso(inset, py, 0), toIso(pw - inset, py, 0), fabricPaint);
-      }
-    }
+    for (int i = 0; i < _shapeSegs; i++) {
+      final t0 = i / _shapeSegs;
+      final t1 = (i + 1) / _shapeSegs;
+      final z0 = d * t0, z1 = d * t1;
 
-    // 벽면 수직 패딩 라인
-    final vertPaint = Paint()
-      ..color = const Color(0x10FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
-    const vertUnit = 0.10;
-    for (double pz = vertUnit; pz < pd - 0.001; pz += vertUnit) {
-      final t = pz / pd;
-      final xAtZ = inset * (1 - t);
-      canvas.drawLine(
-          toIso(xAtZ, 0, pz), toIso(xAtZ, h, pz), vertPaint);
-    }
-    for (double px = vertUnit; px < (pw - 2 * inset) - 0.001; px += vertUnit) {
-      canvas.drawLine(
-          toIso(inset + px, 0, 0), toIso(inset + px, h, 0), vertPaint);
+      final ch0 = _ceilH(z0), ch1 = _ceilH(z1);
+      final lt0 = _wallLeftTop(z0), lt1 = _wallLeftTop(z1);
+      final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
+
+      // Slight color variation: darker toward back
+      // Warmer/brighter near opening (high t = near opening)
+      final warmShift = t0 * 0.12; // brighter toward opening
+      final shade = Color.lerp(
+          const Color(0xFF222020), const Color(0xFF3A3530), warmShift)!;
+
+      _drawQuadFace(canvas, [
+        toScreen(lt0, ch0, z0),
+        toScreen(rt0, ch0, z0),
+        toScreen(rt1, ch1, z1),
+        toScreen(lt1, ch1, z1),
+      ], shade);
     }
   }
 
-  /// 뒷좌석 등받이 — 뒷벽(viewZ=0)에 오버레이, 테이퍼 반영
-  void drawSeatBackrest(Canvas canvas) {
-    final pw = projW;
-    final h = space.h;
-    final inset = _taperInset;
-    final tilt = h * 0.04;
+  // ── Side walls ──
+  void drawTrunkWalls(Canvas canvas) {
+    final d = space.d;
+    final hasCurve =
+        space.ceilingDrop > 0 || space.rearTopNarrow > 0;
 
-    final backrestFill = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(
-          toIso(pw - inset, 0, 0).dx, toIso(pw - inset, 0, 0).dy)
-      ..lineTo(toIso(pw - inset, h, tilt).dx,
-          toIso(pw - inset, h, tilt).dy)
-      ..lineTo(toIso(inset, h, tilt).dx, toIso(inset, h, tilt).dy)
-      ..close();
+    if (!hasCurve) {
+      _drawLegacyWalls(canvas);
+      return;
+    }
 
+    for (int i = 0; i < _shapeSegs; i++) {
+      final t0 = i / _shapeSegs;
+      final t1 = (i + 1) / _shapeSegs;
+      final z0 = d * t0, z1 = d * t1;
+
+      final ch0 = _ceilH(z0), ch1 = _ceilH(z1);
+      final lb0 = _wallLeftBot(z0), lb1 = _wallLeftBot(z1);
+      final lt0 = _wallLeftTop(z0), lt1 = _wallLeftTop(z1);
+      final rb0 = _wallRightBot(z0), rb1 = _wallRightBot(z1);
+      final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
+
+      final shade = Color.lerp(
+          const Color(0xFF2A2825), const Color(0xFF1E1C1A), (1 - t0) * 0.4)!;
+
+      // Left wall segment
+      _drawQuadFace(canvas, [
+        toScreen(lb0, 0, z0),
+        toScreen(lb1, 0, z1),
+        toScreen(lt1, ch1, z1),
+        toScreen(lt0, ch0, z0),
+      ], shade);
+
+      // Left wall plastic grain lines
+      _drawWallGrainLines(canvas, lb0, lb1, lt0, lt1, ch0, ch1, z0, z1);
+
+      // Right wall segment
+      _drawQuadFace(canvas, [
+        toScreen(rb1, 0, z1),
+        toScreen(rb0, 0, z0),
+        toScreen(rt0, ch0, z0),
+        toScreen(rt1, ch1, z1),
+      ], shade);
+
+      // Right wall plastic grain lines
+      _drawWallGrainLines(canvas, rb0, rb1, rt0, rt1, ch0, ch1, z0, z1);
+    }
+
+    // Ceiling-wall junction lines (ambient occlusion)
+    _drawCeilingWallJunctions(canvas);
+
+    // Depth gradient overlay on entire wall area
+    _drawWallGradientOverlay(canvas);
+  }
+
+  void _drawLegacyWalls(Canvas canvas) {
+    final w = space.w, d = space.d, h = space.h;
+    final inset = space.w * space.taperRatio / 2;
+
+    final leftPts = [
+      toScreen(inset, 0, 0),
+      toScreen(0, 0, d),
+      toScreen(0, h, d),
+      toScreen(inset, h, 0),
+    ];
+    _drawQuadFace(canvas, leftPts, const Color(0xFF2A2825));
+    _drawDepthGradient(canvas, leftPts);
+
+    final rightPts = [
+      toScreen(w - inset, 0, 0),
+      toScreen(w, 0, d),
+      toScreen(w, h, d),
+      toScreen(w - inset, h, 0),
+    ];
+    _drawQuadFace(canvas, rightPts, const Color(0xFF2A2825));
+    _drawDepthGradient(canvas, rightPts);
+  }
+
+  void _drawCeilingWallJunctions(Canvas canvas) {
+    final d = space.d;
+    final junctionPaint = Paint()
+      ..color = const Color(0xFF0E0C0A)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+
+    // Left ceiling-wall junction
+    final leftJunction = Path();
+    var pt = toScreen(_wallLeftTop(0), _ceilH(0), 0);
+    leftJunction.moveTo(pt.dx, pt.dy);
+    for (int i = 1; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      pt = toScreen(_wallLeftTop(z), _ceilH(z), z);
+      leftJunction.lineTo(pt.dx, pt.dy);
+    }
+    canvas.drawPath(leftJunction, junctionPaint);
+
+    // Right ceiling-wall junction
+    final rightJunction = Path();
+    pt = toScreen(_wallRightTop(0), _ceilH(0), 0);
+    rightJunction.moveTo(pt.dx, pt.dy);
+    for (int i = 1; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      pt = toScreen(_wallRightTop(z), _ceilH(z), z);
+      rightJunction.lineTo(pt.dx, pt.dy);
+    }
+    canvas.drawPath(rightJunction, junctionPaint);
+  }
+
+  void _drawWallGradientOverlay(Canvas canvas) {
+    final d = space.d;
+    // Left wall gradient
+    final leftOutline = <Offset>[];
+    // Bottom edge: front -> back
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final z = d * i / _shapeSegs;
+      leftOutline.add(toScreen(_wallLeftBot(z), 0, z));
+    }
+    // Top edge: back -> front
+    for (int i = 0; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      leftOutline.add(toScreen(_wallLeftTop(z), _ceilH(z), z));
+    }
+    final leftPath = buildPath(leftOutline);
     canvas.drawPath(
-      backrestFill,
+      leftPath,
       Paint()
-        ..color = const Color(0xFF434038)
+        ..shader = ui.Gradient.linear(
+          toScreen(_wallLeftBot(0), 0, 0),
+          toScreen(0, 0, d),
+          [
+            const Color(0x38000000), // dark deep interior
+            const Color(0x18000000), // mid
+            const Color(0x00000000), // transition
+            const Color(0x30FFFAED), // warm ambient from opening (was 0x10)
+          ],
+          [0.0, 0.25, 0.6, 1.0],
+        )
         ..style = PaintingStyle.fill,
     );
 
-    // S8: 등받이 직물 질감 (시트 패브릭) — 더 거친 패딩 격자
-    final fabricPaint = Paint()
-      ..color = const Color(0x18FFFFFF)
+    // Right wall gradient
+    final rightOutline = <Offset>[];
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final z = d * i / _shapeSegs;
+      rightOutline.add(toScreen(_wallRightBot(z), 0, z));
+    }
+    for (int i = 0; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      rightOutline.add(toScreen(_wallRightTop(z), _ceilH(z), z));
+    }
+    final rightPath = buildPath(rightOutline);
+    canvas.drawPath(
+      rightPath,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          toScreen(_wallRightBot(0), 0, 0),
+          toScreen(space.w, 0, d),
+          [
+            const Color(0x38000000),
+            const Color(0x18000000),
+            const Color(0x00000000),
+            const Color(0x30FFFAED), // warm ambient from opening (was 0x10)
+          ],
+          [0.0, 0.25, 0.6, 1.0],
+        )
+        ..style = PaintingStyle.fill,
+    );
+  }
+
+  /// Plastic trim grain lines + gloss highlight on a wall segment
+  void _drawWallGrainLines(Canvas canvas, double xBot0, double xBot1,
+      double xTop0, double xTop1, double h0, double h1, double z0, double z1) {
+    final grainPaint = Paint()
+      ..color = const Color(0x0CFFFFFF)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
+      ..strokeWidth = 0.4;
 
-    const padUnit = 0.10;
-    for (double py = padUnit; py < h - 0.001; py += padUnit) {
-      final t = py / h;
-      final z = tilt * t;
+    // 4 horizontal grain lines at 20%, 40%, 60%, 80% height
+    for (final frac in [0.2, 0.4, 0.6, 0.8]) {
+      final y0 = h0 * frac;
+      final y1 = h1 * frac;
+      final x0 = xBot0 + (xTop0 - xBot0) * frac;
+      final x1 = xBot1 + (xTop1 - xBot1) * frac;
       canvas.drawLine(
-          toIso(inset, py, z), toIso(pw - inset, py, z), fabricPaint);
-    }
-    final backrestW = pw - 2 * inset;
-    for (double px = padUnit; px < backrestW - 0.001; px += padUnit) {
-      canvas.drawLine(
-          toIso(inset + px, 0, 0), toIso(inset + px, h, tilt), fabricPaint);
+        toScreen(x0, y0, z0),
+        toScreen(x1, y1, z1),
+        grainPaint,
+      );
     }
 
-    // S8: 등받이 퀼팅 패턴 (대각선) — 시트 직물 차별화
+    // Gloss highlight near top (~85% height) -- brighter specular band
+    final glossPaint = Paint()
+      ..color = const Color(0x22FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    const glossFrac = 0.85;
+    final gy0 = h0 * glossFrac;
+    final gy1 = h1 * glossFrac;
+    final gx0 = xBot0 + (xTop0 - xBot0) * glossFrac;
+    final gx1 = xBot1 + (xTop1 - xBot1) * glossFrac;
+    canvas.drawLine(
+      toScreen(gx0, gy0, z0),
+      toScreen(gx1, gy1, z1),
+      glossPaint,
+    );
+  }
+
+  void _drawDepthGradient(Canvas canvas, List<Offset> pts) {
+    final path = buildPath(pts);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          pts[1], pts[0],
+          [const Color(0x00000000), const Color(0x30000000)],
+        )
+        ..style = PaintingStyle.fill,
+    );
+  }
+
+  // ── Seat backrest (z = 0) with diamond quilting ──
+  void drawSeatBackrest(Canvas canvas) {
+    final w = space.w;
+    final seatH = _ceilH(0); // ceiling height at rear
+    final insetBot = _wallLeftBot(0); // bottom taper at z=0
+    final insetTop = _wallLeftTop(0); // top taper at z=0
+    final tilt = seatH * 0.12;
+
+    // Main surface (trapezoidal for realism)
+    final facePath = buildPath([
+      toScreen(insetBot, 0, 0),
+      toScreen(w - insetBot, 0, 0),
+      toScreen(w - insetTop, seatH, tilt),
+      toScreen(insetTop, seatH, tilt),
+    ]);
+
+    canvas.drawPath(
+        facePath,
+        Paint()
+          ..color = const Color(0xFF3D3A35)
+          ..style = PaintingStyle.fill);
+
+    // Diamond quilting -- clip to face shape
+    canvas.save();
+    canvas.clipPath(facePath);
+
+    final backW = w - insetBot - insetTop; // average width
+    const quiltUnit = 0.08;
     final quiltPaint = Paint()
-      ..color = const Color(0x0AFFFFFF)
+      ..color = const Color(0x20967B5D)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.3;
-    for (double offset = 0.05; offset < backrestW + h; offset += 0.08) {
-      // 좌하 → 우상 대각선
-      final startX = math.min(offset, backrestW);
-      final startY = math.max(0.0, offset - backrestW);
-      final endY = math.min(offset, h);
-      final endX = math.max(0.0, offset - h);
-      if (startX > endX && endY > startY) {
-        final startZ = tilt * (startY / h);
-        final endZ = tilt * (endY / h);
-        canvas.drawLine(
-          toIso(inset + startX, startY, startZ),
-          toIso(inset + endX, endY, endZ),
-          quiltPaint,
-        );
-      }
+      ..strokeWidth = 0.8;
+
+    // Family A: u + v = c (lines going down-right)
+    for (double c = quiltUnit; c < backW + seatH; c += quiltUnit) {
+      final u0 = math.max(0.0, c - seatH);
+      final u1 = math.min(backW, c);
+      if (u1 <= u0) continue;
+      final v0 = c - u0;
+      final v1 = c - u1;
+      canvas.drawLine(
+        toScreen(insetBot + u0, v0, tilt * v0 / seatH),
+        toScreen(insetBot + u1, v1, tilt * v1 / seatH),
+        quiltPaint,
+      );
     }
 
-    // 분할선 렌더링
+    // Family B: u - v = c (lines going up-right)
+    for (double c = -seatH + quiltUnit; c < backW; c += quiltUnit) {
+      final u0 = math.max(0.0, c);
+      final u1 = math.min(backW, c + seatH);
+      if (u1 <= u0) continue;
+      final v0 = u0 - c;
+      final v1 = u1 - c;
+      if (v0 < -0.001 || v1 > seatH + 0.001) continue;
+      canvas.drawLine(
+        toScreen(insetBot + u0, v0, tilt * v0 / seatH),
+        toScreen(insetBot + u1, v1, tilt * v1 / seatH),
+        quiltPaint,
+      );
+    }
+
+    canvas.restore();
+
+    // Seat split lines
     final splitRatio = space.seatSplitRatio;
     if (splitRatio != null && splitRatio.length >= 2) {
       final splitPaint = Paint()
@@ -199,452 +360,603 @@ extension TrunkRendering on IsometricPainter {
         ..strokeWidth = 2.5
         ..strokeCap = StrokeCap.round;
 
-      final splitGlowPaint = Paint()
-        ..color = const Color(0x30000000)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 5.0
-        ..strokeCap = StrokeCap.round;
-
-      double cumulative = 0;
+      double cum = 0;
+      final seatWidthBot = w - 2 * insetBot;
+      final seatWidthTop = w - 2 * insetTop;
       for (int i = 0; i < splitRatio.length - 1; i++) {
-        cumulative += splitRatio[i];
-        final splitX = inset + backrestW * cumulative;
+        cum += splitRatio[i];
+        final sxBot = insetBot + seatWidthBot * cum;
+        final sxTop = insetTop + seatWidthTop * cum;
         canvas.drawLine(
-          toIso(splitX, 0.01, 0),
-          toIso(splitX, h - 0.01, tilt),
-          splitGlowPaint,
-        );
-        canvas.drawLine(
-          toIso(splitX, 0.01, 0),
-          toIso(splitX, h - 0.01, tilt),
+          toScreen(sxBot, 0.01, 0),
+          toScreen(sxTop, seatH - 0.01, tilt),
           splitPaint,
         );
       }
     }
 
-    // 등받이 상단 모서리
+    // Top edge highlight
     canvas.drawLine(
-      toIso(inset, h, tilt),
-      toIso(pw - inset, h, tilt),
+      toScreen(insetTop, seatH, tilt),
+      toScreen(w - insetTop, seatH, tilt),
       Paint()
-        ..color = const Color(0x40FFFFFF)
+        ..color = const Color(0x30FFFFFF)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0,
     );
+
+    // Headrest stubs (protruding above seat top)
+    _drawHeadrests(canvas, w, seatH, tilt, insetBot, insetTop);
+
+    // Seat fold lever indicators (red pull handles near split lines)
+    _drawSeatFoldLevers(canvas, w, seatH, tilt, insetBot, insetTop);
   }
 
-  /// 트렁크 리드(뚜껑) 실루엣
-  void drawTrunkLidSilhouette(Canvas canvas) {
-    final opacity = ((1.5 - zoomLevel) / 0.5).clamp(0.0, 1.0) * 0.12;
-    if (opacity < 0.01) return;
+  void _drawHeadrests(Canvas canvas, double w, double seatH, double tilt,
+      double insetBot, double insetTop) {
+    final splitRatio = space.seatSplitRatio;
+    if (splitRatio == null) return; // sedan -- no visible headrests
 
-    final pw = projW;
-    final pd = projD;
-    final h = space.h;
+    const headrestH = 0.10; // 10cm tall
+    const headrestW = 0.12; // 12cm wide
+    const headrestD = 0.04; // 4cm deep (thickness)
 
-    final alpha = (opacity * 255).round();
-    final silhouetteColor = Color.fromARGB(alpha, 0x88, 0x88, 0x88);
+    // Place headrests at center of each seat section
+    final seatWidth = w - 2 * insetTop;
+    double cum = 0;
+    for (int i = 0; i < splitRatio.length; i++) {
+      final sectionCenter = cum + splitRatio[i] / 2;
+      cum += splitRatio[i];
 
-    final archHeight = h * 0.5;
-    final archDepth = pd * 0.3;
+      final cx = insetTop + seatWidth * sectionCenter;
+      final hx = cx - headrestW / 2;
+      final by = seatH;
+      final ty = seatH + headrestH;
+      final hz = tilt - headrestD;
 
-    final rightTop = toIso(pw, h, 0);
-    final leftTop = toIso(0, h, pd);
-    final frontCorner = toIso(pw, h, pd);
+      // Headrest: slightly rounded dark rectangle
+      const headColor = Color(0xFF2A2826);
+      const headDark = Color(0xFF1E1C1A);
 
-    final archApex = toIso(pw * 0.5, h + archHeight, pd + archDepth);
+      // Front face
+      _drawQuadFace(canvas, [
+        toScreen(hx, by, tilt),
+        toScreen(hx + headrestW, by, tilt),
+        toScreen(hx + headrestW, ty, tilt),
+        toScreen(hx, ty, tilt),
+      ], headColor);
 
-    final lidPath = Path()
-      ..moveTo(leftTop.dx, leftTop.dy)
-      ..cubicTo(
-        toIso(0, h + archHeight * 0.6, pd + archDepth * 0.5).dx,
-        toIso(0, h + archHeight * 0.6, pd + archDepth * 0.5).dy,
-        toIso(pw * 0.3, h + archHeight, pd + archDepth).dx,
-        toIso(pw * 0.3, h + archHeight, pd + archDepth).dy,
-        archApex.dx,
-        archApex.dy,
-      )
-      ..cubicTo(
-        toIso(pw * 0.7, h + archHeight, pd + archDepth).dx,
-        toIso(pw * 0.7, h + archHeight, pd + archDepth).dy,
-        toIso(pw, h + archHeight * 0.6, pd + archDepth * 0.5).dx,
-        toIso(pw, h + archHeight * 0.6, pd + archDepth * 0.5).dy,
-        rightTop.dx,
-        rightTop.dy,
+      // Top face
+      _drawQuadFace(canvas, [
+        toScreen(hx, ty, hz),
+        toScreen(hx + headrestW, ty, hz),
+        toScreen(hx + headrestW, ty, tilt),
+        toScreen(hx, ty, tilt),
+      ], headDark);
+
+      // Metal post hints (two thin lines)
+      final postPaint = Paint()
+        ..color = const Color(0xFF555555)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5;
+      final postLeft = cx - 0.025;
+      final postRight = cx + 0.025;
+      canvas.drawLine(
+          toScreen(postLeft, by, tilt),
+          toScreen(postLeft, by - 0.01, tilt),
+          postPaint);
+      canvas.drawLine(
+          toScreen(postRight, by, tilt),
+          toScreen(postRight, by - 0.01, tilt),
+          postPaint);
+    }
+  }
+
+  // ── Seat Fold Lever Indicators ──
+  void _drawSeatFoldLevers(Canvas canvas, double w, double seatH, double tilt,
+      double insetBot, double insetTop) {
+    final splitRatio = space.seatSplitRatio;
+    if (splitRatio == null || splitRatio.length < 2) return;
+
+    const leverW = 0.02; // 2cm wide
+    const leverH = 0.01; // 1cm tall
+
+    final leverPaint = Paint()
+      ..color = const Color(0xFFCC3333) // red pull handle
+      ..style = PaintingStyle.fill;
+
+    // Place a lever near each split line, on the top edge
+    final seatWidthTop = w - 2 * insetTop;
+    double cum = 0;
+    for (int i = 0; i < splitRatio.length - 1; i++) {
+      cum += splitRatio[i];
+      final sx = insetTop + seatWidthTop * cum;
+      // Offset slightly into the wider section
+      final lx = sx + 0.01;
+      final ly = seatH - leverH;
+
+      // Small colored rectangle on the seat top
+      final pts = [
+        toScreen(lx, ly, tilt),
+        toScreen(lx + leverW, ly, tilt),
+        toScreen(lx + leverW, seatH, tilt),
+        toScreen(lx, seatH, tilt),
+      ];
+      canvas.drawPath(buildPath(pts), leverPaint);
+
+      // Tiny highlight
+      canvas.drawPath(
+        buildPath(pts),
+        Paint()
+          ..color = const Color(0x30FFFFFF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.5,
       );
-
-    canvas.drawPath(
-      lidPath,
-      Paint()
-        ..color = silhouetteColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
-        ..strokeCap = StrokeCap.round,
-    );
-
-    final pillarPaint = Paint()
-      ..color = silhouetteColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-
-    canvas.drawLine(
-      toIso(0, h, pd),
-      toIso(0, h + archHeight * 0.15, pd + archDepth * 0.08),
-      pillarPaint,
-    );
-    canvas.drawLine(
-      toIso(pw, h, 0),
-      toIso(pw, h + archHeight * 0.15, archDepth * 0.08),
-      pillarPaint,
-    );
-    canvas.drawLine(
-      frontCorner,
-      toIso(pw, h + archHeight * 0.2, pd + archDepth * 0.1),
-      pillarPaint,
-    );
+    }
   }
 
-  /// S3: 트렁크 3D 립 + 상단 림 + 수직 엣지 — 테이퍼 반영
-  void drawTrunkRim(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
-    final h = space.h;
-    final inset = _taperInset;
-    const lipT = 0.025; // 2.5cm lip thickness
-
-    // 메탈릭 립 색상
-    const lipTopColor = Color(0xFFA0A0A0);
-    const lipFrontColor = Color(0xFF808080);
-    const lipSideColor = Color(0xFF606060);
-
-    final lipStroke = Paint()
-      ..color = const Color(0xFF555555)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8;
-
-    // === Front lip bar (z=pd edge, x=0 to x=pw) ===
-    // Front face (facing viewer, at z=pd+lipT)
-    _drawQuadFace(canvas, [
-      toIso(0, 0, pd + lipT),
-      toIso(pw, 0, pd + lipT),
-      toIso(pw, h, pd + lipT),
-      toIso(0, h, pd + lipT),
-    ], lipFrontColor, lipStroke);
-
-    // Top face of front lip
-    _drawQuadFace(canvas, [
-      toIso(0, h, pd),
-      toIso(pw, h, pd),
-      toIso(pw, h, pd + lipT),
-      toIso(0, h, pd + lipT),
-    ], lipTopColor, lipStroke);
-
-    // S10: Front lip top highlight gradient
-    final frontLipTopPath = Path()
-      ..moveTo(toIso(0, h, pd).dx, toIso(0, h, pd).dy)
-      ..lineTo(toIso(pw, h, pd).dx, toIso(pw, h, pd).dy)
-      ..lineTo(toIso(pw, h, pd + lipT).dx, toIso(pw, h, pd + lipT).dy)
-      ..lineTo(toIso(0, h, pd + lipT).dx, toIso(0, h, pd + lipT).dy)
-      ..close();
-    canvas.drawPath(
-      frontLipTopPath,
-      Paint()
-        ..shader = ui.Gradient.linear(
-          toIso(pw / 2, h, pd),
-          toIso(pw / 2, h, pd + lipT),
-          [const Color(0x50FFFFFF), const Color(0x10FFFFFF)],
-        )
-        ..style = PaintingStyle.fill,
-    );
-
-    // === Right lip bar (right edge, from back to front) ===
-    // Outer face
-    _drawQuadFace(canvas, [
-      toIso(pw - inset + lipT, 0, 0),
-      toIso(pw + lipT, 0, pd),
-      toIso(pw + lipT, h, pd),
-      toIso(pw - inset + lipT, h, 0),
-    ], lipSideColor, lipStroke);
-
-    // Top face of right lip
-    _drawQuadFace(canvas, [
-      toIso(pw - inset, h, 0),
-      toIso(pw, h, pd),
-      toIso(pw + lipT, h, pd),
-      toIso(pw - inset + lipT, h, 0),
-    ], lipTopColor, lipStroke);
-
-    // S10: Right lip top highlight gradient
-    final rightLipTopPath = Path()
-      ..moveTo(toIso(pw - inset, h, 0).dx, toIso(pw - inset, h, 0).dy)
-      ..lineTo(toIso(pw, h, pd).dx, toIso(pw, h, pd).dy)
-      ..lineTo(toIso(pw + lipT, h, pd).dx, toIso(pw + lipT, h, pd).dy)
-      ..lineTo(
-          toIso(pw - inset + lipT, h, 0).dx, toIso(pw - inset + lipT, h, 0).dy)
-      ..close();
-    canvas.drawPath(
-      rightLipTopPath,
-      Paint()
-        ..shader = ui.Gradient.linear(
-          toIso(pw / 2, h, pd / 2),
-          toIso(pw / 2 + lipT, h, pd / 2),
-          [const Color(0x50FFFFFF), const Color(0x10FFFFFF)],
-        )
-        ..style = PaintingStyle.fill,
-    );
-
-    // === 뒷벽 상단 림 (기존) ===
-    final rimPaint = Paint()
-      ..color = const Color(0xFFAAAAAA)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawLine(toIso(inset, h, 0), toIso(0, h, pd), rimPaint);
-    canvas.drawLine(
-        toIso(inset, h, 0), toIso(pw - inset, h, 0), rimPaint);
-
-    // S10: 뒷벽 상단 하이라이트 스트립
-    final highlightPaint = Paint()
-      ..color = const Color(0x40FFFFFF)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawLine(toIso(inset, h, 0), toIso(0, h, pd), highlightPaint);
-    canvas.drawLine(
-        toIso(inset, h, 0), toIso(pw - inset, h, 0), highlightPaint);
-
-    // 수직 엣지
-    final edgePaint = Paint()
-      ..color = const Color(0xFF888888)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round;
-
-    canvas.drawLine(
-        toIso(inset, 0, 0), toIso(inset, h, 0), edgePaint);
-    canvas.drawLine(toIso(0, 0, pd), toIso(0, h, pd), edgePaint);
-    canvas.drawLine(
-        toIso(pw - inset, 0, 0), toIso(pw - inset, h, 0), edgePaint);
-  }
-
-  /// 트렁크 바닥 — 테이퍼링 + 앰비언트 라이팅 + 질감 + 로고
+  // ── Trunk floor ──
   void drawTrunkFloor(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
-    final inset = _taperInset;
+    final w = space.w, d = space.d;
 
-    // 사다리꼴 바닥
-    final path = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(
-          toIso(pw - inset, 0, 0).dx, toIso(pw - inset, 0, 0).dy)
-      ..lineTo(toIso(pw, 0, pd).dx, toIso(pw, 0, pd).dy)
-      ..lineTo(toIso(0, 0, pd).dx, toIso(0, 0, pd).dy)
-      ..close();
+    // Main floor -- follows bottom taper
+    final floorPts = [
+      toScreen(_wallLeftBot(0), 0, 0),
+      toScreen(_wallRightBot(0), 0, 0),
+      toScreen(_wallRightBot(d), 0, d),
+      toScreen(_wallLeftBot(d), 0, d),
+    ];
+    _drawQuadFace(canvas, floorPts, const Color(0xFF4A4540));
 
+    // Depth lighting gradient -- strong warm light near opening
     canvas.drawPath(
-      path,
+      buildPath(floorPts),
       Paint()
-        ..color = const Color(0xFF2D2A27)
+        ..shader = ui.Gradient.linear(
+          floorPts[0], floorPts[3],
+          [
+            const Color(0x40000000), // dark deep interior
+            const Color(0x18000000), // mid
+            const Color(0x00000000), // transition
+            const Color(0x50FFFAED), // warm light near opening (was 0x18)
+          ],
+          [0.0, 0.25, 0.55, 1.0],
+        )
         ..style = PaintingStyle.fill,
     );
 
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xFF5A5550)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0,
-    );
+    // Carpet texture -- fine stipple pattern
+    _drawCarpetTexture(canvas, d);
 
-    // 벽-바닥 접합선
+    // Floor-wall corner ambient occlusion strips
+    _drawFloorWallCornerAO(canvas, d);
+
+    // Wall-floor junction lines (ambient occlusion)
     final junctionPaint = Paint()
       ..color = const Color(0xFF0E0C0A)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
-    canvas.drawLine(toIso(inset, 0, 0), toIso(0, 0, pd), junctionPaint);
-    canvas.drawLine(toIso(inset, 0, 0),
-        toIso(pw - inset, 0, 0), junctionPaint);
 
-    // 바닥 앞쪽 림 하이라이트
-    final rimHighlight = Paint()
-      ..color = const Color(0xFF666666)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+    // Left junction: curved path following wall bottom
+    final leftJunction = Path()
+      ..moveTo(toScreen(_wallLeftBot(0), 0, 0).dx,
+          toScreen(_wallLeftBot(0), 0, 0).dy);
+    for (int i = 1; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      final pt = toScreen(_wallLeftBot(z), 0, z);
+      leftJunction.lineTo(pt.dx, pt.dy);
+    }
+    canvas.drawPath(leftJunction, junctionPaint);
+
+    // Right junction
+    final rightJunction = Path()
+      ..moveTo(toScreen(_wallRightBot(0), 0, 0).dx,
+          toScreen(_wallRightBot(0), 0, 0).dy);
+    for (int i = 1; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      final pt = toScreen(_wallRightBot(z), 0, z);
+      rightJunction.lineTo(pt.dx, pt.dy);
+    }
+    canvas.drawPath(rightJunction, junctionPaint);
+
+    // Back junction
     canvas.drawLine(
-        toIso(pw - inset, 0, 0), toIso(pw, 0, pd), rimHighlight);
-    canvas.drawLine(toIso(0, 0, pd), toIso(pw, 0, pd), rimHighlight);
+        toScreen(_wallLeftBot(0), 0, 0),
+        toScreen(_wallRightBot(0), 0, 0),
+        junctionPaint);
 
-    // 앰비언트 오클루전 스트립
-    final aoDepth = 0.06;
-    final aoPaint = Paint()
-      ..color = const Color(0x50000000)
-      ..style = PaintingStyle.fill;
-
-    final leftAo = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(toIso(0, 0, pd).dx, toIso(0, 0, pd).dy)
-      ..lineTo(toIso(aoDepth, 0, pd).dx, toIso(aoDepth, 0, pd).dy)
-      ..lineTo(toIso(inset + aoDepth, 0, 0).dx,
-          toIso(inset + aoDepth, 0, 0).dy)
-      ..close();
-    canvas.drawPath(leftAo, aoPaint);
-
-    final rightAo = Path()
-      ..moveTo(toIso(inset, 0, 0).dx, toIso(inset, 0, 0).dy)
-      ..lineTo(toIso(pw - inset, 0, 0).dx,
-          toIso(pw - inset, 0, 0).dy)
-      ..lineTo(toIso(pw - inset, 0, aoDepth).dx,
-          toIso(pw - inset, 0, aoDepth).dy)
-      ..lineTo(
-          toIso(inset, 0, aoDepth).dx, toIso(inset, 0, aoDepth).dy)
-      ..close();
-    canvas.drawPath(rightAo, aoPaint);
-
-    // S8: 바닥 고무 매트 홈 패턴 (세로 방향 홈)
-    final groovePaint = Paint()
-      ..color = const Color(0x0A000000)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8;
-    for (double gz = 0.03; gz < pd; gz += 0.03) {
-      final t = gz / pd;
-      final xStart = inset * (1 - t);
-      final xEnd = pw - inset * (1 - t);
-      canvas.drawLine(toIso(xStart, 0, gz), toIso(xEnd, 0, gz), groovePaint);
-    }
-
-    // S8: 바닥 카페트/고무 매트 점 패턴 (다양한 크기)
-    final dotPaint = Paint()
-      ..color = const Color(0x12000000)
-      ..style = PaintingStyle.fill;
-    final dotPaintSmall = Paint()
-      ..color = const Color(0x08000000)
-      ..style = PaintingStyle.fill;
-    const dotStep = 0.05;
-    for (double dx = dotStep; dx < pw; dx += dotStep) {
-      for (double dz = dotStep; dz < pd; dz += dotStep) {
-        final p = toIso(dx, 0, dz);
-        canvas.drawCircle(p, 1.2, dotPaint);
-      }
-    }
-    // 오프셋된 작은 점 패턴
-    for (double dx = dotStep / 2; dx < pw; dx += dotStep) {
-      for (double dz = dotStep / 2; dz < pd; dz += dotStep) {
-        final p = toIso(dx, 0, dz);
-        canvas.drawCircle(p, 0.6, dotPaintSmall);
-      }
-    }
-
-    // S9: 바닥 앰비언트 라이팅 그라데이션 (앞쪽 밝음 → 뒤쪽 어두움)
-    final gradPath = Path()
-      ..moveTo(toIso(inset, 0.001, 0).dx, toIso(inset, 0.001, 0).dy)
-      ..lineTo(
-          toIso(pw - inset, 0.001, 0).dx, toIso(pw - inset, 0.001, 0).dy)
-      ..lineTo(toIso(pw, 0.001, pd).dx, toIso(pw, 0.001, pd).dy)
-      ..lineTo(toIso(0, 0.001, pd).dx, toIso(0, 0.001, pd).dy)
-      ..close();
-    canvas.drawPath(
-      gradPath,
+    // Opening edge highlight
+    canvas.drawLine(
+      toScreen(0, 0, d),
+      toScreen(w, 0, d),
       Paint()
-        ..shader = ui.Gradient.linear(
-          toIso(pw / 2, 0.001, pd),
-          toIso(pw / 2, 0.001, 0),
-          [const Color(0x00000000), const Color(0x14000000)],
-        )
+        ..color = const Color(0xFF555555)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0,
+    );
+
+    // Floor mat edge -- subtle raised perimeter line
+    _drawFloorMatEdge(canvas, d);
+
+    _drawFloorStep(canvas);
+  }
+
+  /// Carpet texture -- subtle stipple dots across the floor
+  void _drawCarpetTexture(Canvas canvas, double d) {
+    final w = space.w;
+    // Fixed seed based on trunk dimensions for stable pattern
+    final rng = math.Random((w * 1000 + d * 1000).toInt());
+    const dotCount = 260;
+
+    final lighterPaint = Paint()
+      ..color = const Color(0x18403C38)
+      ..style = PaintingStyle.fill;
+    final darkerPaint = Paint()
+      ..color = const Color(0x1A0A0806)
+      ..style = PaintingStyle.fill;
+
+    for (int i = 0; i < dotCount; i++) {
+      final t = rng.nextDouble(); // 0..1 along depth
+      final z = t * d;
+      final leftX = _wallLeftBot(z);
+      final rightX = _wallRightBot(z);
+      final x = leftX + rng.nextDouble() * (rightX - leftX);
+      final pt = toScreen(x, 0, z);
+
+      // Perspective-aware dot size: smaller when deeper
+      final dz = camZ - z;
+      final dotR = (focalLen / dz) * scale * 0.002 + 0.3;
+
+      final paint = rng.nextBool() ? lighterPaint : darkerPaint;
+      canvas.drawCircle(pt, dotR, paint);
+    }
+
+    // Add a few short fiber-like lines for variety
+    final fiberPaint = Paint()
+      ..color = const Color(0x12504A44)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.5;
+    for (int i = 0; i < 60; i++) {
+      final t = rng.nextDouble();
+      final z = t * d;
+      final leftX = _wallLeftBot(z);
+      final rightX = _wallRightBot(z);
+      final x = leftX + rng.nextDouble() * (rightX - leftX);
+      final pt = toScreen(x, 0, z);
+      final dz = camZ - z;
+      final len = (focalLen / dz) * scale * 0.004;
+      final angle = rng.nextDouble() * math.pi;
+      final dx = math.cos(angle) * len;
+      final dy = math.sin(angle) * len;
+      canvas.drawLine(pt, pt + Offset(dx, dy), fiberPaint);
+    }
+  }
+
+  /// Darken floor near wall edges (ambient occlusion in corners)
+  void _drawFloorWallCornerAO(Canvas canvas, double d) {
+    const aoWidth = 0.04; // 4cm strip
+
+    // Left edge AO strip
+    final leftAO = <Offset>[];
+    for (int i = 0; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      leftAO.add(toScreen(_wallLeftBot(z), 0, z));
+    }
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final z = d * i / _shapeSegs;
+      leftAO.add(toScreen(_wallLeftBot(z) + aoWidth, 0, z));
+    }
+    canvas.drawPath(
+      buildPath(leftAO),
+      Paint()
+        ..color = const Color(0x1A000000)
+        ..style = PaintingStyle.fill,
+    );
+
+    // Right edge AO strip
+    final rightAO = <Offset>[];
+    for (int i = 0; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      rightAO.add(toScreen(_wallRightBot(z), 0, z));
+    }
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final z = d * i / _shapeSegs;
+      rightAO.add(toScreen(_wallRightBot(z) - aoWidth, 0, z));
+    }
+    canvas.drawPath(
+      buildPath(rightAO),
+      Paint()
+        ..color = const Color(0x1A000000)
+        ..style = PaintingStyle.fill,
+    );
+
+    // Back edge AO strip (along seat)
+    final backAO = [
+      toScreen(_wallLeftBot(0), 0, 0),
+      toScreen(_wallRightBot(0), 0, 0),
+      toScreen(_wallRightBot(0), 0, aoWidth),
+      toScreen(_wallLeftBot(0), 0, aoWidth),
+    ];
+    canvas.drawPath(
+      buildPath(backAO),
+      Paint()
+        ..color = const Color(0x1A000000)
         ..style = PaintingStyle.fill,
     );
   }
 
-  /// S4: 바닥 단차 (문턱 근처 threshold strip)
-  void drawFloorStep(Canvas canvas) {
-    final pw = projW;
-    final pd = projD;
-    const stepH = 0.015; // 1.5cm step height
-    const stepD = 0.04; // 4cm step depth
-    final stepStart = pd - stepD;
+  void _drawFloorStep(Canvas canvas) {
+    final w = space.w, d = space.d;
+    const stepH = 0.015;
+    const stepD = 0.04;
+    final stepStart = d - stepD;
 
     final stepStroke = Paint()
       ..color = const Color(0xFF4A4A4A)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.8;
 
-    // 단차 윗면 (밝은 톤)
-    _drawQuadFace(
-      canvas,
-      [
-        toIso(0, stepH, stepStart),
-        toIso(pw, stepH, stepStart),
-        toIso(pw, stepH, pd),
-        toIso(0, stepH, pd),
-      ],
-      const Color(0xFF3A3836),
-      stepStroke,
-    );
+    // Top face
+    _drawQuadFace(canvas, [
+      toScreen(0, stepH, stepStart),
+      toScreen(w, stepH, stepStart),
+      toScreen(w, stepH, d),
+      toScreen(0, stepH, d),
+    ], const Color(0xFF3A3836), stroke: stepStroke);
 
-    // 단차 앞면 (어두운 톤)
-    _drawQuadFace(
-      canvas,
-      [
-        toIso(0, 0, stepStart),
-        toIso(pw, 0, stepStart),
-        toIso(pw, stepH, stepStart),
-        toIso(0, stepH, stepStart),
-      ],
-      const Color(0xFF302E2B),
-      stepStroke,
-    );
+    // Front face
+    _drawQuadFace(canvas, [
+      toScreen(0, 0, stepStart),
+      toScreen(w, 0, stepStart),
+      toScreen(w, stepH, stepStart),
+      toScreen(0, stepH, stepStart),
+    ], const Color(0xFF302E2B), stroke: stepStroke);
+  }
 
-    // 단차 상단 하이라이트
-    canvas.drawLine(
-      toIso(0, stepH, stepStart),
-      toIso(pw, stepH, stepStart),
+  // ── Floor Mat Edge ──
+  void _drawFloorMatEdge(Canvas canvas, double d) {
+    const inset = 0.02; // 2cm inset from perimeter
+
+    final matEdgePaint = Paint()
+      ..color = const Color(0xFF3A3836)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+
+    // Build inset perimeter path following floor shape
+    final matPath = Path();
+
+    // Start at back-left (near seat)
+    var pt = toScreen(_wallLeftBot(inset) + inset, 0, inset);
+    matPath.moveTo(pt.dx, pt.dy);
+
+    // Back edge (near seat)
+    pt = toScreen(_wallRightBot(inset) - inset, 0, inset);
+    matPath.lineTo(pt.dx, pt.dy);
+
+    // Right edge -- follow wall with inset
+    for (int i = 1; i <= _shapeSegs; i++) {
+      final t = i / _shapeSegs;
+      final z = inset + (d - 2 * inset) * t;
+      final x = _wallRightBot(z) - inset;
+      pt = toScreen(x, 0, z);
+      matPath.lineTo(pt.dx, pt.dy);
+    }
+
+    // Front edge (near opening)
+    pt = toScreen(_wallLeftBot(d - inset) + inset, 0, d - inset);
+    matPath.lineTo(pt.dx, pt.dy);
+
+    // Left edge -- follow wall with inset (back toward seat)
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final t = i / _shapeSegs;
+      final z = inset + (d - 2 * inset) * t;
+      final x = _wallLeftBot(z) + inset;
+      pt = toScreen(x, 0, z);
+      matPath.lineTo(pt.dx, pt.dy);
+    }
+
+    matPath.close();
+    canvas.drawPath(matPath, matEdgePaint);
+  }
+
+  // ── Cargo Hooks / Tie-Down Points ──
+  void drawCargoHooks(Canvas canvas) {
+    final w = space.w, d = space.d;
+    const hookRadius = 0.01; // 2cm diameter = 1cm radius
+
+    // 4 hooks: 2 near front (z ~ d*0.85), 2 near back (z ~ 0.15)
+    final hookPositions = [
+      (x: 0.08, z: d * 0.85),
+      (x: w - 0.08, z: d * 0.85),
+      (x: 0.08, z: d * 0.15),
+      (x: w - 0.08, z: d * 0.15),
+    ];
+
+    final ringPaint = Paint()
+      ..color = const Color(0xFF777777)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    final basePaint = Paint()
+      ..color = const Color(0xFF555555)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    for (final hook in hookPositions) {
+      final center = toScreen(hook.x, 0, hook.z);
+      // Perspective-aware radius
+      final dz = camZ - hook.z;
+      final pxRadius = (focalLen / dz) * scale * hookRadius;
+
+      // D-ring: circle
+      canvas.drawCircle(center, pxRadius, ringPaint);
+      // Base line through bottom (embedded in floor)
+      canvas.drawLine(
+        center + Offset(-pxRadius * 0.7, pxRadius * 0.3),
+        center + Offset(pxRadius * 0.7, pxRadius * 0.3),
+        basePaint,
+      );
+    }
+  }
+
+  // ── Cargo Net Attachment Points ──
+  void drawCargoNetPoints(Canvas canvas) {
+    final d = space.d, h = space.h;
+    const studRadius = 0.005; // 1cm diameter = 0.5cm radius
+
+    // 2 on each wall, at z ~ d*0.3 and z ~ d*0.7, height ~ h*0.4
+    final studs = [
+      // Left wall
+      (x: _wallLeftBot(d * 0.3) + 0.005, y: h * 0.4, z: d * 0.3),
+      (x: _wallLeftBot(d * 0.7) + 0.005, y: h * 0.4, z: d * 0.7),
+      // Right wall
+      (x: _wallRightBot(d * 0.3) - 0.005, y: h * 0.4, z: d * 0.3),
+      (x: _wallRightBot(d * 0.7) - 0.005, y: h * 0.4, z: d * 0.7),
+    ];
+
+    final studPaint = Paint()
+      ..color = const Color(0xFF666666)
+      ..style = PaintingStyle.fill;
+
+    for (final stud in studs) {
+      final pt = toScreen(stud.x, stud.y, stud.z);
+      final dz = camZ - stud.z;
+      final pxR = (focalLen / dz) * scale * studRadius;
+      canvas.drawCircle(pt, pxR.clamp(0.8, 3.0), studPaint);
+      // Highlight ring
+      canvas.drawCircle(
+        pt,
+        pxR.clamp(0.8, 3.0),
+        Paint()
+          ..color = const Color(0x30FFFFFF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.5,
+      );
+    }
+  }
+
+  // ── Rear Wall 12V Outlet ──
+  void drawTwelveVOutlet(Canvas canvas) {
+    final d = space.d;
+    const outletRadius = 0.0125; // 2.5cm diameter = 1.25cm radius
+
+    final z = d * 0.2;
+    final x = _wallLeftBot(z) + 0.005; // on left wall, slightly inside
+    const y = 0.08; // near floor
+
+    final pt = toScreen(x, y, z);
+    final dz = camZ - z;
+    final pxR = (focalLen / dz) * scale * outletRadius;
+
+    // Dark circle (outlet body)
+    canvas.drawCircle(
+      pt,
+      pxR,
       Paint()
-        ..color = const Color(0x30FFFFFF)
+        ..color = const Color(0xFF1A1A1A)
+        ..style = PaintingStyle.fill,
+    );
+
+    // Lighter ring (chrome surround)
+    canvas.drawCircle(
+      pt,
+      pxR,
+      Paint()
+        ..color = const Color(0xFF555555)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0,
     );
+
+    // Inner detail -- two small vertical slots
+    final slotPaint = Paint()
+      ..color = const Color(0xFF444444)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.6;
+    canvas.drawLine(
+      pt + Offset(-pxR * 0.3, -pxR * 0.25),
+      pt + Offset(-pxR * 0.3, pxR * 0.25),
+      slotPaint,
+    );
+    canvas.drawLine(
+      pt + Offset(pxR * 0.3, -pxR * 0.25),
+      pt + Offset(pxR * 0.3, pxR * 0.25),
+      slotPaint,
+    );
   }
 
-  /// S11: 바닥 차종 로고 (미세 양각 텍스트)
-  void drawFloorLogo(Canvas canvas) {
-    final name = space.vehicleName;
-    if (name == null) return;
+  /// Small LED trunk light in upper-left corner near the opening
+  void drawTrunkLight(Canvas canvas) {
+    final h = space.h;
+    final d = space.d;
 
-    final pw = projW;
-    final pd = projD;
-    final center = toIso(pw / 2, 0.002, pd / 2);
+    // Light position: upper-left, near the opening
+    final lightX = 0.05;
+    final lightY = h * 0.85;
+    final lightZ = d * 0.9;
+    final lightCenter = toScreen(lightX, lightY, lightZ);
 
-    final tp = TextPainter(
-      text: TextSpan(
-        text: name,
-        style: const TextStyle(
-          color: Color(0x0FFFFFFF), // ~6% opacity
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 3.0,
+    // Perspective-aware radius
+    final dz = camZ - lightZ;
+    final pScale = focalLen / dz * scale;
+
+    // Radial glow (~15cm radius in world space)
+    final glowRadius = 0.15 * pScale;
+    canvas.drawCircle(
+      lightCenter,
+      glowRadius,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          lightCenter,
+          glowRadius,
+          [
+            const Color(0x30FFFAF0), // warm white center
+            const Color(0x18FFF5E0), // warm mid
+            const Color(0x00FFF5E0), // fade out
+          ],
+          [0.0, 0.4, 1.0],
         ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
+    );
 
-    tp.paint(
-        canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+    // Warm wash on nearby wall/ceiling (larger, dimmer)
+    final washRadius = 0.30 * pScale;
+    canvas.drawCircle(
+      lightCenter,
+      washRadius,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          lightCenter,
+          washRadius,
+          [
+            const Color(0x10FFF5E0),
+            const Color(0x00FFF5E0),
+          ],
+          [0.0, 1.0],
+        ),
+    );
+
+    // The LED itself -- small bright circle
+    final ledRadius = 0.012 * pScale;
+    canvas.drawCircle(
+      lightCenter,
+      ledRadius,
+      Paint()..color = const Color(0xDDFFFAF0),
+    );
+    // Tiny bright core
+    canvas.drawCircle(
+      lightCenter,
+      ledRadius * 0.4,
+      Paint()..color = const Color(0xFFFFFFFF),
+    );
   }
 
-  /// Helper: draw a filled quad face with stroke
-  void _drawQuadFace(
-      Canvas canvas, List<Offset> pts, Color fill, Paint stroke) {
-    final path = Path()
-      ..moveTo(pts[0].dx, pts[0].dy)
-      ..lineTo(pts[1].dx, pts[1].dy)
-      ..lineTo(pts[2].dx, pts[2].dy)
-      ..lineTo(pts[3].dx, pts[3].dy)
-      ..close();
+  /// Helper: filled quad with optional stroke
+  void _drawQuadFace(Canvas canvas, List<Offset> pts, Color fill,
+      {Paint? stroke}) {
+    final path = buildPath(pts);
     canvas.drawPath(
         path,
         Paint()
           ..color = fill
           ..style = PaintingStyle.fill);
-    canvas.drawPath(path, stroke);
+    if (stroke != null) canvas.drawPath(path, stroke);
   }
 }
