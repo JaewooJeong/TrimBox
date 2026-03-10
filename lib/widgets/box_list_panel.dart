@@ -127,37 +127,32 @@ class BoxListPanel extends StatelessWidget {
 
   Widget _buildActionBar() {
     return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        alignment: WrapAlignment.start,
         children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4DA3FF),
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              onPressed: onAddBox,
-              icon: const Icon(Icons.add, size: 20),
-              label: const Text('박스 추가'),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4DA3FF),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
+            onPressed: onAddBox,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('박스 추가', style: TextStyle(fontSize: 13)),
           ),
-          const SizedBox(width: 8),
           _actionButton(Icons.save, '배치 저장', onSave),
-          const SizedBox(width: 8),
           _actionButton(Icons.folder_open, '불러오기', onLoad),
-          if (onScreenshot != null) ...[
-            const SizedBox(width: 8),
+          if (onScreenshot != null)
             _actionButton(Icons.photo_camera, '스크린샷', onScreenshot!),
-          ],
-          if (onAutoLayout != null) ...[
-            const SizedBox(width: 8),
+          if (onAutoLayout != null)
             _actionButton(Icons.auto_fix_high, '자동 배치', onAutoLayout!),
-          ],
-          if (onShareCard != null) ...[
-            const SizedBox(width: 8),
+          if (onShareCard != null)
             _actionButton(Icons.share, '공유 카드', onShareCard!),
-          ],
         ],
       ),
     );
@@ -442,10 +437,13 @@ class BoxListPanel extends StatelessWidget {
     }
     final remainH = ((space.h - maxStackTop) * 100).round();
 
-    // 높이 초과 박스 찾기
+    // 높이 초과 박스 찾기 (위치별 천장 높이 반영)
     final overHeightBoxes = <String>[];
     for (final b in boxes) {
-      final over = b.y + b.h - space.h;
+      final ceilAtZ1 = space.ceilingHeightAt(b.z);
+      final ceilAtZ2 = space.ceilingHeightAt(b.z + b.effectiveD);
+      final minCeil = ceilAtZ1 < ceilAtZ2 ? ceilAtZ1 : ceilAtZ2;
+      final over = b.y + b.h - minCeil;
       if (over > 0.001) {
         final name = b.label.isNotEmpty ? b.label : b.id;
         overHeightBoxes.add('$name (+${(over * 100).round()}cm)');

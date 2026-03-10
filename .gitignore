@@ -52,3 +52,12 @@ _bmad
 # Screenshots (dev-time captures)
 /screenshots/
 .claude/
+
+# Node / E2E artifacts
+node_modules/
+test-results/
+e2e-report/
+e2e-screenshots/
+e2e/actuals/
+e2e/diffs/
+e2e/similarity-report/

@@ -301,10 +301,13 @@ void main() {
       final trunk = TrunkSpace.sorento();
       final cd = CollisionDetector(trunk);
 
+      // z=0(깊은 곳)에서 천장높이 = h - ceilingDrop = 0.66m
       final box = _box('tall', 0.20, 0.20, trunk.h + 0.1);
       expect(cd.isOverHeight(box), isTrue);
 
+      // 개구부(z=d) 근처에서는 천장높이가 h와 동일
       final normalBox = _box('normal', 0.20, 0.20, trunk.h - 0.1);
+      normalBox.z = trunk.d - 0.20; // 개구부 근처에 배치
       expect(cd.isOverHeight(normalBox), isFalse);
     });
   });

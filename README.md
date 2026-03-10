@@ -1,161 +1,108 @@
-# TrimBox Isometric Engine 🎯
+# TrimBox Simulator
 
-**23평 아파트 아이소메트릭 변환 엔진 - 98% 유사도 달성 완료**
+**내 캠핑 짐이 내 차 트렁크에 들어가는지 3초 안에 확인**
 
-Flutter 기반 아이소메트릭 3D 렌더링 엔진으로 2D 도면을 3D 아이소메트릭 객체로 변환하는 범용 플랫폼입니다.
+세계 최초 소비자용 3D 트렁크 패킹 시뮬레이터. 캠퍼가 자신의 차량을 선택하고, 캠핑 장비를 골라 트렁크에 자동/수동 배치하여 적재 가능 여부를 시각적으로 확인할 수 있습니다.
 
-## 🏆 프로젝트 완성 현황 (2025-09-05)
+## 주요 기능
 
-- ✅ **아이소메트릭 이론 연구 완료**: 수학적 변환 공식 검증 (30도 표준 각도)
-- ✅ **고성능 렌더링 엔진**: 3145 FPS 평균 성능 달성
-- ✅ **23평 아파트 변환**: 98% 유사도 달성 (목표 달성)
-- ✅ **완전한 3D 카메라 시스템**: Y축 ±180°, X축 ±45° 회전
-- ✅ **실시간 상호작용**: 마우스/터치 드래그로 3D 탐험
-- ✅ **자동화 성능 테스트**: Playwright 스타일 검증 시스템
+- **6개 한국 인기 차종** 프리셋 (투싼, 쏘렌토, 싼타페, 카니발, 아이오닉5, 아반떼) + 커스텀
+- **191개 캠핑 장비** 프리셋 (텐트, 쿨러, 의자, 테이블, 침낭 등 카테고리별)
+- **EP-BFD 자동배치** 알고리즘 (균형/최대적재/접근우선 3가지 전략)
+- **적재 순서 가이드** 스텝별 시각화
+- **1-Point Perspective** 리얼리즘 렌더링 (카펫, 차체, LED 조명, 그림자)
+- **충돌 감지** (AABB: 박스-박스, 경계, 휠하우스, 높이)
+- **공유 카드** 생성 (이미지 + 적재 요약 텍스트)
+- **Scene 저장/불러오기** (JSON)
+- **Undo/Redo** 지원
 
-## 🚀 주요 기능
+## 스크린샷
 
-### 1. 아이소메트릭 렌더링 엔진
-- **수학적 정확성**: 표준 아이소메트릭 프로젝션 (30도 각도)
-- **고성능**: 3000+ FPS 렌더링 성능
-- **조명 시스템**: 실시간 광원 계산 및 그림자
-- **카메라 컨트롤**: 완전한 3D 시점 조작
+> `flutter run -d chrome` 실행 후 브라우저에서 확인
 
-### 2. 23평 아파트 시뮬레이터
-- **완벽한 변환**: JSON 도면 → 3D 아이소메트릭 자동 변환
-- **높은 정확도**: 98% 유사도 달성
-- **실시간 분석**: 카테고리별 변환 현황 모니터링
-- **3D 탐험**: 직관적 마우스/터치 인터페이스
+## 시작하기
 
-### 3. 개발자 도구
-- **성능 모니터링**: 실시간 FPS, 메모리 사용량 추적
-- **자동화 테스트**: Playwright 스타일 성능 검증
-- **확장 가능한 아키텍처**: 모듈형 객체 시스템
+```bash
+# 의존성 설치
+flutter pub get
 
-## 🔧 기술 스택
+# 개발 서버 실행
+flutter run -d chrome
 
-- **Frontend**: Flutter 3.0+, Dart 3.0+
-- **렌더링**: CustomPainter, Canvas API
-- **수학**: Vector3D/2D 변환 라이브러리
-- **테스팅**: 자체 개발 성능 테스트 프레임워크
-- **데이터**: JSON 기반 아파트 도면 시스템
+# 웹 빌드
+flutter build web
 
-## 🏗️ 아키텍처
+# 테스트
+flutter test
+
+# 정적 분석
+flutter analyze
+```
+
+## 프로젝트 구조
 
 ```
 lib/
-├── engine/                 # 아이소메트릭 렌더링 엔진
-│   ├── isometric_engine.dart
-│   ├── isometric_lighting.dart
-│   └── isometric_camera.dart
-├── math/                   # 수학적 변환 라이브러리
-│   ├── vector3d.dart
-│   ├── vector2d.dart
-│   └── isometric_transform.dart
-├── models/                 # 데이터 모델
-│   ├── apartment_blueprint.dart
-│   └── isometric_object.dart
-├── converters/            # 변환 엔진
-│   └── apartment_to_isometric.dart
-└── screens/               # UI 컴포넌트
-    ├── trunk_simulator_screen.dart
-    └── apartment_simulator_screen.dart
+├── main.dart
+├── models/
+│   ├── trim_box.dart          # 박스 모델 (위치, 회전, 카테고리)
+│   ├── trunk_space.dart       # 트렁크 모델 (6차종 프리셋, 형상 함수)
+│   ├── auto_layout.dart       # EP-BFD 자동배치 알고리즘
+│   ├── scene.dart             # Scene 직렬화
+│   └── collision_detector.dart # AABB 충돌 감지
+├── painters/
+│   ├── isometric_painter.dart      # 1-point perspective 투영
+│   ├── trunk_renderer.dart         # 트렁크 내부 렌더링
+│   ├── box_renderer.dart           # 박스 렌더링 (서브타입 텍스처)
+│   ├── vehicle_body_renderer.dart  # 차체 외형 렌더링
+│   └── guide_renderer.dart         # 그리드, 라벨, 가이드
+├── screens/
+│   └── simulator_screen.dart  # 메인 화면, 상태 관리
+├── widgets/
+│   ├── add_box_dialog.dart    # 장비 선택 다이얼로그
+│   ├── box_list_panel.dart    # 박스 목록 패널
+│   └── ...
+└── utils/
+    ├── collision.dart         # 충돌 감지 유틸리티
+    └── scene_storage.dart     # 웹 저장소
 ```
 
-## 🎮 사용법
+## 차종 프리셋
 
-### 1. 프로젝트 실행
+| 차종 | 폭(m) | 깊이(m) | 높이(m) | 카테고리 |
+|------|--------|---------|---------|---------|
+| 투싼 | 1.04 | 0.91 | 0.73 | SUV |
+| **쏘렌토** (기본) | 1.08 | 1.10 | 0.78 | SUV |
+| 싼타페 | 1.11 | 1.05 | 0.80 | SUV |
+| 카니발 | 1.25 | 0.85 | 0.88 | 미니밴 |
+| 아이오닉5 | 1.00 | 0.95 | 0.73 | SUV |
+| 아반떼 | 1.02 | 0.71 | 0.43 | 세단 |
+
+## 자동배치 알고리즘
+
+**EP-BFD** (Extreme Point + Best Fit Decreasing):
+
+1. 박스를 부피 내림차순으로 정렬
+2. 극점(Extreme Point)에서 최적 위치 탐색
+3. 트렁크 형상 검증 (천장 드롭, C필러, 테이퍼, 휠하우스)
+4. 3가지 전략으로 대안 생성, 적재율/접근성/안정성 평가
+
+## 테스트
+
 ```bash
-flutter pub get
-flutter run -d chrome --web-port=8092
+flutter test                    # 전체 166개 테스트
+flutter test test/integration/  # E2E 통합 테스트 (43개)
+flutter test test/models/       # 모델 단위 테스트
+flutter test test/widgets/      # 위젯 테스트
 ```
 
-### 2. 아이소메트릭 엔진 데모
-- **메인 메뉴**에서 "아이소메트릭 엔진 데모" 선택
-- 실시간 3D 객체 추가/제거 체험
-- 성능 모니터링 확인
+## 기술 스택
 
-### 3. 23평 아파트 시뮬레이터
-- **메인 메뉴**에서 "23평 아파트 시뮬레이터" 선택
-- 마우스 드래그로 3D 카메라 조작
-- 슬라이더로 정밀 각도 조정
-- "분석 결과" 버튼으로 98% 유사도 확인
+- **Framework**: Flutter (Web)
+- **Rendering**: CustomPainter (1-point perspective)
+- **Algorithm**: EP-BFD (Extreme Point + Best Fit Decreasing)
+- **Testing**: flutter_test (166 tests, 0 analyze issues)
 
-## 📊 성능 지표
+## 라이선스
 
-| 항목 | 수치 | 설명 |
-|------|------|------|
-| **평균 FPS** | 3145 | 초당 프레임 수 |
-| **변환 유사도** | 98% | 원본 대비 정확도 |
-| **객체 처리량** | 1000개/100ms | 대량 객체 추가 성능 |
-| **메모리 효율성** | 안정적 | 객체 추가/제거 시 메모리 관리 |
-
-## 🧮 수학적 기반
-
-### 아이소메트릭 변환 공식
-```dart
-// 3D → 2D 변환
-x_iso = (x - z) * cos(30°) * scale + offset.x
-y_iso = (x + z) * sin(30°) - y * scale + offset.y
-
-// 표준 각도 (30도)
-static const double standardAngleRadians = 0.5236; // 30° in radians
-static const double cosStandardAngle = 0.866;      // cos(30°)
-static const double sinStandardAngle = 0.5;        // sin(30°)
-```
-
-## 📋 23평 아파트 구조
-
-변환된 아파트는 다음과 같은 구조를 포함합니다:
-
-- **12개 방**: 거실, 침실2, 주방, 욕실2, 현관, 베란다, 드레스룸, 팬트리, 발코니, 다용도실
-- **8개 벽체**: 외벽 4개, 내벽 4개 (구조적 정확성)
-- **6개 문**: 현관문, 방문들, 화장실문 (개폐 방향 포함)
-- **4개 창문**: 거실, 침실, 주방 창문 (크기별 분류)
-- **7개 설비**: 싱크대, 가스레인지, 변기, 세면대, 세탁기 등
-
-## 🔬 유사도 분석 결과
-
-### 전체 변환 현황 (98% 달성)
-- **기하학적 정확도**: 95% (스케일, 비율, 치수)
-- **구조적 충실도**: 100% (모든 건축 요소 완벽 변환)
-- **시각적 표현**: 90% (색상, 텍스처, 조명)
-- **인터랙션**: 100% (완전한 3D 탐험 가능)
-
-## 🚀 향후 확장 계획
-
-- [ ] **이미지 입력**: 실제 도면 이미지 자동 분석
-- [ ] **AI 깊이 추정**: 머신러닝 기반 높이 정보 추론
-- [ ] **다양한 평형**: 15평, 30평, 40평 아파트 지원
-- [ ] **가구 배치**: 가구 자동 배치 알고리즘
-- [ ] **VR/AR 지원**: 몰입형 3D 경험
-
-## 📖 문서
-
-- [아이소메트릭 연구 문서](아이소메트릭-연구.md): 상세한 이론 및 구현 과정
-- [개발 진행 상황](progress.md): 단계별 개발 로그
-
-## 👥 기여하기
-
-1. Fork the project
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📜 라이선스
-
-이 프로젝트는 MIT 라이선스 하에 있습니다. [LICENSE](LICENSE) 파일을 참조하세요.
-
-## 🎯 프로젝트 목표 달성
-
-**2025년 9월 5일 기준 - 모든 목표 100% 달성 완료**
-
-- ✅ 2D 이미지를 아이소메트릭 3D 객체로 변환하는 범용 엔진 개발
-- ✅ 23평 아파트 도면을 98% 유사도로 아이소메트릭 변환
-- ✅ 실용적이고 확장 가능한 아이소메트릭 렌더링 플랫폼 구축
-- ✅ 완전한 3D 카메라 시스템으로 진정한 3D 경험 제공
-
----
-
-**개발자**: Claude Code | **완성일**: 2025-09-05 | **성능**: 3145 FPS | **정확도**: 98%
+MIT License

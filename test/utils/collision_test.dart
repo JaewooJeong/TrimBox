@@ -63,20 +63,20 @@ void main() {
     });
 
     test('왼쪽 휠하우스 겹침', () {
-      // 투싼 왼쪽 휠하우스: x=[0, 0.14], z=[0.91-0.40, 0.91] = [0.51, 0.91], h=0.35
-      final box = makeBox(x: 0, z: 0.6, w: 0.1, d: 0.1, h: 0.1);
+      // 투싼 왼쪽 휠하우스: x=[0, 0.14], z=[0, 0.40], h=0.35 (뒷축 쪽)
+      final box = makeBox(x: 0, z: 0.1, w: 0.1, d: 0.1, h: 0.1);
       expect(detector.overlapsLeftWheelhouse(box), true);
     });
 
     test('오른쪽 휠하우스 겹침', () {
-      // 투싼 오른쪽 휠하우스: x=[1.04-0.14, 1.04] = [0.90, 1.04], z=[0.51, 0.91]
-      final box = makeBox(x: 0.91, z: 0.6, w: 0.1, d: 0.1, h: 0.1);
+      // 투싼 오른쪽 휠하우스: x=[0.90, 1.04], z=[0, 0.40] (뒷축 쪽)
+      final box = makeBox(x: 0.91, z: 0.1, w: 0.1, d: 0.1, h: 0.1);
       expect(detector.overlapsRightWheelhouse(box), true);
     });
 
     test('휠하우스 위 박스 (y > 휠하우스 높이) 정상', () {
       // 투싼 휠하우스 h=0.35, 박스 y=0.40 → 위에 있으므로 충돌 없음
-      final box = makeBox(x: 0, z: 0.6, w: 0.1, d: 0.1, h: 0.1, y: 0.40);
+      final box = makeBox(x: 0, z: 0.1, w: 0.1, d: 0.1, h: 0.1, y: 0.40);
       expect(detector.overlapsLeftWheelhouse(box), false);
     });
 
@@ -143,10 +143,17 @@ void main() {
       expect(detector.boxesOverlap(a, b), true);
     });
 
-    test('높이 경계값: y+h == space.h (정확히 동일 시 초과 아님)', () {
-      // 투싼 h=0.73, tolerance 0.001
-      final box = makeBox(x: 0.1, z: 0.1, w: 0.2, d: 0.2, h: 0.73, y: 0);
+    test('높이 경계값: y+h == 천장높이 (정확히 동일 시 초과 아님)', () {
+      // 투싼 h=0.73, ceilingDrop=0.08
+      // z=0.91(개구부)에서 천장높이 = 0.73 (drop 없음)
+      final box = makeBox(x: 0.1, z: 0.91, w: 0.2, d: 0.0, h: 0.73, y: 0);
       expect(detector.isOverHeight(box), false);
+    });
+
+    test('높이 경계값: 천장 낮은 곳에서 초과 감지', () {
+      // z=0(깊은 곳)에서 천장높이 = 0.73 - 0.08 = 0.65
+      final box = makeBox(x: 0.1, z: 0.0, w: 0.2, d: 0.1, h: 0.66, y: 0);
+      expect(detector.isOverHeight(box), true);
     });
 
     test('3D AABB 경계 접촉 (touching but not overlapping)', () {

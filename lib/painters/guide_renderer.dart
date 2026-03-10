@@ -56,8 +56,8 @@ extension GuideRendering on IsometricPainter {
     const whFill = Color(0xFF2D2A27);
     const whStroke = Color(0xFF1E1C1A);
 
-    // Left wheelhouse
-    final lwx = 0.0, lwz = space.d - lw.d;
+    // Left wheelhouse (뒷축 쪽, z=0 근처)
+    final lwx = 0.0, lwz = 0.0;
     objects.add((
       depth: _objectDepth(lwx + lw.w / 2, lwz, lw.d),
       draw: () {
@@ -72,8 +72,8 @@ extension GuideRendering on IsometricPainter {
       },
     ));
 
-    // Right wheelhouse
-    final rwx = space.w - rw.w, rwz = space.d - rw.d;
+    // Right wheelhouse (뒷축 쪽, z=0 근처)
+    final rwx = space.w - rw.w, rwz = 0.0;
     objects.add((
       depth: _objectDepth(rwx + rw.w / 2, rwz, rw.d),
       draw: () {

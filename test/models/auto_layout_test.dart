@@ -117,13 +117,13 @@ void main() {
       final pw = p.rotated ? p.box.d : p.box.w;
       final pd = p.rotated ? p.box.w : p.box.d;
 
-      // Left WH: x=[0, 0.3], z=[0.6, 1.0], y=[0, 0.3]
+      // Left WH: x=[0, 0.3], z=[0, 0.4], y=[0, 0.3] (뒷축 쪽)
       final overlapsLeft = p.x < 0.3 && p.x + pw > 0 &&
-          p.z < 1.0 && p.z + pd > 0.6 &&
+          p.z < 0.4 && p.z + pd > 0 &&
           p.y < 0.3 && p.y + p.box.h > 0;
-      // Right WH: x=[0.7, 1.0], z=[0.6, 1.0], y=[0, 0.3]
+      // Right WH: x=[0.7, 1.0], z=[0, 0.4], y=[0, 0.3] (뒷축 쪽)
       final overlapsRight = p.x < 1.0 && p.x + pw > 0.7 &&
-          p.z < 1.0 && p.z + pd > 0.6 &&
+          p.z < 0.4 && p.z + pd > 0 &&
           p.y < 0.3 && p.y + p.box.h > 0;
       expect(overlapsLeft, isFalse);
       expect(overlapsRight, isFalse);
@@ -435,19 +435,19 @@ void main() {
         final pw = p.rotated ? p.box.d : p.box.w;
         final pd = p.rotated ? p.box.w : p.box.d;
 
-        // Left wheelhouse: x=[0, lw.w], z=[trunk.d-lw.d, trunk.d], y=[0, lw.h]
+        // Left wheelhouse: x=[0, lw.w], z=[0, lw.d], y=[0, lw.h] (뒷축 쪽)
         if (lw.w > 0 && lw.d > 0 && lw.h > 0) {
           final olX = p.x < lw.w && p.x + pw > 0;
-          final olZ = p.z < trunk.d && p.z + pd > trunk.d - lw.d;
+          final olZ = p.z < lw.d && p.z + pd > 0;
           final olY = p.y < lw.h && p.y + p.box.h > 0;
           expect(olX && olY && olZ, isFalse,
               reason: '${p.box.id} overlaps left wheelhouse');
         }
 
-        // Right wheelhouse: x=[trunk.w-rw.w, trunk.w], z=[trunk.d-rw.d, trunk.d], y=[0, rw.h]
+        // Right wheelhouse: x=[trunk.w-rw.w, trunk.w], z=[0, rw.d], y=[0, rw.h] (뒷축 쪽)
         if (rw.w > 0 && rw.d > 0 && rw.h > 0) {
           final orX = p.x < trunk.w && p.x + pw > trunk.w - rw.w;
-          final orZ = p.z < trunk.d && p.z + pd > trunk.d - rw.d;
+          final orZ = p.z < rw.d && p.z + pd > 0;
           final orY = p.y < rw.h && p.y + p.box.h > 0;
           expect(orX && orY && orZ, isFalse,
               reason: '${p.box.id} overlaps right wheelhouse');
@@ -615,6 +615,104 @@ void main() {
       expect(sw.elapsedMilliseconds, lessThan(3000),
           reason: '30 boxes x 3 strategies took ${sw.elapsedMilliseconds}ms');
       expect(alts.length, 3);
+    });
+  });
+
+  group('Wheelhouse Space Utilization', () {
+    test('items can be placed ON TOP of wheelhouse', () {
+      final trunkWithWH = TrunkSpace(
+        w: 1.0,
+        d: 1.0,
+        h: 1.0,
+        leftWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
+        rightWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
+      );
+      // Fill the floor first, then check if wheelhouse top is used
+      final boxes = [
+        _box('floor1', 0.4, 0.4, 0.3), // center, takes floor space
+        _box('floor2', 0.4, 0.4, 0.3), // fills more floor
+        _box('floor3', 0.4, 0.4, 0.3), // more floor
+        _box('floor4', 0.4, 0.4, 0.3), // more floor
+        _box('ontop', 0.25, 0.3, 0.2),  // should go on wheelhouse top
+      ];
+      final result = AutoLayoutEngine.computeLayout(trunkWithWH, boxes);
+      expect(result.allBoxesFit, isTrue,
+          reason: 'All 5 boxes should fit including on wheelhouse top');
+    });
+
+    test('wheelhouse top treated as valid floor for scoring', () {
+      final trunkWithWH = TrunkSpace(
+        w: 1.0,
+        d: 1.0,
+        h: 1.0,
+        leftWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
+        rightWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
+      );
+      // Many boxes that need to use wheelhouse-top space
+      final boxes = List.generate(8, (i) => _box('b$i', 0.25, 0.25, 0.25));
+      final result = AutoLayoutEngine.computeLayout(trunkWithWH, boxes);
+      expect(result.allBoxesFit, isTrue);
+
+      // Verify no pairwise overlaps
+      for (int i = 0; i < result.placements.length; i++) {
+        final pi = result.placements[i];
+        final wi = pi.rotated ? pi.box.d : pi.box.w;
+        final di = pi.rotated ? pi.box.w : pi.box.d;
+        for (int j = i + 1; j < result.placements.length; j++) {
+          final pj = result.placements[j];
+          final wj = pj.rotated ? pj.box.d : pj.box.w;
+          final dj = pj.rotated ? pj.box.w : pj.box.d;
+          final overlapX = pi.x < pj.x + wj && pi.x + wi > pj.x;
+          final overlapY = pi.y < pj.y + pj.box.h && pi.y + pi.box.h > pj.y;
+          final overlapZ = pi.z < pj.z + dj && pi.z + di > pj.z;
+          expect(overlapX && overlapY && overlapZ, isFalse,
+              reason: 'Box ${pi.box.id} overlaps ${pj.box.id}');
+        }
+      }
+    });
+
+    test('items beside wheelhouse with matching height create flat layer', () {
+      final trunk = TrunkSpace.sorento();
+      final whH = trunk.leftWheelhouse.h; // 0.30
+      // Box that matches wheelhouse height placed beside it
+      final boxes = [
+        _box('match', 0.30, 0.30, whH), // height matches wheelhouse
+        _box('small', 0.20, 0.20, 0.15),
+      ];
+      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
+      expect(result.allBoxesFit, isTrue);
+      expect(result.placements.length, 2);
+    });
+
+    test('Sorento: 6 camping boxes use wheelhouse-adjacent space', () {
+      final trunk = TrunkSpace.sorento();
+      final boxes = [
+        _box('cooler', 0.40, 0.30, 0.30),
+        _box('tent', 0.60, 0.20, 0.20),
+        _box('bag1', 0.30, 0.30, 0.25),
+        _box('bag2', 0.30, 0.30, 0.25),
+        _box('chair', 0.12, 0.12, 0.70),
+        _box('snack', 0.20, 0.20, 0.15),
+      ];
+      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
+      expect(result.allBoxesFit, isTrue);
+      expect(result.placements.length, 6);
+
+      // Verify no wheelhouse overlap
+      for (final p in result.placements) {
+        final pw = p.rotated ? p.box.d : p.box.w;
+        final pd = p.rotated ? p.box.w : p.box.d;
+        final lw = trunk.leftWheelhouse;
+        final rw = trunk.rightWheelhouse;
+        final olL = p.x < lw.w && p.x + pw > 0 &&
+            p.z < lw.d && p.z + pd > 0 &&
+            p.y < lw.h && p.y + p.box.h > 0;
+        final olR = p.x < trunk.w && p.x + pw > trunk.w - rw.w &&
+            p.z < rw.d && p.z + pd > 0 &&
+            p.y < rw.h && p.y + p.box.h > 0;
+        expect(olL, isFalse, reason: '${p.box.id} overlaps left WH');
+        expect(olR, isFalse, reason: '${p.box.id} overlaps right WH');
+      }
     });
   });
 

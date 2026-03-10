@@ -26,19 +26,23 @@ class CollisionDetector {
         box.z + box.effectiveD > space.d + 0.001;
   }
 
-  /// 박스가 트렁크 높이를 초과하는지 확인
+  /// 박스가 트렁크 높이를 초과하는지 확인 (위치별 천장 높이 반영)
   bool isOverHeight(TrimBox box) {
-    return box.y + box.h > space.h + 0.001;
+    // 박스의 앞/뒤 z 위치에서 천장 높이를 각각 확인
+    final ceilAtZ1 = space.ceilingHeightAt(box.z);
+    final ceilAtZ2 = space.ceilingHeightAt(box.z + box.effectiveD);
+    final minCeil = ceilAtZ1 < ceilAtZ2 ? ceilAtZ1 : ceilAtZ2;
+    return box.y + box.h > minCeil + 0.001;
   }
 
   /// 박스가 왼쪽 휠하우스와 겹치는지 확인
   bool overlapsLeftWheelhouse(TrimBox box) {
     final lw = space.leftWheelhouse;
-    // 왼쪽 휠하우스: x=[0, lw.w], z=[space.d-lw.d, space.d]
+    // 왼쪽 휠하우스: x=[0, lw.w], z=[0, lw.d] (뒷좌석/뒷축 쪽)
     return box.x < lw.w &&
         box.x + box.effectiveW > 0 &&
-        box.z < space.d &&
-        box.z + box.effectiveD > space.d - lw.d &&
+        box.z < lw.d &&
+        box.z + box.effectiveD > 0 &&
         box.y < lw.h &&
         box.y + box.h > 0;
   }
@@ -46,11 +50,11 @@ class CollisionDetector {
   /// 박스가 오른쪽 휠하우스와 겹치는지 확인
   bool overlapsRightWheelhouse(TrimBox box) {
     final rw = space.rightWheelhouse;
-    // 오른쪽 휠하우스: x=[space.w-rw.w, space.w], z=[space.d-rw.d, space.d]
+    // 오른쪽 휠하우스: x=[space.w-rw.w, space.w], z=[0, rw.d] (뒷좌석/뒷축 쪽)
     return box.x < space.w &&
         box.x + box.effectiveW > space.w - rw.w &&
-        box.z < space.d &&
-        box.z + box.effectiveD > space.d - rw.d &&
+        box.z < rw.d &&
+        box.z + box.effectiveD > 0 &&
         box.y < rw.h &&
         box.y + box.h > 0;
   }

@@ -6,6 +6,37 @@ part of 'isometric_painter.dart';
 extension TrunkRendering on IsometricPainter {
   static const int _shapeSegs = 10;
 
+  // ── Exterior ambient background ──
+  // In real trunk photos, the bright outside world (sky, parking lot) is visible
+  // beyond the trunk opening. This adds that brightness to our histogram.
+  void drawExteriorAmbient(Canvas canvas, Size size) {
+    // Soft gradient background suggesting outdoor ambient light
+    // Drawn behind everything, will be partially covered by trunk interior
+    final bgRect = Rect.fromCenter(
+      center: Offset.zero,
+      width: size.width,
+      height: size.height,
+    );
+
+    // Sky-like gradient: brighter at top, warmer at bottom
+    canvas.drawRect(
+      bgRect,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(0, -size.height / 2),
+          Offset(0, size.height / 2),
+          [
+            const Color(0xFF8090A0), // cool sky blue-gray
+            const Color(0xFF687888), // mid sky
+            const Color(0xFF606858), // horizon greenery
+            const Color(0xFF585048), // ground level warm
+          ],
+          [0.0, 0.35, 0.65, 1.0],
+        )
+        ..style = PaintingStyle.fill,
+    );
+  }
+
   // ── Shape helpers ──
 
   /// Left wall X at bottom for depth z
@@ -52,11 +83,10 @@ extension TrunkRendering on IsometricPainter {
       final lt0 = _wallLeftTop(z0), lt1 = _wallLeftTop(z1);
       final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
 
-      // Slight color variation: darker toward back
-      // Warmer/brighter near opening (high t = near opening)
-      final warmShift = t0 * 0.12; // brighter toward opening
+      // Ceiling headliner: lighter fabric material, brighter toward opening
+      final warmShift = t0 * 0.35; // significant brightness increase toward opening
       final shade = Color.lerp(
-          const Color(0xFF222020), const Color(0xFF3A3530), warmShift)!;
+          const Color(0xFF3A3735), const Color(0xFF5A5550), warmShift)!;
 
       _drawQuadFace(canvas, [
         toScreen(lt0, ch0, z0),
@@ -65,6 +95,54 @@ extension TrunkRendering on IsometricPainter {
         toScreen(lt1, ch1, z1),
       ], shade);
     }
+
+    // Ceiling headliner texture — sparse fiber dots
+    final ceilRng = math.Random((space.w * 5555).toInt());
+    for (int i = 0; i < 80; i++) {
+      final t = ceilRng.nextDouble();
+      final z = d * t;
+      final xFrac = 0.1 + ceilRng.nextDouble() * 0.8;
+      final lt = _wallLeftTop(z);
+      final rt = _wallRightTop(z);
+      final x = lt + (rt - lt) * xFrac;
+      final y = _ceilH(z);
+      final pt = toScreen(x, y, z);
+      final dz = camZ - z;
+      final pxR = (focalLen / dz) * scale * 0.0006;
+      canvas.drawCircle(
+        pt,
+        pxR.clamp(0.2, 0.6),
+        Paint()..color = const Color(0x0EFFFFFF),
+      );
+    }
+
+    // Ceiling warm ambient gradient — brighter near opening
+    final ceilOutline = <Offset>[];
+    for (int i = 0; i <= _shapeSegs; i++) {
+      final z = d * i / _shapeSegs;
+      ceilOutline.add(toScreen(_wallLeftTop(z), _ceilH(z), z));
+    }
+    for (int i = _shapeSegs; i >= 0; i--) {
+      final z = d * i / _shapeSegs;
+      ceilOutline.add(toScreen(_wallRightTop(z), _ceilH(z), z));
+    }
+    final ceilPath = buildPath(ceilOutline);
+    canvas.drawPath(
+      ceilPath,
+      Paint()
+        ..shader = ui.Gradient.linear(
+          toScreen(_wallLeftTop(0), _ceilH(0), 0),
+          toScreen(_wallLeftTop(d), _ceilH(d), d),
+          [
+            const Color(0x40000000), // darker deep
+            const Color(0x18000000),
+            const Color(0x00000000),
+            const Color(0x40FFFAED), // warm light near opening
+          ],
+          [0.0, 0.25, 0.55, 1.0],
+        )
+        ..style = PaintingStyle.fill,
+    );
   }
 
   // ── Side walls ──
@@ -89,8 +167,9 @@ extension TrunkRendering on IsometricPainter {
       final rb0 = _wallRightBot(z0), rb1 = _wallRightBot(z1);
       final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
 
+      // Wall plastic: medium gray, darker toward deep interior
       final shade = Color.lerp(
-          const Color(0xFF2A2825), const Color(0xFF1E1C1A), (1 - t0) * 0.4)!;
+          const Color(0xFF484540), const Color(0xFF2A2725), (1 - t0) * 0.6)!;
 
       // Left wall segment
       _drawQuadFace(canvas, [
@@ -114,6 +193,9 @@ extension TrunkRendering on IsometricPainter {
       // Right wall plastic grain lines
       _drawWallGrainLines(canvas, rb0, rb1, rt0, rt1, ch0, ch1, z0, z1);
     }
+
+    // Wall surface noise (plastic micro-texture)
+    _drawWallSurfaceNoise(canvas);
 
     // Ceiling-wall junction lines (ambient occlusion)
     _drawCeilingWallJunctions(canvas);
@@ -143,6 +225,86 @@ extension TrunkRendering on IsometricPainter {
     ];
     _drawQuadFace(canvas, rightPts, const Color(0xFF2A2825));
     _drawDepthGradient(canvas, rightPts);
+  }
+
+  /// Plastic surface micro-texture on walls — random specks and tiny scratches
+  void _drawWallSurfaceNoise(Canvas canvas) {
+    final d = space.d;
+    final rng = math.Random((space.w * 7777 + d * 3333).toInt());
+
+    // Specks on left and right walls
+    for (int side = 0; side < 2; side++) {
+      for (int i = 0; i < 120; i++) {
+        final t = rng.nextDouble();
+        final z = t * d;
+        final yFrac = rng.nextDouble();
+        final ch = _ceilH(z);
+        final y = yFrac * ch;
+
+        double x;
+        if (side == 0) {
+          // Left wall
+          final xBot = _wallLeftBot(z);
+          final xTop = _wallLeftTop(z);
+          x = xBot + (xTop - xBot) * yFrac + 0.002;
+        } else {
+          // Right wall
+          final xBot = _wallRightBot(z);
+          final xTop = _wallRightTop(z);
+          x = xBot + (xTop - xBot) * yFrac - 0.002;
+        }
+
+        final pt = toScreen(x, y, z);
+        final dz = camZ - z;
+        final pxR = (focalLen / dz) * scale * 0.0008;
+
+        // Mix of bright and dark specks
+        final isBright = rng.nextDouble() > 0.6;
+        canvas.drawCircle(
+          pt,
+          pxR.clamp(0.2, 0.8),
+          Paint()
+            ..color = isBright
+                ? const Color(0x10FFFFFF)
+                : const Color(0x10000000),
+        );
+      }
+    }
+
+    // Short scratches on walls
+    for (int side = 0; side < 2; side++) {
+      for (int i = 0; i < 40; i++) {
+        final t = rng.nextDouble();
+        final z = t * d;
+        final yFrac = rng.nextDouble() * 0.8 + 0.1;
+        final ch = _ceilH(z);
+        final y = yFrac * ch;
+
+        double x;
+        if (side == 0) {
+          final xBot = _wallLeftBot(z);
+          final xTop = _wallLeftTop(z);
+          x = xBot + (xTop - xBot) * yFrac + 0.002;
+        } else {
+          final xBot = _wallRightBot(z);
+          final xTop = _wallRightTop(z);
+          x = xBot + (xTop - xBot) * yFrac - 0.002;
+        }
+
+        final pt = toScreen(x, y, z);
+        final dz = camZ - z;
+        final len = (focalLen / dz) * scale * 0.002;
+        final angle = rng.nextDouble() * math.pi;
+        canvas.drawLine(
+          pt,
+          pt + Offset(math.cos(angle) * len, math.sin(angle) * len),
+          Paint()
+            ..color = const Color(0x0CFFFFFF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.3,
+        );
+      }
+    }
   }
 
   void _drawCeilingWallJunctions(Canvas canvas) {
@@ -177,14 +339,12 @@ extension TrunkRendering on IsometricPainter {
 
   void _drawWallGradientOverlay(Canvas canvas) {
     final d = space.d;
-    // Left wall gradient
+    // Left wall gradient — dramatic depth-to-light transition
     final leftOutline = <Offset>[];
-    // Bottom edge: front -> back
     for (int i = _shapeSegs; i >= 0; i--) {
       final z = d * i / _shapeSegs;
       leftOutline.add(toScreen(_wallLeftBot(z), 0, z));
     }
-    // Top edge: back -> front
     for (int i = 0; i <= _shapeSegs; i++) {
       final z = d * i / _shapeSegs;
       leftOutline.add(toScreen(_wallLeftTop(z), _ceilH(z), z));
@@ -197,12 +357,12 @@ extension TrunkRendering on IsometricPainter {
           toScreen(_wallLeftBot(0), 0, 0),
           toScreen(0, 0, d),
           [
-            const Color(0x38000000), // dark deep interior
-            const Color(0x18000000), // mid
-            const Color(0x00000000), // transition
-            const Color(0x30FFFAED), // warm ambient from opening (was 0x10)
+            const Color(0x60000000), // dark deep interior
+            const Color(0x30000000), // mid
+            const Color(0x00000000), // clear transition
+            const Color(0x60FFFAED), // strong warm ambient from opening
           ],
-          [0.0, 0.25, 0.6, 1.0],
+          [0.0, 0.2, 0.5, 1.0],
         )
         ..style = PaintingStyle.fill,
     );
@@ -225,24 +385,24 @@ extension TrunkRendering on IsometricPainter {
           toScreen(_wallRightBot(0), 0, 0),
           toScreen(space.w, 0, d),
           [
-            const Color(0x38000000),
-            const Color(0x18000000),
+            const Color(0x50000000),
+            const Color(0x20000000),
             const Color(0x00000000),
-            const Color(0x30FFFAED), // warm ambient from opening (was 0x10)
+            const Color(0x50FFFAED), // strong warm ambient from opening
           ],
-          [0.0, 0.25, 0.6, 1.0],
+          [0.0, 0.2, 0.55, 1.0],
         )
         ..style = PaintingStyle.fill,
     );
   }
 
-  /// Plastic trim grain lines + gloss highlight on a wall segment
+  /// Plastic trim grain lines, vertical ribs + gloss highlight on a wall segment
   void _drawWallGrainLines(Canvas canvas, double xBot0, double xBot1,
       double xTop0, double xTop1, double h0, double h1, double z0, double z1) {
     final grainPaint = Paint()
-      ..color = const Color(0x0CFFFFFF)
+      ..color = const Color(0x14FFFFFF)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.4;
+      ..strokeWidth = 0.5;
 
     // 4 horizontal grain lines at 20%, 40%, 60%, 80% height
     for (final frac in [0.2, 0.4, 0.6, 0.8]) {
@@ -254,6 +414,34 @@ extension TrunkRendering on IsometricPainter {
         toScreen(x0, y0, z0),
         toScreen(x1, y1, z1),
         grainPaint,
+      );
+    }
+
+    // Vertical ribs — 3 evenly spaced within each wall segment
+    final ribPaint = Paint()
+      ..color = const Color(0x08FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.6;
+    final ribShadowPaint = Paint()
+      ..color = const Color(0x0A000000)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8;
+    for (final tFrac in [0.25, 0.5, 0.75]) {
+      final ribXBot = xBot0 + (xBot1 - xBot0) * tFrac;
+      final ribXTop = xTop0 + (xTop1 - xTop0) * tFrac;
+      final ribZ = z0 + (z1 - z0) * tFrac;
+      final ribH = h0 + (h1 - h0) * tFrac;
+      // Shadow line (left side of rib)
+      canvas.drawLine(
+        toScreen(ribXBot - 0.001, 0, ribZ),
+        toScreen(ribXTop - 0.001, ribH, ribZ),
+        ribShadowPaint,
+      );
+      // Highlight line (right side of rib)
+      canvas.drawLine(
+        toScreen(ribXBot + 0.001, 0, ribZ),
+        toScreen(ribXTop + 0.001, ribH, ribZ),
+        ribPaint,
       );
     }
 
@@ -306,7 +494,7 @@ extension TrunkRendering on IsometricPainter {
     canvas.drawPath(
         facePath,
         Paint()
-          ..color = const Color(0xFF3D3A35)
+          ..color = const Color(0xFF454038)
           ..style = PaintingStyle.fill);
 
     // Diamond quilting -- clip to face shape
@@ -508,19 +696,36 @@ extension TrunkRendering on IsometricPainter {
     ];
     _drawQuadFace(canvas, floorPts, const Color(0xFF4A4540));
 
-    // Depth lighting gradient -- strong warm light near opening
+    // Depth lighting gradient -- dramatic light falloff
     canvas.drawPath(
       buildPath(floorPts),
       Paint()
         ..shader = ui.Gradient.linear(
           floorPts[0], floorPts[3],
           [
-            const Color(0x40000000), // dark deep interior
-            const Color(0x18000000), // mid
-            const Color(0x00000000), // transition
-            const Color(0x50FFFAED), // warm light near opening (was 0x18)
+            const Color(0x80000000), // very dark deep interior
+            const Color(0x50000000), // dark mid
+            const Color(0x18000000), // transition
+            const Color(0x00000000), // clear near opening
           ],
-          [0.0, 0.25, 0.55, 1.0],
+          [0.0, 0.15, 0.45, 0.75],
+        )
+        ..style = PaintingStyle.fill,
+    );
+
+    // Strong warm ambient spill from opening — real trunks have dramatic light
+    canvas.drawPath(
+      buildPath(floorPts),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          floorPts[0], floorPts[3],
+          [
+            const Color(0x00FFFAED),
+            const Color(0x08FFFAED),
+            const Color(0x50FFFAED), // strong warm glow near opening
+            const Color(0x90FFFAED), // bright at opening edge
+          ],
+          [0.0, 0.35, 0.75, 1.0],
         )
         ..style = PaintingStyle.fill,
     );
@@ -565,14 +770,14 @@ extension TrunkRendering on IsometricPainter {
         toScreen(_wallRightBot(0), 0, 0),
         junctionPaint);
 
-    // Opening edge highlight
+    // Opening edge highlight — bright from outside light
     canvas.drawLine(
       toScreen(0, 0, d),
       toScreen(w, 0, d),
       Paint()
-        ..color = const Color(0xFF555555)
+        ..color = const Color(0xFF787878)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0,
+        ..strokeWidth = 2.5,
     );
 
     // Floor mat edge -- subtle raised perimeter line
@@ -581,42 +786,57 @@ extension TrunkRendering on IsometricPainter {
     _drawFloorStep(canvas);
   }
 
-  /// Carpet texture -- subtle stipple dots across the floor
+  /// Carpet texture -- cross-hatch woven textile pattern
   void _drawCarpetTexture(Canvas canvas, double d) {
     final w = space.w;
-    // Fixed seed based on trunk dimensions for stable pattern
     final rng = math.Random((w * 1000 + d * 1000).toInt());
-    const dotCount = 260;
 
-    final lighterPaint = Paint()
-      ..color = const Color(0x18403C38)
-      ..style = PaintingStyle.fill;
-    final darkerPaint = Paint()
-      ..color = const Color(0x1A0A0806)
-      ..style = PaintingStyle.fill;
+    // Cross-hatch grid: warp (depth-wise) + weft (width-wise) lines
+    const gridStep = 0.014; // 1.4cm weave spacing (denser)
+    final warpPaint = Paint()
+      ..color = const Color(0x1E2A2520)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.7;
+    final weftPaint = Paint()
+      ..color = const Color(0x1A3A3530)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.6;
 
-    for (int i = 0; i < dotCount; i++) {
-      final t = rng.nextDouble(); // 0..1 along depth
-      final z = t * d;
-      final leftX = _wallLeftBot(z);
-      final rightX = _wallRightBot(z);
-      final x = leftX + rng.nextDouble() * (rightX - leftX);
-      final pt = toScreen(x, 0, z);
-
-      // Perspective-aware dot size: smaller when deeper
-      final dz = camZ - z;
-      final dotR = (focalLen / dz) * scale * 0.002 + 0.3;
-
-      final paint = rng.nextBool() ? lighterPaint : darkerPaint;
-      canvas.drawCircle(pt, dotR, paint);
+    // Warp lines (run along depth)
+    final numWarpLines = (w / gridStep).ceil();
+    for (int i = 0; i < numWarpLines; i++) {
+      final xFrac = (i + 0.5) / numWarpLines;
+      final warpPath = Path();
+      bool started = false;
+      for (int j = 0; j <= 20; j++) {
+        final z = d * j / 20;
+        final leftX = _wallLeftBot(z);
+        final rightX = _wallRightBot(z);
+        final x = leftX + xFrac * (rightX - leftX);
+        final pt = toScreen(x, 0, z);
+        if (!started) {
+          warpPath.moveTo(pt.dx, pt.dy);
+          started = true;
+        } else {
+          warpPath.lineTo(pt.dx, pt.dy);
+        }
+      }
+      canvas.drawPath(warpPath, warpPaint);
     }
 
-    // Add a few short fiber-like lines for variety
-    final fiberPaint = Paint()
-      ..color = const Color(0x12504A44)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
-    for (int i = 0; i < 60; i++) {
+    // Weft lines (run across width)
+    final numWeftLines = (d / gridStep).ceil();
+    for (int i = 0; i < numWeftLines; i++) {
+      final z = d * (i + 0.5) / numWeftLines;
+      final leftX = _wallLeftBot(z);
+      final rightX = _wallRightBot(z);
+      final p0 = toScreen(leftX, 0, z);
+      final p1 = toScreen(rightX, 0, z);
+      canvas.drawLine(p0, p1, weftPaint);
+    }
+
+    // Fiber noise -- dense random strands for realistic textile feel
+    for (int i = 0; i < 400; i++) {
       final t = rng.nextDouble();
       final z = t * d;
       final leftX = _wallLeftBot(z);
@@ -628,7 +848,31 @@ extension TrunkRendering on IsometricPainter {
       final angle = rng.nextDouble() * math.pi;
       final dx = math.cos(angle) * len;
       final dy = math.sin(angle) * len;
+      // Vary fiber brightness for depth
+      final depthDim = (1.0 - t * 0.6);
+      final alpha = (0x20 * depthDim).toInt().clamp(0x08, 0x28);
+      final fiberPaint = Paint()
+        ..color = Color.fromARGB(alpha, 0x3A, 0x35, 0x30)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.4 + rng.nextDouble() * 0.4;
       canvas.drawLine(pt, pt + Offset(dx, dy), fiberPaint);
+    }
+
+    // Dark fiber specks (shadow between carpet fibers)
+    for (int i = 0; i < 150; i++) {
+      final t = rng.nextDouble();
+      final z = t * d;
+      final leftX = _wallLeftBot(z);
+      final rightX = _wallRightBot(z);
+      final x = leftX + rng.nextDouble() * (rightX - leftX);
+      final pt = toScreen(x, 0, z);
+      final dz = camZ - z;
+      final pxR = (focalLen / dz) * scale * 0.001;
+      canvas.drawCircle(
+        pt,
+        pxR.clamp(0.3, 1.0),
+        Paint()..color = const Color(0x18000000),
+      );
     }
   }
 
@@ -649,7 +893,7 @@ extension TrunkRendering on IsometricPainter {
     canvas.drawPath(
       buildPath(leftAO),
       Paint()
-        ..color = const Color(0x1A000000)
+        ..color = const Color(0x28000000)
         ..style = PaintingStyle.fill,
     );
 
@@ -666,7 +910,7 @@ extension TrunkRendering on IsometricPainter {
     canvas.drawPath(
       buildPath(rightAO),
       Paint()
-        ..color = const Color(0x1A000000)
+        ..color = const Color(0x28000000)
         ..style = PaintingStyle.fill,
     );
 
@@ -680,7 +924,7 @@ extension TrunkRendering on IsometricPainter {
     canvas.drawPath(
       buildPath(backAO),
       Paint()
-        ..color = const Color(0x1A000000)
+        ..color = const Color(0x28000000)
         ..style = PaintingStyle.fill,
     );
   }
@@ -898,8 +1142,8 @@ extension TrunkRendering on IsometricPainter {
     final dz = camZ - lightZ;
     final pScale = focalLen / dz * scale;
 
-    // Radial glow (~15cm radius in world space)
-    final glowRadius = 0.15 * pScale;
+    // Radial glow (~25cm radius)
+    final glowRadius = 0.25 * pScale;
     canvas.drawCircle(
       lightCenter,
       glowRadius,
@@ -908,16 +1152,16 @@ extension TrunkRendering on IsometricPainter {
           lightCenter,
           glowRadius,
           [
-            const Color(0x30FFFAF0), // warm white center
-            const Color(0x18FFF5E0), // warm mid
+            const Color(0x60FFFAF0), // strong warm white center
+            const Color(0x38FFF5E0), // warm mid
             const Color(0x00FFF5E0), // fade out
           ],
-          [0.0, 0.4, 1.0],
+          [0.0, 0.3, 1.0],
         ),
     );
 
-    // Warm wash on nearby wall/ceiling (larger, dimmer)
-    final washRadius = 0.30 * pScale;
+    // Large warm wash on surrounding area
+    final washRadius = 0.50 * pScale;
     canvas.drawCircle(
       lightCenter,
       washRadius,
@@ -926,10 +1170,11 @@ extension TrunkRendering on IsometricPainter {
           lightCenter,
           washRadius,
           [
+            const Color(0x28FFF5E0),
             const Color(0x10FFF5E0),
             const Color(0x00FFF5E0),
           ],
-          [0.0, 1.0],
+          [0.0, 0.4, 1.0],
         ),
     );
 

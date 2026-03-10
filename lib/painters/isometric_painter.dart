@@ -78,6 +78,7 @@ class IsometricPainter extends CustomPainter {
     );
 
     // Draw order: back -> front
+    drawExteriorAmbient(canvas, size);
     drawSeatBackrest(canvas);
     drawTrunkCeiling(canvas);
     drawTrunkWalls(canvas);

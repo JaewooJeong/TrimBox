@@ -111,14 +111,29 @@ class AutoLayoutEngine {
     final placed = <_PlacedAABB>[];
     _addWheelhouseBlocks(trunk, placed);
 
-    // 3. 극점 초기화
+    // 3. 극점 초기화 — 휠하우스 주변에 초기 EP 생성
     final eps = <_EP>[const _EP(0, 0, 0)];
+    for (final wh in placed) {
+      _generateExtremePoints(eps, wh, placed, trunk);
+    }
+    // 추가 EP: 휠하우스 윗면 중간 지점에서도 배치 시도
+    // → 휠하우스 위에 짐을 올릴 수 있는 후보 위치
+    final lw = trunk.leftWheelhouse;
+    final rw = trunk.rightWheelhouse;
+    if (lw.w > 0 && lw.d > 0 && lw.h > 0) {
+      eps.add(_EP(0, lw.h, lw.d * 0.5)); // 왼쪽 WH 위 중간
+    }
+    if (rw.w > 0 && rw.d > 0 && rw.h > 0) {
+      eps.add(_EP(trunk.w - rw.w, rw.h, rw.d * 0.5)); // 오른쪽 WH 위 중간
+    }
 
     // 4. 각 박스를 최적 위치에 배치
     final placements = <BoxPlacement>[];
     final unfitBoxes = <TrimBox>[];
     int loadOrder = 0;
 
+    // Pass 1: 메인 배치
+    final firstPassUnfit = <TrimBox>[];
     for (final box in sorted) {
       final placement = _findBestPlacement(
         trunk, box, eps, placed, strategy,
@@ -145,6 +160,37 @@ class AutoLayoutEngine {
         ));
 
         // 5. 새 극점 생성
+        _generateExtremePoints(eps, aabb, placed, trunk);
+      } else {
+        firstPassUnfit.add(box);
+      }
+    }
+
+    // Pass 2: 실패한 아이템 재시도 (다른 아이템 배치 후 새 극점이 생겼을 수 있음)
+    for (final box in firstPassUnfit) {
+      final placement = _findBestPlacement(
+        trunk, box, eps, placed, strategy,
+      );
+
+      if (placement != null) {
+        loadOrder++;
+        final aabb = _PlacedAABB(
+          placement.x,
+          placement.y,
+          placement.z,
+          placement.x + (placement.rotated ? box.d : box.w),
+          placement.y + box.h,
+          placement.z + (placement.rotated ? box.w : box.d),
+        );
+        placed.add(aabb);
+        placements.add(BoxPlacement(
+          box: box,
+          x: placement.x,
+          y: placement.y,
+          z: placement.z,
+          rotated: placement.rotated,
+          loadOrder: loadOrder,
+        ));
         _generateExtremePoints(eps, aabb, placed, trunk);
       } else {
         unfitBoxes.add(box);
@@ -186,14 +232,18 @@ class AutoLayoutEngine {
     final sorted = List<TrimBox>.from(boxes);
     switch (strategy) {
       case LayoutStrategy.balanced:
-        // 부피 내림차순
-        sorted.sort((a, b) =>
-            (b.w * b.d * b.h).compareTo(a.w * a.d * a.h));
+        // 최장 치수 내림차순 (긴 아이템 먼저 → 공간 파편화 방지)
+        sorted.sort((a, b) {
+          final aMax = [a.w, a.d, a.h].reduce(math.max);
+          final bMax = [b.w, b.d, b.h].reduce(math.max);
+          if ((aMax - bMax).abs() > 0.01) return bMax.compareTo(aMax);
+          return (b.w * b.d * b.h).compareTo(a.w * a.d * a.h);
+        });
         break;
       case LayoutStrategy.maxUtilization:
-        // 바닥 면적 내림차순 (넓은 박스 먼저 → 빈틈 최소화)
+        // 부피 내림차순 (큰 아이템 먼저)
         sorted.sort((a, b) =>
-            (b.w * b.d).compareTo(a.w * a.d));
+            (b.w * b.d * b.h).compareTo(a.w * a.d * a.h));
         break;
       case LayoutStrategy.easyAccess:
         // 높이 내림차순 (큰 박스 뒤에, 작은 박스 앞에)
@@ -209,20 +259,20 @@ class AutoLayoutEngine {
   static void _addWheelhouseBlocks(TrunkSpace trunk, List<_PlacedAABB> placed) {
     final lw = trunk.leftWheelhouse;
     if (lw.w > 0 && lw.d > 0 && lw.h > 0) {
-      // 왼쪽 휠하우스: x=[0, lw.w], z=[trunk.d-lw.d, trunk.d], y=[0, lw.h]
+      // 왼쪽 휠하우스: x=[0, lw.w], z=[0, lw.d], y=[0, lw.h] (뒷축 쪽)
       placed.add(_PlacedAABB(
-        0, 0, trunk.d - lw.d,
-        lw.w, lw.h, trunk.d,
+        0, 0, 0,
+        lw.w, lw.h, lw.d,
         isWheelhouse: true,
       ));
     }
 
     final rw = trunk.rightWheelhouse;
     if (rw.w > 0 && rw.d > 0 && rw.h > 0) {
-      // 오른쪽 휠하우스: x=[trunk.w-rw.w, trunk.w], z=[trunk.d-rw.d, trunk.d], y=[0, rw.h]
+      // 오른쪽 휠하우스: x=[trunk.w-rw.w, trunk.w], z=[0, rw.d], y=[0, rw.h] (뒷축 쪽)
       placed.add(_PlacedAABB(
-        trunk.w - rw.w, 0, trunk.d - rw.d,
-        trunk.w, rw.h, trunk.d,
+        trunk.w - rw.w, 0, 0,
+        trunk.w, rw.h, rw.d,
         isWheelhouse: true,
       ));
     }
@@ -283,15 +333,17 @@ class AutoLayoutEngine {
   ) {
     double supportY = minY;
     for (final p in placed) {
-      if (p.isWheelhouse) continue;
+      // 휠하우스도 지지면으로 사용 (위에 짐 적재 가능)
       // XZ 겹침 확인
       final overlapX = math.min(x + bw, p.x2) - math.max(x, p.x1);
       final overlapZ = math.min(z + bd, p.z2) - math.max(z, p.z1);
       if (overlapX > 0 && overlapZ > 0) {
-        // 50% 이상 겹쳐야 스태킹
         final overlapArea = overlapX * overlapZ;
         final boxArea = bw * bd;
-        if (overlapArea >= boxArea * 0.5) {
+        // 휠하우스는 차체 구조물이므로 20%만 겹쳐도 지지면 역할
+        // 일반 박스는 30% 이상 겹치면 스태킹 가능 (캠핑용품은 가벼움)
+        final threshold = p.isWheelhouse ? 0.20 : 0.30;
+        if (overlapArea >= boxArea * threshold) {
           if (p.y2 > supportY) {
             supportY = p.y2;
           }
@@ -366,20 +418,44 @@ class AutoLayoutEngine {
     double bw, double bd, double bh,
     LayoutStrategy strategy,
   ) {
+    // 레이어 기반 y 스코어링:
+    // 휠하우스 위(y ≈ wh.h)는 바닥과 동일 레이어로 취급
+    // → 실제 트렁크에서 휠하우스 윗면은 평평한 적재면
+    final maxWhH = math.max(trunk.leftWheelhouse.h, trunk.rightWheelhouse.h);
+    double effectiveY = y;
+    if (maxWhH > 0 && y > 0.005 && (y - maxWhH).abs() < 0.02) {
+      // 휠하우스 윗면에 놓이는 경우 → 바닥 수준 (약간의 패널티만)
+      effectiveY = 0.02;
+    }
+
+    // 휠하우스 존(z < wh.d)에서 높이가 비슷한 짐을 옆에 놓으면 보너스
+    // → 평평한 레이어를 만들어 그 위에 추가 적재 가능
+    final maxWhD = math.max(trunk.leftWheelhouse.d, trunk.rightWheelhouse.d);
+    double layerBonus = 0;
+    if (maxWhH > 0 && y < 0.01 && z < maxWhD + 0.01) {
+      final heightDiff = (bh - maxWhH).abs();
+      if (heightDiff < 0.05) {
+        // 휠하우스 높이와 비슷한 짐 → 강한 인센티브
+        layerBonus = -500;
+      } else if (heightDiff < 0.10) {
+        layerBonus = -200;
+      }
+    }
+
     switch (strategy) {
       case LayoutStrategy.balanced:
         // 바닥(y 낮음) → 뒤(z 낮음) → 중앙(x 중앙에 가깝게)
         final xCenter = (x + bw / 2 - trunk.w / 2).abs();
-        return y * 10000 + z * 100 + xCenter * 10;
+        return effectiveY * 2000 + z * 100 + xCenter * 10 + layerBonus;
 
       case LayoutStrategy.maxUtilization:
         // 바닥(y 낮음) → 왼쪽(x 낮음) → 뒤(z 낮음)
-        return y * 10000 + x * 100 + z * 10;
+        return effectiveY * 2000 + x * 100 + z * 10 + layerBonus;
 
       case LayoutStrategy.easyAccess:
         // 바닥(y 낮음) → 앞(z 높음, 입구 가까이) → 중앙
         final xCenter = (x + bw / 2 - trunk.w / 2).abs();
-        return y * 10000 - z * 100 + xCenter * 10;
+        return effectiveY * 2000 - z * 100 + xCenter * 10 + layerBonus;
     }
   }
 
@@ -391,11 +467,14 @@ class AutoLayoutEngine {
     List<_PlacedAABB> placed,
     TrunkSpace trunk,
   ) {
-    // 배치된 박스의 3개 모서리에서 새 극점 생성
+    // 배치된 박스의 모서리에서 새 극점 생성 (8개 꼭짓점 중 유효한 것)
     final newEPs = [
-      _EP(aabb.x2, aabb.y1, aabb.z1), // 오른쪽
-      _EP(aabb.x1, aabb.y1, aabb.z2), // 앞쪽
-      _EP(aabb.x1, aabb.y2, aabb.z1), // 위쪽
+      _EP(aabb.x2, aabb.y1, aabb.z1), // 오른쪽-바닥-뒤
+      _EP(aabb.x1, aabb.y1, aabb.z2), // 왼쪽-바닥-앞
+      _EP(aabb.x1, aabb.y2, aabb.z1), // 왼쪽-위-뒤 (스태킹)
+      _EP(aabb.x2, aabb.y1, aabb.z2), // 오른쪽-바닥-앞
+      _EP(aabb.x2, aabb.y2, aabb.z1), // 오른쪽-위-뒤
+      _EP(aabb.x1, aabb.y2, aabb.z2), // 왼쪽-위-앞
     ];
 
     for (final ep in newEPs) {

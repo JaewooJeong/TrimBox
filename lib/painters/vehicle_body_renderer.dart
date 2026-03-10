@@ -130,6 +130,7 @@ extension VehicleBodyRendering on IsometricPainter {
               const Color(0x0AFFFFFF),
               const Color(0x00FFFFFF),
             ],
+            [0.0, 0.5, 1.0],
           )
           ..style = PaintingStyle.fill);
     canvas.restore();
@@ -212,34 +213,83 @@ extension VehicleBodyRendering on IsometricPainter {
           ..style = PaintingStyle.fill
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
 
-    // Main tail light body — dark red
+    // Main tail light body — dark red base
     canvas.drawPath(
         glowPath,
         Paint()
-          ..color = const Color(0xFF8B0000)
+          ..color = const Color(0xFF7A0000)
           ..style = PaintingStyle.fill);
 
-    // Inner bright accent strip (vertical center line)
+    // Horizontal LED segments (4 strips with gaps)
+    const numSegments = 4;
+    final segPaint = Paint()
+      ..color = const Color(0xFFAA1818)
+      ..style = PaintingStyle.fill;
+    final segGapPaint = Paint()
+      ..color = const Color(0xFF550808)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.6;
+
+    final totalH = yTop - yBot;
+    final segH = totalH / (numSegments * 2 - 1); // segments + gaps
+    final insetX = (x1 - x0) * 0.08;
+
+    for (int i = 0; i < numSegments; i++) {
+      final sy = yBot + (i * 2) * segH;
+      final ey = sy + segH;
+      final sTl = toScreen(x0 + insetX, ey, d);
+      final sTr = toScreen(x1 - insetX, ey, d);
+      final sBr = toScreen(x1 - insetX, sy, d);
+      final sBl = toScreen(x0 + insetX, sy, d);
+      canvas.drawPath(buildPath([sTl, sTr, sBr, sBl]), segPaint);
+
+      // Gap line between segments
+      if (i < numSegments - 1) {
+        final gapY = ey + segH * 0.5;
+        canvas.drawLine(
+          toScreen(x0 + insetX, gapY, d),
+          toScreen(x1 - insetX, gapY, d),
+          segGapPaint,
+        );
+      }
+    }
+
+    // Reflector specular — bright spot near top center
     final midX = (x0 + x1) / 2;
-    final stripW = (x1 - x0) * 0.3;
-    final innerTl = toScreen(midX - stripW / 2, yTop - 0.01, d);
-    final innerTr = toScreen(midX + stripW / 2, yTop - 0.01, d);
-    final innerBr = toScreen(midX + stripW / 2, yBot + 0.01, d);
-    final innerBl = toScreen(midX - stripW / 2, yBot + 0.01, d);
-    final innerPath = buildPath([innerTl, innerTr, innerBr, innerBl]);
+    final specW = (x1 - x0) * 0.25;
+    final specH = totalH * 0.15;
+    final specY = yTop - totalH * 0.2;
+    final specTl = toScreen(midX - specW / 2, specY + specH / 2, d);
+    final specTr = toScreen(midX + specW / 2, specY + specH / 2, d);
+    final specBr = toScreen(midX + specW / 2, specY - specH / 2, d);
+    final specBl = toScreen(midX - specW / 2, specY - specH / 2, d);
     canvas.drawPath(
-        innerPath,
+        buildPath([specTl, specTr, specBr, specBl]),
         Paint()
-          ..color = const Color(0xFFAA2222)
-          ..style = PaintingStyle.fill);
+          ..color = const Color(0x40FF4444)
+          ..style = PaintingStyle.fill
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3));
 
-    // Outline
+    // Chrome outline frame
     canvas.drawPath(
         glowPath,
         Paint()
-          ..color = const Color(0xFF440000)
+          ..color = const Color(0xFF550000)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0);
+          ..strokeWidth = 1.2);
+
+    // Inner chrome bezel
+    final bezelInset = (x1 - x0) * 0.04;
+    final bTl = toScreen(x0 + bezelInset, yTop - bezelInset * 0.5, d);
+    final bTr = toScreen(x1 - bezelInset, yTop - bezelInset * 0.5, d);
+    final bBr = toScreen(x1 - bezelInset, yBot + bezelInset * 0.5, d);
+    final bBl = toScreen(x0 + bezelInset, yBot + bezelInset * 0.5, d);
+    canvas.drawPath(
+        buildPath([bTl, bTr, bBr, bBl]),
+        Paint()
+          ..color = const Color(0x18FFFFFF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.5);
   }
 
   /// License plate recessed area below the trunk opening
@@ -288,13 +338,12 @@ extension VehicleBodyRendering on IsometricPainter {
           ..strokeWidth = 1.2);
   }
 
-  /// Bumper contour — horizontal bands with gradually darker color
+  /// Bumper contour — horizontal bands with grip texture and ribs
   void _drawBumperContour(
       Canvas canvas, double w, double d, Color bodyBaseColor) {
     final bodyExtX = space.bodyExtX;
-    // Bumper area: below license plate area to the bottom of visibility
-    const bumperTop = -0.18; // below trunk floor
-    const bandHeight = 0.06; // each band is 6cm
+    const bumperTop = -0.18;
+    const bandHeight = 0.06;
     const numBands = 3;
 
     for (int i = 0; i < numBands; i++) {
@@ -313,9 +362,64 @@ extension VehicleBodyRendering on IsometricPainter {
           Paint()
             ..color = _darken(bodyBaseColor, darkenAmount)
             ..style = PaintingStyle.fill);
+
+      // Grip texture — horizontal micro-ribs within each band
+      final ribPaint = Paint()
+        ..color = const Color(0x0C000000)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.4;
+      const ribCount = 4;
+      for (int r = 1; r <= ribCount; r++) {
+        final ribY = bandTopY - bandHeight * r / (ribCount + 1);
+        final rLeft = toScreen(-bodyExtX + 0.03, ribY, d);
+        final rRight = toScreen(w + bodyExtX - 0.03, ribY, d);
+        canvas.drawLine(rLeft, rRight, ribPaint);
+      }
+
+      // Vertical grip studs — evenly spaced nubs on the bottom band
+      if (i == numBands - 1) {
+        final stubPaint = Paint()
+          ..color = const Color(0x10FFFFFF)
+          ..style = PaintingStyle.fill;
+        final stubShadow = Paint()
+          ..color = const Color(0x0C000000)
+          ..style = PaintingStyle.fill;
+        final totalW = w + bodyExtX * 2;
+        const numStuds = 12;
+        for (int s = 1; s < numStuds; s++) {
+          final sx = -bodyExtX + totalW * s / numStuds;
+          final sy = (bandTopY + bandBotY) / 2;
+          final pt = toScreen(sx, sy, d);
+          canvas.drawCircle(pt + const Offset(0.3, 0.3), 1.2, stubShadow);
+          canvas.drawCircle(pt, 1.0, stubPaint);
+        }
+      }
     }
 
-    // Reflective highlight line at bottom edge of bumper
+    // Separator lines between bands (recessed groove)
+    for (int i = 1; i < numBands; i++) {
+      final lineY = bumperTop - i * bandHeight;
+      final lLeft = toScreen(-bodyExtX + 0.02, lineY, d);
+      final lRight = toScreen(w + bodyExtX - 0.02, lineY, d);
+      // Shadow below
+      canvas.drawLine(
+          lLeft + const Offset(0, 0.5),
+          lRight + const Offset(0, 0.5),
+          Paint()
+            ..color = const Color(0x18000000)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.0);
+      // Highlight above
+      canvas.drawLine(
+          lLeft,
+          lRight,
+          Paint()
+            ..color = const Color(0x0CFFFFFF)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.5);
+    }
+
+    // Reflective highlight at bottom edge
     final hlY = bumperTop - numBands * bandHeight;
     final hlLeft = toScreen(-bodyExtX + 0.05, hlY, d);
     final hlRight = toScreen(w + bodyExtX - 0.05, hlY, d);
@@ -326,20 +430,6 @@ extension VehicleBodyRendering on IsometricPainter {
           ..color = const Color(0x30FFFFFF)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5);
-
-    // Thin separator line between bumper bands for texture
-    for (int i = 1; i < numBands; i++) {
-      final lineY = bumperTop - i * bandHeight;
-      final lLeft = toScreen(-bodyExtX + 0.02, lineY, d);
-      final lRight = toScreen(w + bodyExtX - 0.02, lineY, d);
-      canvas.drawLine(
-          lLeft,
-          lRight,
-          Paint()
-            ..color = const Color(0x18000000)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 0.8);
-    }
   }
 
   /// Loading sill / bumper lip — the horizontal ledge at the bottom of the trunk opening

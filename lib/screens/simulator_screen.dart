@@ -961,11 +961,12 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           category: boxCategory,
         );
 
-        // 여러 개 추가 시 위치를 약간씩 오프셋
-        if (result.length > 1) {
+        // 여러 개 추가 시 위치를 분산 배치 (겹침 방지)
+        {
           final gridUnit = _space.gridUnit;
-          newBox.x = (i % 3) * gridUnit * 2;
-          newBox.z = (i ~/ 3) * gridUnit * 2;
+          final cols = (_space.w / (gridUnit * 3)).floor().clamp(1, 5);
+          newBox.x = (i % cols) * gridUnit * 3;
+          newBox.z = (i ~/ cols) * gridUnit * 3;
         }
 
         newBox.snapToGrid(_space.gridUnit);
