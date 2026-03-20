@@ -39,10 +39,16 @@ extension BoxRendering on IsometricPainter {
     final p6 = toScreen(x + w, y + h, z + d); // front-right-top
     final p7 = toScreen(x, y + h, z + d); // front-left-top
 
-    // Depth-based brightness
-    final depthFactor = space.d > 0 ? z / space.d : 0.5;
-    final depthDarken = (1.0 - depthFactor) * 0.35;
-    final baseColor = Color.lerp(fillColor, Colors.black, depthDarken)!;
+    // Quadratic depth darkening with ambient floor
+    // z=0 is deepest (darkest), z=d is opening (brightest)
+    final depthFactor = space.d > 0 ? (z / space.d).clamp(0.0, 1.0) : 0.5;
+    final depthDarken = math.pow(1.0 - depthFactor, 1.4) * 0.65;
+    final ambientFloor = 0.20; // never fully black
+    final effectiveDepthDarken = depthDarken * (1.0 - ambientFloor);
+    // Color temperature shift: warm near opening, cool deep inside
+    final warmShift = Color.lerp(fillColor, const Color(0xFFFFF8E7), depthFactor * 0.08)!;
+    final coolShift = Color.lerp(warmShift, const Color(0xFFD8E8F0), (1.0 - depthFactor) * 0.06)!;
+    final baseColor = Color.lerp(coolShift, Colors.black, effectiveDepthDarken)!;
 
     final fill = Paint()..style = PaintingStyle.fill;
 
@@ -79,68 +85,107 @@ extension BoxRendering on IsometricPainter {
       }
     }
 
+    // Inter-box ambient occlusion: darken bottom edge where box meets surface
+    if (y > 0.005) {
+      // Box is stacked — draw thin dark strip at contact line (front + sides)
+      final aoAlpha = 0x33;
+      final aoWidth = 0.006; // 6mm dark strip
+      final aoPaint = Paint()
+        ..color = Color.fromARGB(aoAlpha, 0, 0, 0)
+        ..style = PaintingStyle.fill;
+      // Front AO strip
+      canvas.drawPath(buildPath([
+        toScreen(x, y, z + d),
+        toScreen(x + w, y, z + d),
+        toScreen(x + w, y - aoWidth, z + d),
+        toScreen(x, y - aoWidth, z + d),
+      ]), aoPaint);
+      // Left AO strip
+      if (camX > x) {
+        canvas.drawPath(buildPath([
+          toScreen(x, y, z),
+          toScreen(x, y, z + d),
+          toScreen(x, y - aoWidth, z + d),
+          toScreen(x, y - aoWidth, z),
+        ]), aoPaint);
+      }
+      // Right AO strip
+      if (camX < x + w) {
+        canvas.drawPath(buildPath([
+          toScreen(x + w, y, z),
+          toScreen(x + w, y, z + d),
+          toScreen(x + w, y - aoWidth, z + d),
+          toScreen(x + w, y - aoWidth, z),
+        ]), aoPaint);
+      }
+    }
+
     // Face visibility from fixed camera
     final showLeft = camX > x;
     final showRight = camX < x + w;
-    final showTop = camY < y + h;
+    final showTop = camY > y + h;
 
-    // Draw faces back-to-front
+    // Draw faces back-to-front with strong value separation
+    // Research: top = brightest, front = medium, side = darkest
 
-    // Back face (z = z, faces away — draw only if partially visible)
-    // Skip: faces away from camera
-
-    // Left face
+    // Left face (darkest side — away from opening light)
     if (showLeft) {
-      fill.color = Color.lerp(baseColor, Colors.black, 0.25)!;
+      fill.color = Color.lerp(baseColor, Colors.black, 0.50)!;
       canvas.drawPath(buildPath([p0, p3, p7, p4]), fill);
     }
 
-    // Right face
+    // Right face (dark side)
     if (showRight) {
-      fill.color = Color.lerp(baseColor, Colors.black, 0.15)!;
+      fill.color = Color.lerp(baseColor, Colors.black, 0.45)!;
       canvas.drawPath(buildPath([p1, p2, p6, p5]), fill);
     }
 
-    // Top face
+    // Top face (brightest — catches ambient light from above)
     if (showTop) {
-      fill.color = baseColor;
+      fill.color = Color.lerp(baseColor, Colors.white, 0.18)!;
       canvas.drawPath(buildPath([p4, p5, p6, p7]), fill);
     }
 
-    // Front face (always visible)
-    fill.color = Color.lerp(baseColor, Colors.black, 0.10)!;
+    // Front face (medium — faces viewer and opening light)
+    fill.color = Color.lerp(baseColor, Colors.black, 0.08)!;
     canvas.drawPath(buildPath([p3, p2, p6, p7]), fill);
 
-    // Edge lines
+    // Edge lines — front edges bold, receding edges thinner for depth
     final edgeColor = Color.lerp(baseColor, Colors.black, 0.50)!;
-    final edgePaint = Paint()
+    final frontEdgePaint = Paint()
       ..color = edgeColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2
       ..strokeJoin = StrokeJoin.round
       ..strokeCap = StrokeCap.round;
+    final recedingEdgePaint = Paint()
+      ..color = Color.lerp(edgeColor, Colors.black, 0.15)!
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.7
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
 
-    // Front face edges
-    canvas.drawLine(p3, p2, edgePaint);
-    canvas.drawLine(p2, p6, edgePaint);
-    canvas.drawLine(p6, p7, edgePaint);
-    canvas.drawLine(p7, p3, edgePaint);
+    // Front face edges (bold — closest to camera)
+    canvas.drawLine(p3, p2, frontEdgePaint);
+    canvas.drawLine(p2, p6, frontEdgePaint);
+    canvas.drawLine(p6, p7, frontEdgePaint);
+    canvas.drawLine(p7, p3, frontEdgePaint);
 
-    // Top face edges
+    // Top face edges (receding toward back)
     if (showTop) {
-      canvas.drawLine(p4, p5, edgePaint);
-      if (showLeft) canvas.drawLine(p4, p7, edgePaint);
-      if (showRight) canvas.drawLine(p5, p6, edgePaint);
+      canvas.drawLine(p4, p5, recedingEdgePaint);
+      if (showLeft) canvas.drawLine(p4, p7, recedingEdgePaint);
+      if (showRight) canvas.drawLine(p5, p6, recedingEdgePaint);
     }
 
-    // Vertical back edges
+    // Vertical back edges (receding)
     if (showLeft) {
-      canvas.drawLine(p0, p4, edgePaint);
-      canvas.drawLine(p0, p3, edgePaint);
+      canvas.drawLine(p0, p4, recedingEdgePaint);
+      canvas.drawLine(p0, p3, recedingEdgePaint);
     }
     if (showRight) {
-      canvas.drawLine(p1, p5, edgePaint);
-      canvas.drawLine(p1, p2, edgePaint);
+      canvas.drawLine(p1, p5, recedingEdgePaint);
+      canvas.drawLine(p1, p2, recedingEdgePaint);
     }
 
     // Selection glow
@@ -197,63 +242,63 @@ extension BoxRendering on IsometricPainter {
     required Color strokeColor,
   }) {
     // Rounded arch profile: vertical sides + semicircular top
-    const arcSegs = 8;
+    const arcSegs = 12;
     final radius = math.min(w, h) * 0.7;
     final straightH = h - radius; // height of straight part
     final cx = x + w / 2;
 
     // Build arch cross-section (left profile → right profile)
-    // from (x, 0) → (x, straightH) → arc → (x+w, straightH) → (x+w, 0)
     List<Offset> archProfile(double atZ) {
       final pts = <Offset>[];
       pts.add(toScreen(x, 0, atZ));
-      pts.add(toScreen(x, straightH, atZ));
+      if (straightH > 0) pts.add(toScreen(x, straightH, atZ));
       // Arc from left to right
       for (int i = 0; i <= arcSegs; i++) {
-        final angle = math.pi - (math.pi * i / arcSegs); // π → 0
+        final angle = math.pi - (math.pi * i / arcSegs);
         final ax = cx + radius * math.cos(angle);
         final ay = straightH + radius * math.sin(angle);
-        final clampedAy = math.min(ay, h);
-        pts.add(toScreen(ax, clampedAy, atZ));
+        pts.add(toScreen(ax, math.min(ay, h), atZ));
       }
-      pts.add(toScreen(x + w, straightH, atZ));
+      if (straightH > 0) pts.add(toScreen(x + w, straightH, atZ));
       pts.add(toScreen(x + w, 0, atZ));
       return pts;
     }
 
-    final depthFactor = space.d > 0 ? z / space.d : 0.5;
-    final depthDarken = (1.0 - depthFactor) * 0.10;
+    final depthFactor = space.d > 0 ? (z + d / 2) / space.d : 0.5;
+    final depthDarken = (1.0 - depthFactor) * 0.15;
     final baseColor = Color.lerp(fillColor, Colors.black, depthDarken)!;
 
-    // Draw side face (the face facing the interior, at the inner edge)
+    // Determine which side this wheelhouse is on
     final isLeft = x < space.w / 2;
-    final sideX = isLeft ? x + w : x; // inner side
+    final sideX = isLeft ? x + w : x; // inner face facing cargo area
 
-    // Side face: simple rectangle with curved top
-    final sidePts = <Offset>[];
-    sidePts.add(toScreen(sideX, 0, z));
-    sidePts.add(toScreen(sideX, 0, z + d));
-    sidePts.add(toScreen(sideX, h, z + d));
-    sidePts.add(toScreen(sideX, h, z));
-    _drawWheelhouseFace(canvas, sidePts,
-        Color.lerp(baseColor, Colors.black, 0.20)!);
+    // Inner side face: arch-shaped (not simple rectangle)
+    final sideFrontPts = <Offset>[];
+    sideFrontPts.add(toScreen(sideX, 0, z));
+    sideFrontPts.add(toScreen(sideX, 0, z + d));
+    sideFrontPts.add(toScreen(sideX, h, z + d));
+    sideFrontPts.add(toScreen(sideX, h, z));
+    final sideColor = Color.lerp(baseColor, Colors.black, 0.12)!;
+    _drawWheelhouseFace(canvas, sideFrontPts, sideColor);
 
-    // Top surface: curved, drawn as multiple quads along depth
-    const depthSegs = 4;
+    // Top surface: curved arch, drawn as quad strips along depth
+    const depthSegs = 6;
     for (int di = 0; di < depthSegs; di++) {
       final zt0 = z + d * di / depthSegs;
       final zt1 = z + d * (di + 1) / depthSegs;
-      for (int ai = 0; ai <= arcSegs; ai++) {
+      for (int ai = 0; ai < arcSegs; ai++) {
         final a0 = math.pi - (math.pi * ai / arcSegs);
         final a1 = math.pi - (math.pi * (ai + 1) / arcSegs);
-        if (ai >= arcSegs) break;
 
         final ax0 = cx + radius * math.cos(a0);
         final ay0 = math.min(straightH + radius * math.sin(a0), h);
         final ax1 = cx + radius * math.cos(a1);
         final ay1 = math.min(straightH + radius * math.sin(a1), h);
 
-        final shade = Color.lerp(baseColor, Colors.black, 0.05 * di / depthSegs)!;
+        // Shade varies by arc position: darker at sides, lighter at apex
+        final arcFrac = ai / arcSegs;
+        final arcShade = 0.05 + 0.12 * (0.5 - (arcFrac - 0.5).abs());
+        final shade = Color.lerp(baseColor, Colors.white, arcShade)!;
         final quad = buildPath([
           toScreen(ax0, ay0, zt0),
           toScreen(ax1, ay1, zt0),
@@ -265,18 +310,95 @@ extension BoxRendering on IsometricPainter {
       }
     }
 
-    // Front face (z = z + d, toward camera)
+    // Front face (z = z + d, toward camera) — the most visible face
     final frontProfile = archProfile(z + d);
-    _drawWheelhouseFace(canvas, frontProfile,
-        Color.lerp(baseColor, Colors.black, 0.08)!);
+    final frontColor = Color.lerp(baseColor, Colors.black, 0.05)!;
+    _drawWheelhouseFace(canvas, frontProfile, frontColor);
 
-    // Edge outline on front face
+    // Subtle inner shadow gradient on front face (concave depth cue)
+    final frontPath = buildPath(frontProfile);
+    final archCenter = toScreen(cx, h * 0.5, z + d);
+    canvas.drawPath(
+        frontPath,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            archCenter,
+            (w * scale * focalLen / (camZ - z - d)).abs().clamp(10.0, 200.0),
+            [
+              Color.lerp(frontColor, Colors.black, 0.15)!,
+              frontColor,
+            ],
+            [0.0, 1.0],
+          )
+          ..style = PaintingStyle.fill);
+
+    // Strong edge outline on front face for clear arch silhouette
     final edgePaint = Paint()
-      ..color = Color.lerp(baseColor, Colors.black, 0.40)!
+      ..color = Color.lerp(baseColor, Colors.black, 0.50)!
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0
+      ..strokeWidth = 1.8
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(frontPath, edgePaint);
+
+    // Inner highlight along the arch (plastic specular edge)
+    final highlightPaint = Paint()
+      ..color = const Color(0x20FFFFFF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.8
       ..strokeJoin = StrokeJoin.round;
-    canvas.drawPath(buildPath(frontProfile), edgePaint);
+    canvas.drawPath(frontPath, highlightPaint);
+
+    // Depth edge lines connecting front arch to back (visible ribs)
+    for (final frac in [0.0, 0.25, 0.5, 0.75, 1.0]) {
+      final angle = math.pi - (math.pi * frac);
+      final ex = cx + radius * math.cos(angle);
+      final ey = math.min(straightH + radius * math.sin(angle), h);
+      if (ey > 0.01) {
+        canvas.drawLine(
+          toScreen(ex, ey, z),
+          toScreen(ex, ey, z + d),
+          Paint()
+            ..color = Color.lerp(baseColor, Colors.black, 0.30)!
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.6,
+        );
+      }
+    }
+
+    // Floor-to-wheelhouse junction: AO shadow strip (8mm) + line
+    final aoStripW = 0.008;
+    final aoStripPaint = Paint()
+      ..color = const Color(0x44000000)
+      ..style = PaintingStyle.fill;
+    // Left side AO strip
+    canvas.drawPath(buildPath([
+      toScreen(x - aoStripW, -0.001, z),
+      toScreen(x, -0.001, z),
+      toScreen(x, -0.001, z + d),
+      toScreen(x - aoStripW, -0.001, z + d),
+    ]), aoStripPaint);
+    // Right side AO strip
+    canvas.drawPath(buildPath([
+      toScreen(x + w, -0.001, z),
+      toScreen(x + w + aoStripW, -0.001, z),
+      toScreen(x + w + aoStripW, -0.001, z + d),
+      toScreen(x + w, -0.001, z + d),
+    ]), aoStripPaint);
+    // Front AO strip
+    canvas.drawPath(buildPath([
+      toScreen(x, -0.001, z + d),
+      toScreen(x + w, -0.001, z + d),
+      toScreen(x + w, -0.001, z + d + aoStripW),
+      toScreen(x, -0.001, z + d + aoStripW),
+    ]), aoStripPaint);
+    // Junction lines on top of AO
+    final junctionPaint = Paint()
+      ..color = const Color(0xFF1A1816)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+    canvas.drawLine(toScreen(x, 0, z), toScreen(x, 0, z + d), junctionPaint);
+    canvas.drawLine(toScreen(x + w, 0, z), toScreen(x + w, 0, z + d), junctionPaint);
   }
 
   void _drawWheelhouseFace(Canvas canvas, List<Offset> pts, Color color) {

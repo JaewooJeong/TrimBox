@@ -529,8 +529,14 @@ const _categoryColors = {
   _PresetCategory.camping: [
     Color(0xFF556B2F), // 올리브
     Color(0xFF2F4F4F), // 다크 슬레이트
-    Color(0xFFFF6B35), // 오렌지
+    Color(0xFFD4652B), // 번트 오렌지
     Color(0xFF1B4332), // 다크 그린
+    Color(0xFF8B4513), // 새들 브라운
+    Color(0xFF4A6741), // 포레스트 그린
+    Color(0xFF704214), // 초콜릿
+    Color(0xFF2E5090), // 딥 블루
+    Color(0xFF6B3A2A), // 마호가니
+    Color(0xFF5C6B4E), // 세이지
   ],
 };
 

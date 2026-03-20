@@ -41,8 +41,8 @@ class IsometricPainter extends CustomPainter {
 
   // ── Camera parameters ──
   late final double camX = space.w / 2;
-  late final double camY = space.h * 1.05;
-  late final double focalLen = space.d * 1.0;
+  late final double camY = space.h * 0.85;
+  late final double focalLen = space.d * 1.15;
   late final double camZ = space.d + focalLen;
 
   /// 1-point perspective projection: world → screen

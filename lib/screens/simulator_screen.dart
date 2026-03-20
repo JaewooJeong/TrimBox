@@ -62,7 +62,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   // 줌 & 패닝
   double _zoomLevel = 1.0;
-  Offset _panOffset = Offset.zero;
+  Offset _panOffset = const Offset(0, -55);
   static const double _minZoom = 0.5;
   static const double _maxZoom = 3.0;
 
@@ -112,9 +112,9 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   double _calculateScale(Size canvasSize) {
     // In perspective, scale = pixels per meter at the opening (z=d).
     // Opening dimensions are space.w × space.h.
-    // Fit the opening to ~70% of canvas.
-    final scaleX = canvasSize.width * 0.70 / _space.w;
-    final scaleY = canvasSize.height * 0.70 / _space.h;
+    // Fit the opening to ~82% of canvas for immersive trunk view.
+    final scaleX = canvasSize.width * 0.82 / _space.w;
+    final scaleY = canvasSize.height * 0.82 / _space.h;
     return math.min(scaleX, scaleY);
   }
 
@@ -766,7 +766,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         event.logicalKey == LogicalKeyboardKey.numpad0) {
       setState(() {
         _zoomLevel = 1.0;
-        _panOffset = Offset.zero;
+        _panOffset = const Offset(0, -40);
       });
       return;
     }
@@ -2075,46 +2075,140 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   // ──── 스태킹 ────
 
   void _resolveStackingY(TrimBox box) {
-    double supportY = 0;
     final boxArea = box.effectiveW * box.effectiveD;
+    const heightTol = 0.015; // 1.5cm — 같은 높이 레벨 허용 오차
 
+    // 1. XZ 겹침이 있는 모든 상자의 (윗면 높이, 겹침 면적) 수집
+    final supports = <({double topY, double area})>[];
     for (final other in _boxes) {
       if (other.id == box.id) continue;
       final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
       final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
-
       if (overlapX > 0 && overlapZ > 0) {
-        final overlapArea = overlapX * overlapZ;
-        if (overlapArea >= boxArea * 0.5) {
-          final candidateY = other.y + other.h;
-          if (candidateY > supportY) supportY = candidateY;
+        supports.add((topY: other.y + other.h, area: overlapX * overlapZ));
+      }
+    }
+
+    // 1b. 휠하우스도 지지면으로 사용 (위에 짐 적재 가능)
+    final trunk = _space;
+    for (final wh in [
+      (x: 0.0, w: trunk.leftWheelhouse.w, d: trunk.leftWheelhouse.d, h: trunk.leftWheelhouse.h),
+      (x: trunk.w - trunk.rightWheelhouse.w, w: trunk.rightWheelhouse.w, d: trunk.rightWheelhouse.d, h: trunk.rightWheelhouse.h),
+    ]) {
+      if (wh.w <= 0 || wh.d <= 0 || wh.h <= 0) continue;
+      final overlapX = math.min(box.x + box.effectiveW, wh.x + wh.w) - math.max(box.x, wh.x);
+      final overlapZ = math.min(box.z + box.effectiveD, wh.d) - math.max(box.z, 0.0);
+      if (overlapX > 0 && overlapZ > 0) {
+        supports.add((topY: wh.h, area: overlapX * overlapZ));
+      }
+    }
+
+    // 2. 높이별 그룹으로 지지면적 합산
+    final groups = <double, double>{}; // 높이 → 합산 지지면적
+    for (final s in supports) {
+      bool grouped = false;
+      for (final h in groups.keys.toList()) {
+        if ((s.topY - h).abs() <= heightTol) {
+          groups[h] = groups[h]! + s.area;
+          grouped = true;
+          break;
         }
+      }
+      if (!grouped) {
+        groups[s.topY] = s.area;
+      }
+    }
+
+    // 3. 합산 지지면적 >= 50%인 유효 레벨 중, 현재 높이에 가장 가까운 레벨 선택
+    //    (드래그 시 불연속 점프 방지 — 가능하면 현재 높이 유지)
+    final validLevels = <double>[];
+    for (final entry in groups.entries) {
+      if (entry.value >= boxArea * 0.5) {
+        validLevels.add(entry.key);
+      }
+    }
+    validLevels.add(0.0); // 바닥은 항상 유효
+
+    double supportY = 0;
+    double minDist = double.infinity;
+    for (final level in validLevels) {
+      final dist = (level - box.y).abs();
+      if (dist < minDist) {
+        minDist = dist;
+        supportY = level;
       }
     }
     box.y = supportY;
   }
 
   void _resolveGravity() {
-    final sorted = List<TrimBox>.from(_boxes)..sort((a, b) => a.y.compareTo(b.y));
+    const heightTol = 0.015;
+    const maxIterations = 10;
 
-    for (int i = 0; i < sorted.length; i++) {
-      final box = sorted[i];
-      double supportY = 0;
-      final boxArea = box.effectiveW * box.effectiveD;
+    // 반복 해결: 다단 적재 붕괴 시 모든 층이 올바르게 낙하할 때까지 반복
+    for (int iter = 0; iter < maxIterations; iter++) {
+      bool changed = false;
+      final sorted = List<TrimBox>.from(_boxes)..sort((a, b) => a.y.compareTo(b.y));
 
-      for (int j = 0; j < i; j++) {
-        final other = sorted[j];
-        final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
-        final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
-        if (overlapX > 0 && overlapZ > 0) {
-          final overlapArea = overlapX * overlapZ;
-          if (overlapArea >= boxArea * 0.5) {
-            final candidateY = other.y + other.h;
-            if (candidateY > supportY) supportY = candidateY;
+      for (int i = 0; i < sorted.length; i++) {
+        final box = sorted[i];
+        final boxArea = box.effectiveW * box.effectiveD;
+
+        // 아래에 있는 상자들의 (윗면 높이, 겹침 면적) 수집
+        final supports = <({double topY, double area})>[];
+        for (int j = 0; j < i; j++) {
+          final other = sorted[j];
+          final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
+          final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
+          if (overlapX > 0 && overlapZ > 0) {
+            supports.add((topY: other.y + other.h, area: overlapX * overlapZ));
           }
         }
+
+        // 휠하우스도 지지면으로 포함
+        final trunk = _space;
+        for (final wh in [
+          (x: 0.0, w: trunk.leftWheelhouse.w, d: trunk.leftWheelhouse.d, h: trunk.leftWheelhouse.h),
+          (x: trunk.w - trunk.rightWheelhouse.w, w: trunk.rightWheelhouse.w, d: trunk.rightWheelhouse.d, h: trunk.rightWheelhouse.h),
+        ]) {
+          if (wh.w <= 0 || wh.d <= 0 || wh.h <= 0) continue;
+          final overlapX = math.min(box.x + box.effectiveW, wh.x + wh.w) - math.max(box.x, wh.x);
+          final overlapZ = math.min(box.z + box.effectiveD, wh.d) - math.max(box.z, 0.0);
+          if (overlapX > 0 && overlapZ > 0) {
+            supports.add((topY: wh.h, area: overlapX * overlapZ));
+          }
+        }
+
+        // 높이별 합산
+        final groups = <double, double>{};
+        for (final s in supports) {
+          bool grouped = false;
+          for (final h in groups.keys.toList()) {
+            if ((s.topY - h).abs() <= heightTol) {
+              groups[h] = groups[h]! + s.area;
+              grouped = true;
+              break;
+            }
+          }
+          if (!grouped) {
+            groups[s.topY] = s.area;
+          }
+        }
+
+        double supportY = 0;
+        for (final entry in groups.entries) {
+          if (entry.value >= boxArea * 0.5 && entry.key > supportY) {
+            supportY = entry.key;
+          }
+        }
+
+        if ((box.y - supportY).abs() > 0.001) {
+          changed = true;
+        }
+        box.y = supportY;
       }
-      box.y = supportY;
+
+      if (!changed) break;
     }
   }
 

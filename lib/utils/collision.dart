@@ -18,12 +18,48 @@ class CollisionDetector {
         a.y + a.h > b.y;
   }
 
-  /// 박스가 트렁크 경계를 벗어나는지 확인
+  /// 박스가 트렁크 경계를 벗어나는지 확인 (taper/topNarrow 포함)
   bool isOutOfBounds(TrimBox box) {
-    return box.x < -0.001 ||
-        box.z < -0.001 ||
-        box.x + box.effectiveW > space.w + 0.001 ||
-        box.z + box.effectiveD > space.d + 0.001;
+    // Basic AABB bounds (5mm tolerance for floating point)
+    const tol = 0.005;
+    if (box.x < -tol ||
+        box.z < -tol ||
+        box.x + box.effectiveW > space.w + tol ||
+        box.z + box.effectiveD > space.d + tol) {
+      return true;
+    }
+    // Taper check: floor narrows toward the rear (z=0)
+    // Check at both z endpoints of the box
+    for (final z in [box.z, box.z + box.effectiveD]) {
+      final taper = space.taperAt(z);
+      if (box.x < taper - tol ||
+          box.x + box.effectiveW > space.w - taper + tol) {
+        return true;
+      }
+    }
+    // TopNarrow check: C-pillar narrowing at upper region
+    // Only applies if box reaches into the narrowed upper zone
+    for (final z in [box.z, box.z + box.effectiveD]) {
+      final narrow = space.topNarrowAt(z);
+      if (narrow > 0.001) {
+        final taper = space.taperAt(z);
+        final ceilH = space.ceilingHeightAt(z);
+        // Narrowing is linear from ceiling to ~60% height
+        final narrowStart = ceilH * 0.6;
+        if (box.y + box.h > narrowStart) {
+          // Interpolate narrowing at box top
+          final heightFrac = ((box.y + box.h) - narrowStart) / (ceilH - narrowStart);
+          final effectiveNarrow = narrow * heightFrac.clamp(0.0, 1.0);
+          final leftBound = taper + effectiveNarrow;
+          final rightBound = space.w - taper - effectiveNarrow;
+          if (box.x < leftBound - tol ||
+              box.x + box.effectiveW > rightBound + tol) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   /// 박스가 트렁크 높이를 초과하는지 확인 (위치별 천장 높이 반영)
@@ -32,7 +68,7 @@ class CollisionDetector {
     final ceilAtZ1 = space.ceilingHeightAt(box.z);
     final ceilAtZ2 = space.ceilingHeightAt(box.z + box.effectiveD);
     final minCeil = ceilAtZ1 < ceilAtZ2 ? ceilAtZ1 : ceilAtZ2;
-    return box.y + box.h > minCeil + 0.001;
+    return box.y + box.h > minCeil + 0.005;
   }
 
   /// 박스가 왼쪽 휠하우스와 겹치는지 확인

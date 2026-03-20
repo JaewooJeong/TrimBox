@@ -18,7 +18,7 @@ extension TrunkRendering on IsometricPainter {
       height: size.height,
     );
 
-    // Sky-like gradient: brighter at top, warmer at bottom
+    // Sky-like gradient: brighter overall for contrast with dark trunk interior
     canvas.drawRect(
       bgRect,
       Paint()
@@ -26,10 +26,10 @@ extension TrunkRendering on IsometricPainter {
           Offset(0, -size.height / 2),
           Offset(0, size.height / 2),
           [
-            const Color(0xFF8090A0), // cool sky blue-gray
-            const Color(0xFF687888), // mid sky
-            const Color(0xFF606858), // horizon greenery
-            const Color(0xFF585048), // ground level warm
+            const Color(0xFFA8B8C8), // bright sky blue-gray
+            const Color(0xFF8898A8), // mid sky
+            const Color(0xFF788870), // horizon greenery
+            const Color(0xFF686058), // ground level warm
           ],
           [0.0, 0.35, 0.65, 1.0],
         )
@@ -83,10 +83,10 @@ extension TrunkRendering on IsometricPainter {
       final lt0 = _wallLeftTop(z0), lt1 = _wallLeftTop(z1);
       final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
 
-      // Ceiling headliner: lighter fabric material, brighter toward opening
-      final warmShift = t0 * 0.35; // significant brightness increase toward opening
+      // Ceiling headliner: lighter fabric (real trunks reflect sky light)
+      final warmShift = t0 * 0.40;
       final shade = Color.lerp(
-          const Color(0xFF3A3735), const Color(0xFF5A5550), warmShift)!;
+          const Color(0xFF6A6660), const Color(0xFF8A8884), warmShift)!;
 
       _drawQuadFace(canvas, [
         toScreen(lt0, ch0, z0),
@@ -167,9 +167,9 @@ extension TrunkRendering on IsometricPainter {
       final rb0 = _wallRightBot(z0), rb1 = _wallRightBot(z1);
       final rt0 = _wallRightTop(z0), rt1 = _wallRightTop(z1);
 
-      // Wall plastic: medium gray, darker toward deep interior
+      // Wall plastic: medium gray, lighter near opening, darker deep inside
       final shade = Color.lerp(
-          const Color(0xFF484540), const Color(0xFF2A2725), (1 - t0) * 0.6)!;
+          const Color(0xFF807A76), const Color(0xFF4A4644), (1 - t0) * 0.65)!;
 
       // Left wall segment
       _drawQuadFace(canvas, [
@@ -357,12 +357,12 @@ extension TrunkRendering on IsometricPainter {
           toScreen(_wallLeftBot(0), 0, 0),
           toScreen(0, 0, d),
           [
-            const Color(0x60000000), // dark deep interior
-            const Color(0x30000000), // mid
-            const Color(0x00000000), // clear transition
-            const Color(0x60FFFAED), // strong warm ambient from opening
+            const Color(0x80000000), // very dark deep interior
+            const Color(0x50000000), // dark mid
+            const Color(0x08000000), // almost clear
+            const Color(0x50FFFAED), // warm ambient from opening
           ],
-          [0.0, 0.2, 0.5, 1.0],
+          [0.0, 0.15, 0.50, 1.0],
         )
         ..style = PaintingStyle.fill,
     );
@@ -385,12 +385,12 @@ extension TrunkRendering on IsometricPainter {
           toScreen(_wallRightBot(0), 0, 0),
           toScreen(space.w, 0, d),
           [
-            const Color(0x50000000),
-            const Color(0x20000000),
-            const Color(0x00000000),
-            const Color(0x50FFFAED), // strong warm ambient from opening
+            const Color(0x70000000), // very dark deep
+            const Color(0x38000000),
+            const Color(0x08000000),
+            const Color(0x50FFFAED), // warm ambient from opening
           ],
-          [0.0, 0.2, 0.55, 1.0],
+          [0.0, 0.15, 0.50, 1.0],
         )
         ..style = PaintingStyle.fill,
     );
@@ -491,52 +491,32 @@ extension TrunkRendering on IsometricPainter {
       toScreen(insetTop, seatH, tilt),
     ]);
 
+    // Cargo-facing seatback: flat carpet material (NOT leather quilting)
+    // Real trunk seats show plain charcoal carpet from behind
     canvas.drawPath(
         facePath,
         Paint()
-          ..color = const Color(0xFF454038)
+          ..color = const Color(0xFF3C3A37)
           ..style = PaintingStyle.fill);
 
-    // Diamond quilting -- clip to face shape
+    // Subtle horizontal fabric texture lines (carpet weave)
     canvas.save();
     canvas.clipPath(facePath);
-
-    final backW = w - insetBot - insetTop; // average width
-    const quiltUnit = 0.08;
-    final quiltPaint = Paint()
-      ..color = const Color(0x20967B5D)
+    final fabricPaint = Paint()
+      ..color = const Color(0x12000000)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8;
-
-    // Family A: u + v = c (lines going down-right)
-    for (double c = quiltUnit; c < backW + seatH; c += quiltUnit) {
-      final u0 = math.max(0.0, c - seatH);
-      final u1 = math.min(backW, c);
-      if (u1 <= u0) continue;
-      final v0 = c - u0;
-      final v1 = c - u1;
+      ..strokeWidth = 0.5;
+    const fabricStep = 0.015; // 1.5cm spacing
+    for (double yFrac = fabricStep; yFrac < seatH; yFrac += fabricStep) {
+      final xL = insetBot + (insetTop - insetBot) * (yFrac / seatH);
+      final xR = w - insetBot - (insetTop - insetBot) * (yFrac / seatH);
+      final zAt = tilt * yFrac / seatH;
       canvas.drawLine(
-        toScreen(insetBot + u0, v0, tilt * v0 / seatH),
-        toScreen(insetBot + u1, v1, tilt * v1 / seatH),
-        quiltPaint,
+        toScreen(xL, yFrac, zAt),
+        toScreen(xR, yFrac, zAt),
+        fabricPaint,
       );
     }
-
-    // Family B: u - v = c (lines going up-right)
-    for (double c = -seatH + quiltUnit; c < backW; c += quiltUnit) {
-      final u0 = math.max(0.0, c);
-      final u1 = math.min(backW, c + seatH);
-      if (u1 <= u0) continue;
-      final v0 = u0 - c;
-      final v1 = u1 - c;
-      if (v0 < -0.001 || v1 > seatH + 0.001) continue;
-      canvas.drawLine(
-        toScreen(insetBot + u0, v0, tilt * v0 / seatH),
-        toScreen(insetBot + u1, v1, tilt * v1 / seatH),
-        quiltPaint,
-      );
-    }
-
     canvas.restore();
 
     // Seat split lines
@@ -573,23 +553,26 @@ extension TrunkRendering on IsometricPainter {
         ..strokeWidth = 1.0,
     );
 
-    // Headrest stubs (protruding above seat top)
-    _drawHeadrests(canvas, w, seatH, tilt, insetBot, insetTop);
+    // Headrest posts only (headrest pads face the other side, not visible from trunk)
+    _drawHeadrestPosts(canvas, w, seatH, tilt, insetTop);
 
     // Seat fold lever indicators (red pull handles near split lines)
     _drawSeatFoldLevers(canvas, w, seatH, tilt, insetBot, insetTop);
   }
 
-  void _drawHeadrests(Canvas canvas, double w, double seatH, double tilt,
-      double insetBot, double insetTop) {
+  /// From the trunk side, only the metal headrest posts are visible
+  /// (the headrest pads face the cabin, not the cargo area)
+  void _drawHeadrestPosts(Canvas canvas, double w, double seatH, double tilt,
+      double insetTop) {
     final splitRatio = space.seatSplitRatio;
-    if (splitRatio == null) return; // sedan -- no visible headrests
+    if (splitRatio == null) return;
 
-    const headrestH = 0.10; // 10cm tall
-    const headrestW = 0.12; // 12cm wide
-    const headrestD = 0.04; // 4cm deep (thickness)
+    final postPaint = Paint()
+      ..color = const Color(0xFF555555)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round;
 
-    // Place headrests at center of each seat section
     final seatWidth = w - 2 * insetTop;
     double cum = 0;
     for (int i = 0; i < splitRatio.length; i++) {
@@ -597,45 +580,16 @@ extension TrunkRendering on IsometricPainter {
       cum += splitRatio[i];
 
       final cx = insetTop + seatWidth * sectionCenter;
-      final hx = cx - headrestW / 2;
-      final by = seatH;
-      final ty = seatH + headrestH;
-      final hz = tilt - headrestD;
-
-      // Headrest: slightly rounded dark rectangle
-      const headColor = Color(0xFF2A2826);
-      const headDark = Color(0xFF1E1C1A);
-
-      // Front face
-      _drawQuadFace(canvas, [
-        toScreen(hx, by, tilt),
-        toScreen(hx + headrestW, by, tilt),
-        toScreen(hx + headrestW, ty, tilt),
-        toScreen(hx, ty, tilt),
-      ], headColor);
-
-      // Top face
-      _drawQuadFace(canvas, [
-        toScreen(hx, ty, hz),
-        toScreen(hx + headrestW, ty, hz),
-        toScreen(hx + headrestW, ty, tilt),
-        toScreen(hx, ty, tilt),
-      ], headDark);
-
-      // Metal post hints (two thin lines)
-      final postPaint = Paint()
-        ..color = const Color(0xFF555555)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5;
       final postLeft = cx - 0.025;
       final postRight = cx + 0.025;
+      // Short metal posts protruding above seat top
       canvas.drawLine(
-          toScreen(postLeft, by, tilt),
-          toScreen(postLeft, by - 0.01, tilt),
+          toScreen(postLeft, seatH, tilt),
+          toScreen(postLeft, seatH + 0.04, tilt),
           postPaint);
       canvas.drawLine(
-          toScreen(postRight, by, tilt),
-          toScreen(postRight, by - 0.01, tilt),
+          toScreen(postRight, seatH, tilt),
+          toScreen(postRight, seatH + 0.04, tilt),
           postPaint);
     }
   }
@@ -688,27 +642,28 @@ extension TrunkRendering on IsometricPainter {
     final w = space.w, d = space.d;
 
     // Main floor -- follows bottom taper
+    // Real trunk carpet is dark charcoal
     final floorPts = [
       toScreen(_wallLeftBot(0), 0, 0),
       toScreen(_wallRightBot(0), 0, 0),
       toScreen(_wallRightBot(d), 0, d),
       toScreen(_wallLeftBot(d), 0, d),
     ];
-    _drawQuadFace(canvas, floorPts, const Color(0xFF4A4540));
+    _drawQuadFace(canvas, floorPts, const Color(0xFF302C28));
 
-    // Depth lighting gradient -- dramatic light falloff
+    // Depth lighting gradient -- real trunks have extreme light falloff
     canvas.drawPath(
       buildPath(floorPts),
       Paint()
         ..shader = ui.Gradient.linear(
           floorPts[0], floorPts[3],
           [
-            const Color(0x80000000), // very dark deep interior
-            const Color(0x50000000), // dark mid
-            const Color(0x18000000), // transition
+            const Color(0xA0000000), // near-black deep interior
+            const Color(0x70000000), // very dark mid
+            const Color(0x28000000), // transition zone
             const Color(0x00000000), // clear near opening
           ],
-          [0.0, 0.15, 0.45, 0.75],
+          [0.0, 0.12, 0.40, 0.70],
         )
         ..style = PaintingStyle.fill,
     );
@@ -1132,8 +1087,8 @@ extension TrunkRendering on IsometricPainter {
     final h = space.h;
     final d = space.d;
 
-    // Light position: upper-left, near the opening
-    final lightX = 0.05;
+    // Light position: top center, near the opening (matches real trunk LED)
+    final lightX = space.w / 2;
     final lightY = h * 0.85;
     final lightZ = d * 0.9;
     final lightCenter = toScreen(lightX, lightY, lightZ);
@@ -1142,8 +1097,8 @@ extension TrunkRendering on IsometricPainter {
     final dz = camZ - lightZ;
     final pScale = focalLen / dz * scale;
 
-    // Radial glow (~25cm radius)
-    final glowRadius = 0.25 * pScale;
+    // Radial glow (~30cm radius)
+    final glowRadius = 0.30 * pScale;
     canvas.drawCircle(
       lightCenter,
       glowRadius,
@@ -1152,8 +1107,8 @@ extension TrunkRendering on IsometricPainter {
           lightCenter,
           glowRadius,
           [
-            const Color(0x60FFFAF0), // strong warm white center
-            const Color(0x38FFF5E0), // warm mid
+            const Color(0x80FFFAF0), // strong warm white center
+            const Color(0x48FFF5E0), // warm mid
             const Color(0x00FFF5E0), // fade out
           ],
           [0.0, 0.3, 1.0],

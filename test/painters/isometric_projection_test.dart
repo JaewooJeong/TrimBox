@@ -47,12 +47,13 @@ void main() {
     test('back wall: objects at z=0 appear smaller (f < scale)', () {
       final p = makePainter();
       // At z=0: f = focalLen / camZ * scale = focalLen / (d + focalLen) * scale
-      // = d / (2d) * scale = 0.5 * scale
       final oFront = p.toScreen(p.camX + 1.0, p.camY, p.space.d);
       final oBack = p.toScreen(p.camX + 1.0, p.camY, 0);
       // Front should be larger (farther from vanishing pt in screen)
       expect(oFront.dx.abs(), greaterThan(oBack.dx.abs()));
-      expect(oFront.dx / oBack.dx, closeTo(2.0, 0.01));
+      // Ratio = (d + focalLen) / focalLen (front_f/back_f)
+      final expectedRatio = (p.space.d + p.focalLen) / p.focalLen;
+      expect(oFront.dx / oBack.dx, closeTo(expectedRatio, 0.01));
     });
 
     test('y축: 위로 갈수록 sy 음수', () {

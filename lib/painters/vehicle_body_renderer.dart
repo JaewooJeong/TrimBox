@@ -54,13 +54,13 @@ extension VehicleBodyRendering on IsometricPainter {
     // ── 4. Bumper contour ──
     _drawBumperContour(canvas, w, d, bodyBaseColor);
 
-    // ── Rubber seal (thick dark border following the opening shape) ──
+    // ── Rubber seal (dark border following the opening shape) ──
     canvas.drawPath(
         openingPath,
         Paint()
-          ..color = const Color(0xFF0A0A0A)
+          ..color = const Color(0xFF080808)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 7.0
+          ..strokeWidth = 5.0
           ..strokeJoin = StrokeJoin.round);
 
     // Metal trim highlight
@@ -176,23 +176,23 @@ extension VehicleBodyRendering on IsometricPainter {
           ..strokeWidth = 1.2);
   }
 
-  /// Tail lights — vertical rounded rectangles on each side
+  /// Tail lights — compact vertical elements at each side
   void _drawTailLights(Canvas canvas, double w, double d, double h) {
     final bodyExtX = space.bodyExtX;
-    // Tail light dimensions in world coords
-    const lightW = 0.08; // 8cm wide
-    const lightH = 0.20; // 20cm tall
-    // Position: at outer body edge, 60-80% height (center at 70%)
-    final lightCenterY = h * 0.70;
+    // Tail light dimensions — smaller, more proportional
+    const lightW = 0.05; // 5cm wide
+    const lightH = 0.14; // 14cm tall
+    // Position: near outer body edge, 65-79% height
+    final lightCenterY = h * 0.72;
     final lightTop = lightCenterY + lightH / 2;
     final lightBot = lightCenterY - lightH / 2;
 
-    // Left tail light
-    final leftX = -bodyExtX + 0.01; // 1cm inset from body edge
+    // Left tail light — near body edge
+    final leftX = -bodyExtX + 0.015;
     _drawSingleTailLight(canvas, leftX, leftX + lightW, lightBot, lightTop, d);
 
     // Right tail light
-    final rightX = w + bodyExtX - 0.01 - lightW;
+    final rightX = w + bodyExtX - 0.015 - lightW;
     _drawSingleTailLight(
         canvas, rightX, rightX + lightW, lightBot, lightTop, d);
   }

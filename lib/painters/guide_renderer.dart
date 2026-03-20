@@ -8,14 +8,14 @@ extension GuideRendering on IsometricPainter {
     const majorUnit = 0.50;
 
     final minorPaint = Paint()
-      ..color = const Color(0x25999999)
+      ..color = const Color(0x10666666)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.5;
+      ..strokeWidth = 0.3;
 
     final majorPaint = Paint()
-      ..color = const Color(0x50AAAAAA)
+      ..color = const Color(0x20888888)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
+      ..strokeWidth = 0.6;
 
     // Lines along X (at each Z depth) — follow floor taper
     for (double z = 0; z <= d + 0.001; z += unit) {
@@ -42,8 +42,11 @@ extension GuideRendering on IsometricPainter {
     }
   }
 
-  /// Depth sort key: front face z = closer to camera = drawn later
-  double _objectDepth(double cx, double cz, [double cd = 0]) => cz + cd;
+  /// Depth sort key: primary by z (front face), secondary by y, tertiary by x
+  /// Higher values drawn later (on top). This prevents z-fighting between
+  /// boxes at same depth but different heights.
+  double _objectDepth(double cx, double cz, [double cd = 0, double cy = 0]) =>
+      (cz + cd) * 1000 + cy * 10 + cx;
 
   /// Render wheelhousees + boxes depth-sorted
   void drawObjects(Canvas canvas) {
@@ -52,9 +55,9 @@ extension GuideRendering on IsometricPainter {
 
     final List<({double depth, VoidCallback draw})> objects = [];
 
-    // Wheelhouse color matches trunk interior walls
-    const whFill = Color(0xFF2D2A27);
-    const whStroke = Color(0xFF1E1C1A);
+    // Wheelhouse color: slightly lighter than walls for visibility
+    const whFill = Color(0xFF3D3835);
+    const whStroke = Color(0xFF2A2623);
 
     // Left wheelhouse (뒷축 쪽, z=0 근처)
     final lwx = 0.0, lwz = 0.0;
@@ -110,8 +113,8 @@ extension GuideRendering on IsometricPainter {
         strokeColor = const Color(0xFF00E676);
         strokeWidth = 3.0;
       } else if (isColliding) {
-        strokeColor = const Color(0xFFFF4D4D);
-        strokeWidth = 2.5;
+        strokeColor = const Color(0xFFFF6B6B);
+        strokeWidth = 1.8;
       } else if (isSelected) {
         strokeColor = const Color(0xFF4DA3FF);
         strokeWidth = 2.5;
@@ -125,7 +128,7 @@ extension GuideRendering on IsometricPainter {
           : box.color;
 
       objects.add((
-        depth: _objectDepth(box.x + bw / 2, box.z, bd),
+        depth: _objectDepth(box.x + bw / 2, box.z, bd, box.y),
         draw: () {
           drawIsometricBox(canvas,
               x: box.x,
