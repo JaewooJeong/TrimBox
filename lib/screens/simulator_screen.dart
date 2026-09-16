@@ -9,7 +9,12 @@ import '../models/auto_layout.dart';
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import '../models/scene.dart';
-import '../painters/isometric_painter.dart';
+import '../models/support.dart';
+import '../render3d/camera.dart';
+import '../render3d/geometry.dart';
+import '../render3d/picking.dart';
+import '../render3d/trunk_painter_3d.dart';
+import '../render3d/vec3.dart';
 import '../utils/collision.dart';
 import '../utils/file_io.dart' as file_io;
 import '../utils/json_io.dart';
@@ -50,31 +55,30 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   bool _showOnboarding = true;
   bool _hasEverAddedBox = false;
 
-  // Camera (fixed for perspective — no orbit)
-  final double _cameraYaw = 0.0; // unused but kept for painter API compat
+  // 3D 카메라 (첫 레이아웃에서 트렁크에 맞춰 초기화)
+  OrbitCamera? _camera;
+  double _fitDistance = 1.0;
+  final SceneCache _sceneCache = SceneCache();
+  static const double _minZoomFactor = 0.45;
+  static const double _maxZoomFactor = 2.5;
+  static const double _defaultPitch = 22 * math.pi / 180;
 
-  // 드래그 상태
+  // 드래그 상태 (박스 이동)
   bool _isDragging = false;
-  Offset? _dragStartScreen;
-  double _dragStartX = 0;
-  double _dragStartZ = 0;
-  double _dragStartY = 0;
+  Vec3 _dragGrabOffset = Vec3.zero; // 잡은 지점 - 박스 원점 (x, z)
 
-  // 줌 & 패닝
-  double _zoomLevel = 1.0;
-  Offset _panOffset = const Offset(0, -55);
-  static const double _minZoom = 0.5;
-  static const double _maxZoom = 3.0;
+  // 빈 곳 드래그 = 카메라 회전
+  bool _isOrbiting = false;
+  Offset _orbitLastPos = Offset.zero;
 
   // 핀치 줌 제스처 추적
-  double _gestureStartZoom = 1.0;
-  Offset _gestureStartPanOffset = Offset.zero;
+  OrbitCamera? _gestureStartCamera;
   Offset _gestureStartFocalPoint = Offset.zero;
 
   // 미들클릭 / 우클릭 패닝
   bool _isPanning = false;
   Offset _panStartScreenPos = Offset.zero;
-  Offset _panStartPanOffset = Offset.zero;
+  Offset _panStartPan = Offset.zero;
 
   // Undo/Redo 스택
   static const int _maxUndoSteps = 50;
@@ -88,7 +92,6 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   bool _stepViewActive = false;
   int _stepViewCurrentStep = 1; // 1-based load order
 
-  double _lastScale = 280.0;
   Size _lastCanvasSize = Size.zero;
 
   late CollisionDetector _detector;
@@ -106,16 +109,54 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   @override
   void dispose() {
     _canvasFocusNode.dispose();
+    _sceneCache.dispose();
     super.dispose();
   }
 
-  double _calculateScale(Size canvasSize) {
-    // In perspective, scale = pixels per meter at the opening (z=d).
-    // Opening dimensions are space.w × space.h.
-    // Fit the opening to ~82% of canvas for immersive trunk view.
-    final scaleX = canvasSize.width * 0.82 / _space.w;
-    final scaleY = canvasSize.height * 0.82 / _space.h;
-    return math.min(scaleX, scaleY);
+  /// 캔버스 크기에 맞는 카메라 확보. 크기가 바뀌면 현재 각도·줌 비율을 유지한 채
+  /// 거리만 다시 맞춘다.
+  OrbitCamera _ensureCamera(Size canvasSize) {
+    final cam = _camera;
+    if (cam != null && _lastCanvasSize == canvasSize) return cam;
+    final fitted = OrbitCamera.fitTrunk(
+      _space,
+      canvasSize,
+      yaw: cam?.yaw ?? 0.0,
+      pitch: cam?.pitch ?? _defaultPitch,
+    );
+    final zoomRatio = cam == null ? 1.0 : cam.distance / _fitDistance;
+    _fitDistance = fitted.distance;
+    _lastCanvasSize = canvasSize;
+    _camera = fitted.copyWith(
+      distance: fitted.distance * zoomRatio,
+      pan: cam?.pan ?? Offset.zero,
+    );
+    return _camera!;
+  }
+
+  /// 각도·거리 제한을 적용해 카메라를 갱신
+  void _setCamera(OrbitCamera cam) {
+    _camera = cam.clamped(
+      minDistance: _fitDistance * _minZoomFactor,
+      maxDistance: _fitDistance * _maxZoomFactor,
+    );
+  }
+
+  void _resetCamera() {
+    setState(() {
+      _camera = null;
+      if (_lastCanvasSize != Size.zero) _ensureCamera(_lastCanvasSize);
+    });
+  }
+
+  /// 트렁크가 바뀌었을 때 (프리셋 변경/불러오기) 거리를 다시 맞춘다.
+  void _refitCamera() {
+    final cam = _camera;
+    if (cam == null || _lastCanvasSize == Size.zero) return;
+    final fitted = OrbitCamera.fitTrunk(_space, _lastCanvasSize,
+        yaw: cam.yaw, pitch: cam.pitch);
+    _fitDistance = fitted.distance;
+    _camera = fitted;
   }
 
   @override
@@ -205,12 +246,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
-        final baseScale = _calculateScale(canvasSize);
-        final effectiveScale = baseScale * _zoomLevel;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _lastScale = effectiveScale;
-          _lastCanvasSize = canvasSize;
-        });
+        final camera = _ensureCamera(canvasSize);
 
         return Stack(
           children: [
@@ -231,17 +267,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                   child: RepaintBoundary(
                     key: _canvasKey,
                     child: CustomPaint(
-                      painter: IsometricPainter(
+                      painter: TrunkPainter3D(
                         space: _space,
                         boxes: _boxes,
+                        camera: camera,
                         selectedBoxId: _selectedBoxId,
                         collidingBoxIds: _collidingIds,
-                        scale: effectiveScale,
-                        panOffset: _panOffset,
-                        cameraYaw: _cameraYaw,
                         draggingBoxId: _isDragging ? _selectedBoxId : null,
-                        zoomLevel: _zoomLevel,
                         highlightLoadOrder: _stepViewActive ? _stepViewCurrentStep : null,
+                        cache: _sceneCache,
                       ),
                       size: Size.infinite,
                     ),
@@ -517,11 +551,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                         const Text('조작법', style: TextStyle(color: Color(0xFF4DA3FF), fontSize: 12, fontWeight: FontWeight.w600)),
                         const SizedBox(height: 8),
                         if (isTouch) ...[
-                          _controlRow('드래그', '박스 이동'),
+                          _controlRow('박스 드래그', '박스 이동'),
+                          _controlRow('빈 곳 드래그', '카메라 회전'),
                           _controlRow('핀치', '줌 인/아웃'),
                           _controlRow('두 손가락 드래그', '패닝'),
                         ] else ...[
-                          _controlRow('클릭 + 드래그', '박스 이동'),
+                          _controlRow('박스 드래그', '박스 이동'),
+                          _controlRow('빈 곳 드래그', '카메라 회전'),
                           _controlRow('마우스 휠', '줌 인/아웃'),
                           _controlRow('우클릭 드래그', '패닝'),
                           _controlRow('R', '박스 회전'),
@@ -612,18 +648,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   // ──── 줌: 마우스 휠 ────
 
   void _onPointerSignal(PointerSignalEvent event) {
-    if (event is PointerScrollEvent && _lastCanvasSize != Size.zero) {
-      final oldZoom = _zoomLevel;
-      final factor = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
-      final newZoom = (oldZoom * factor).clamp(_minZoom, _maxZoom);
-      if (newZoom == oldZoom) return;
-
-      final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
-      final r = newZoom / oldZoom;
-      setState(() {
-        _panOffset = (event.localPosition - sc) * (1 - r) + _panOffset * r;
-        _zoomLevel = newZoom;
-      });
+    final cam = _camera;
+    if (event is PointerScrollEvent && cam != null) {
+      final factor = event.scrollDelta.dy > 0 ? 1.1 : 0.9;
+      setState(() => _setCamera(cam.copyWith(distance: cam.distance * factor)));
     }
   }
 
@@ -634,15 +662,16 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         event.buttons == kMiddleMouseButton) {
       _isPanning = true;
       _panStartScreenPos = event.localPosition;
-      _panStartPanOffset = _panOffset;
+      _panStartPan = _camera?.pan ?? Offset.zero;
     }
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    if (_isPanning) {
+    final cam = _camera;
+    if (_isPanning && cam != null) {
       setState(() {
-        _panOffset = _panStartPanOffset +
-            (event.localPosition - _panStartScreenPos);
+        _camera = cam.copyWith(
+            pan: _panStartPan + (event.localPosition - _panStartScreenPos));
       });
     }
   }
@@ -651,70 +680,84 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     _isPanning = false;
   }
 
-  // ──── 제스처: 박스 드래그 + 핀치 줌 ────
+  // ──── 제스처: 박스 드래그 / 카메라 회전 / 핀치 줌 ────
 
   void _onScaleStart(ScaleStartDetails details) {
-    _gestureStartZoom = _zoomLevel;
-    _gestureStartPanOffset = _panOffset;
+    final cam = _camera;
+    if (cam == null) return;
+    _gestureStartCamera = cam;
     _gestureStartFocalPoint = details.localFocalPoint;
+    _canvasFocusNode.requestFocus();
 
-    if (details.pointerCount == 1) {
-      _lastPointerIsTouch = details.kind == PointerDeviceKind.touch;
-    }
+    if (details.pointerCount != 1) return;
+    _lastPointerIsTouch = details.kind == PointerDeviceKind.touch;
 
-    if (details.pointerCount == 1) {
-      final hit = _hitTest(details.localFocalPoint);
-      if (hit != null) {
-        setState(() {
-          _selectedBoxId = hit.id;
-          _isDragging = true;
-          _dragStartScreen = details.localFocalPoint;
-          _dragStartX = hit.x;
-          _dragStartZ = hit.z;
-          _dragStartY = hit.y;
-          // Clear all loadOrder values — manual drag invalidates auto-layout
-          for (final b in _boxes) {
-            b.loadOrder = null;
-          }
-        });
-      }
+    final hit = _hitTest(details.localFocalPoint);
+    if (hit != null) {
+      final ray = cam.ray(details.localFocalPoint, _lastCanvasSize);
+      final p = rayPlaneY(ray, hit.y) ?? Vec3(hit.x, hit.y, hit.z);
+      _pushUndo();
+      setState(() {
+        _selectedBoxId = hit.id;
+        _isDragging = true;
+        _dragGrabOffset = Vec3(p.x - hit.x, 0, p.z - hit.z);
+        // 수동 이동은 자동배치 순서를 무효화
+        for (final b in _boxes) {
+          b.loadOrder = null;
+        }
+      });
+    } else {
+      _isOrbiting = true;
+      _orbitLastPos = details.localFocalPoint;
     }
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
-    if (details.pointerCount >= 2) {
-      if (_isDragging) {
-        _isDragging = false;
-        _dragStartScreen = null;
-      }
-      final newZoom = (_gestureStartZoom * details.scale).clamp(_minZoom, _maxZoom);
-      final sc = Offset(_lastCanvasSize.width / 2, _lastCanvasSize.height / 2);
-      final r = newZoom / _gestureStartZoom;
-      final zoomPan = (_gestureStartFocalPoint - sc) * (1 - r) + _gestureStartPanOffset * r;
-      final focalDelta = details.localFocalPoint - _gestureStartFocalPoint;
+    final cam = _camera;
+    if (cam == null) return;
 
+    if (details.pointerCount >= 2) {
+      // 핀치 줌 + 두 손가락 패닝
+      _isDragging = false;
+      _isOrbiting = false;
+      final start = _gestureStartCamera ?? cam;
+      final focalDelta = details.localFocalPoint - _gestureStartFocalPoint;
       setState(() {
-        _zoomLevel = newZoom;
-        _panOffset = zoomPan + focalDelta;
+        _setCamera(start.copyWith(
+          distance: start.distance / details.scale.clamp(0.2, 5.0),
+          pan: start.pan + focalDelta,
+        ));
       });
       return;
     }
 
-    if (!_isDragging || _selectedBoxId == null || _dragStartScreen == null) return;
+    if (_isOrbiting) {
+      final delta = details.localFocalPoint - _orbitLastPos;
+      _orbitLastPos = details.localFocalPoint;
+      const k = 0.004; // rad/px: 화면 폭 ~800px 드래그 = 약 180°
+      setState(() {
+        _setCamera(cam.copyWith(
+          yaw: cam.yaw - delta.dx * k,
+          pitch: cam.pitch + delta.dy * k,
+        ));
+      });
+      return;
+    }
+
+    if (!_isDragging || _selectedBoxId == null) return;
     final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
     if (boxIndex == -1) return;
     final box = _boxes[boxIndex];
-    final focalPoint = _lastPointerIsTouch
-        ? details.localFocalPoint - const Offset(0, 40)
-        : details.localFocalPoint;
-    final startWorld = _screenToPlane(_dragStartScreen!, _dragStartY);
-    final curWorld = _screenToPlane(focalPoint, _dragStartY);
+
+    // 현재 박스 바닥 높이의 수평면에 커서를 투영. 적층 높이가 바뀌면
+    // 다음 이동에서 새 높이의 평면을 쓴다.
+    final ray = cam.ray(details.localFocalPoint, _lastCanvasSize);
+    final p = rayPlaneY(ray, box.y);
+    if (p == null) return;
 
     setState(() {
-      if (startWorld != null && curWorld != null) {
-        box.x = _dragStartX + (curWorld.dx - startWorld.dx);
-        box.z = _dragStartZ + (curWorld.dy - startWorld.dy);
-      }
+      box.x = p.x - _dragGrabOffset.x;
+      box.z = p.z - _dragGrabOffset.z;
       box.clampTo(_space.w, _space.d);
       _resolveStackingY(box);
       _updateCollisions();
@@ -722,21 +765,18 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
+    _isOrbiting = false;
+    _gestureStartCamera = null;
     if (_isDragging && _selectedBoxId != null) {
       final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
-      if (boxIndex == -1) {
-        _isDragging = false;
-        _dragStartScreen = null;
-        return;
-      }
-      final box = _boxes[boxIndex];
-      _pushUndo();
       setState(() {
-        box.snapToGrid(_space.gridUnit);
-        box.clampTo(_space.w, _space.d);
-        _resolveGravity();
+        if (boxIndex != -1) {
+          final box = _boxes[boxIndex];
+          box.snapToGrid(_space.gridUnit);
+          box.clampTo(_space.w, _space.d);
+          _resolveGravity();
+        }
         _isDragging = false;
-        _dragStartScreen = null;
         _updateCollisions();
       });
     }
@@ -764,10 +804,17 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     if (event.logicalKey == LogicalKeyboardKey.digit0 ||
         event.logicalKey == LogicalKeyboardKey.numpad0) {
-      setState(() {
-        _zoomLevel = 1.0;
-        _panOffset = const Offset(0, -40);
-      });
+      _resetCamera();
+      return;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.keyQ ||
+        event.logicalKey == LogicalKeyboardKey.keyE) {
+      final cam = _camera;
+      if (cam != null) {
+        final dir = event.logicalKey == LogicalKeyboardKey.keyQ ? 1.0 : -1.0;
+        setState(() => _setCamera(
+            cam.copyWith(yaw: cam.yaw + dir * 10 * math.pi / 180)));
+      }
       return;
     }
 
@@ -813,91 +860,28 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     });
   }
 
-  // ──── 역 투시 변환 (perspective inverse) ────
+  // ──── 히트 테스트 (레이캐스트) ────
 
-  /// Project screen position to the y=planeY horizontal plane
-  Offset? _screenToPlane(Offset screenPos, double planeY) {
-    final cx = _lastCanvasSize.width / 2 + _panOffset.dx;
-    final cy = _lastCanvasSize.height / 2 + _panOffset.dy;
-    final sx = screenPos.dx - cx;
-    final sy = screenPos.dy - cy;
-
-    final camY = _space.h * 1.05;
-    final focalLen = _space.d * 1.0;
-    final camZ = _space.d + focalLen;
-    final camX = _space.w / 2;
-
-    // sy = -(planeY - camY) * focalLen / (camZ - z) * scale
-    // => (camZ - z) = -(planeY - camY) * focalLen * scale / sy
-    //              = (camY - planeY) * focalLen * scale / sy
-    final effectiveCamY = camY - planeY;
-    if (sy.abs() < 0.001) return null; // at horizon
-    final dz = effectiveCamY * focalLen * _lastScale / sy;
-    if (dz <= 0) return null; // behind camera
-    final worldZ = camZ - dz;
-
-    // sx = (x - camX) * focalLen / dz * scale
-    final worldX = sx * dz / (focalLen * _lastScale) + camX;
-
-    return Offset(worldX, worldZ);
-  }
-
-  // ──── 히트 테스트 ────
-
+  /// 화면 좌표에서 카메라 반직선을 쏴 가장 가까운 박스를 고른다.
   TrimBox? _hitTest(Offset localPos) {
-    if (_lastCanvasSize == Size.zero) return null;
-
-    final center = IsometricPainter.computeCenter(
-        _lastCanvasSize, _space, _lastScale, _cameraYaw);
-    final adjusted = Offset(
-      localPos.dx - center.dx - _panOffset.dx,
-      localPos.dy - center.dy - _panOffset.dy,
-    );
-
-    for (final box in _boxes.reversed) {
-      if (_isPointInBox(adjusted, box)) return box;
-    }
-    return null;
-  }
-
-  bool _isPointInBox(Offset pt, TrimBox box) {
-    final w = box.effectiveW;
-    final d = box.effectiveD;
-    // Visible polygon: front face + top face outline
-    final polygon = [
-      _toScreen(box.x, box.y, box.z + d),       // front-bottom-left
-      _toScreen(box.x + w, box.y, box.z + d),   // front-bottom-right
-      _toScreen(box.x + w, box.y + box.h, box.z + d), // front-top-right
-      _toScreen(box.x + w, box.y + box.h, box.z),     // back-top-right
-      _toScreen(box.x, box.y + box.h, box.z),         // back-top-left
-      _toScreen(box.x, box.y + box.h, box.z + d),     // front-top-left
-    ];
-    return _pointInPolygon(pt, polygon);
-  }
-
-  static bool _pointInPolygon(Offset pt, List<Offset> polygon) {
-    bool inside = false;
-    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      final yi = polygon[i].dy, yj = polygon[j].dy;
-      final xi = polygon[i].dx, xj = polygon[j].dx;
-      if (((yi > pt.dy) != (yj > pt.dy)) &&
-          (pt.dx < (xj - xi) * (pt.dy - yi) / (yj - yi) + xi)) {
-        inside = !inside;
+    final cam = _camera;
+    if (cam == null || _lastCanvasSize == Size.zero) return null;
+    final ray = cam.ray(localPos, _lastCanvasSize);
+    TrimBox? best;
+    var bestT = double.infinity;
+    for (final box in _boxes) {
+      if (_stepViewActive &&
+          box.loadOrder != null &&
+          box.loadOrder! > _stepViewCurrentStep) {
+        continue; // 스텝 뷰에서 숨겨진 박스
+      }
+      final t = rayAabbHit(ray, Aabb.fromBox(box));
+      if (t != null && t < bestT) {
+        bestT = t;
+        best = box;
       }
     }
-    return inside;
-  }
-
-  /// World → screen (1-point perspective, same formula as painter's toScreen)
-  Offset _toScreen(double x, double y, double z) {
-    final camX = _space.w / 2;
-    final camY = _space.h * 1.05;
-    final focalLen = _space.d * 1.0;
-    final camZ = _space.d + focalLen;
-    final dz = camZ - z;
-    if (dz < 0.001) return Offset.zero;
-    final f = focalLen / dz * _lastScale;
-    return Offset((x - camX) * f, -(y - camY) * f);
+    return best;
   }
 
   // ──── 박스 CRUD ────
@@ -961,18 +945,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           category: boxCategory,
         );
 
-        // 여러 개 추가 시 위치를 분산 배치 (겹침 방지)
-        {
-          final gridUnit = _space.gridUnit;
-          final cols = (_space.w / (gridUnit * 3)).floor().clamp(1, 5);
-          newBox.x = (i % cols) * gridUnit * 3;
-          newBox.z = (i ~/ cols) * gridUnit * 3;
-        }
-
-        newBox.snapToGrid(_space.gridUnit);
-        newBox.clampTo(_space.w, _space.d);
+        _placeNewBox(newBox);
         _boxes.add(newBox);
-        _resolveStackingY(newBox);
         lastBoxId = newBox.id;
       }
 
@@ -983,6 +957,32 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         _showOnboarding = false;
       }
     });
+  }
+
+  /// 새 박스를 비어 있는 자리에 놓는다: 바닥(뒷좌석 쪽부터) → 기존 박스 위 →
+  /// 그래도 없으면 테일게이트 앞쪽 (충돌 표시로 사용자에게 알림).
+  void _placeNewBox(TrimBox box) {
+    const step = 0.05;
+    for (final allowStack in [false, true]) {
+      for (final rot in [0, 90]) {
+        box.rotY = rot;
+        final maxX = _space.w - box.effectiveW;
+        final maxZ = _space.d - box.effectiveD;
+        if (maxX < 0 || maxZ < 0) continue;
+        for (var z = 0.0; z <= maxZ + 1e-9; z += step) {
+          for (var x = 0.0; x <= maxX + 1e-9; x += step) {
+            box.x = x;
+            box.z = z;
+            box.y = allowStack ? SupportRule.highestLevel(box, _boxes, _space) : 0.0;
+            if (!_detector.hasCollision(box, _boxes)) return;
+          }
+        }
+      }
+    }
+    box.rotY = 0;
+    box.x = ((_space.w - box.effectiveW) / 2).clamp(0.0, _space.w);
+    box.z = (_space.d - box.effectiveD).clamp(0.0, _space.d);
+    box.y = SupportRule.highestLevel(box, _boxes, _space);
   }
 
   // ──── 트렁크 프리셋 변경 ────
@@ -1036,10 +1036,12 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       _selectedPreset = preset;
       _space = newSpace!;
       _detector = CollisionDetector(_space);
+      _refitCamera();
       for (final box in _boxes) {
         box.snapToGrid(_space.gridUnit);
         box.clampTo(_space.w, _space.d);
       }
+      _resolveGravity();
       _updateCollisions();
     });
   }
@@ -1238,8 +1240,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       setState(() {
         _space = scene.space;
         _detector = CollisionDetector(_space);
+        _refitCamera();
         _selectedPreset = TrunkPreset.custom;
         _boxes..clear()..addAll(scene.boxes);
+        _resolveGravity();
         int maxId = 0;
         for (final b in _boxes) {
           final match = RegExp(r'box-(\d+)').firstMatch(b.id);
@@ -2072,144 +2076,14 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     });
   }
 
-  // ──── 스태킹 ────
+  // ──── 스태킹 (규칙은 SupportRule 하나) ────
 
   void _resolveStackingY(TrimBox box) {
-    final boxArea = box.effectiveW * box.effectiveD;
-    const heightTol = 0.015; // 1.5cm — 같은 높이 레벨 허용 오차
-
-    // 1. XZ 겹침이 있는 모든 상자의 (윗면 높이, 겹침 면적) 수집
-    final supports = <({double topY, double area})>[];
-    for (final other in _boxes) {
-      if (other.id == box.id) continue;
-      final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
-      final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
-      if (overlapX > 0 && overlapZ > 0) {
-        supports.add((topY: other.y + other.h, area: overlapX * overlapZ));
-      }
-    }
-
-    // 1b. 휠하우스도 지지면으로 사용 (위에 짐 적재 가능)
-    final trunk = _space;
-    for (final wh in [
-      (x: 0.0, w: trunk.leftWheelhouse.w, d: trunk.leftWheelhouse.d, h: trunk.leftWheelhouse.h),
-      (x: trunk.w - trunk.rightWheelhouse.w, w: trunk.rightWheelhouse.w, d: trunk.rightWheelhouse.d, h: trunk.rightWheelhouse.h),
-    ]) {
-      if (wh.w <= 0 || wh.d <= 0 || wh.h <= 0) continue;
-      final overlapX = math.min(box.x + box.effectiveW, wh.x + wh.w) - math.max(box.x, wh.x);
-      final overlapZ = math.min(box.z + box.effectiveD, wh.d) - math.max(box.z, 0.0);
-      if (overlapX > 0 && overlapZ > 0) {
-        supports.add((topY: wh.h, area: overlapX * overlapZ));
-      }
-    }
-
-    // 2. 높이별 그룹으로 지지면적 합산
-    final groups = <double, double>{}; // 높이 → 합산 지지면적
-    for (final s in supports) {
-      bool grouped = false;
-      for (final h in groups.keys.toList()) {
-        if ((s.topY - h).abs() <= heightTol) {
-          groups[h] = groups[h]! + s.area;
-          grouped = true;
-          break;
-        }
-      }
-      if (!grouped) {
-        groups[s.topY] = s.area;
-      }
-    }
-
-    // 3. 합산 지지면적 >= 50%인 유효 레벨 중, 현재 높이에 가장 가까운 레벨 선택
-    //    (드래그 시 불연속 점프 방지 — 가능하면 현재 높이 유지)
-    final validLevels = <double>[];
-    for (final entry in groups.entries) {
-      if (entry.value >= boxArea * 0.5) {
-        validLevels.add(entry.key);
-      }
-    }
-    validLevels.add(0.0); // 바닥은 항상 유효
-
-    double supportY = 0;
-    double minDist = double.infinity;
-    for (final level in validLevels) {
-      final dist = (level - box.y).abs();
-      if (dist < minDist) {
-        minDist = dist;
-        supportY = level;
-      }
-    }
-    box.y = supportY;
+    box.y = SupportRule.nearestLevel(box, _boxes, _space);
   }
 
   void _resolveGravity() {
-    const heightTol = 0.015;
-    const maxIterations = 10;
-
-    // 반복 해결: 다단 적재 붕괴 시 모든 층이 올바르게 낙하할 때까지 반복
-    for (int iter = 0; iter < maxIterations; iter++) {
-      bool changed = false;
-      final sorted = List<TrimBox>.from(_boxes)..sort((a, b) => a.y.compareTo(b.y));
-
-      for (int i = 0; i < sorted.length; i++) {
-        final box = sorted[i];
-        final boxArea = box.effectiveW * box.effectiveD;
-
-        // 아래에 있는 상자들의 (윗면 높이, 겹침 면적) 수집
-        final supports = <({double topY, double area})>[];
-        for (int j = 0; j < i; j++) {
-          final other = sorted[j];
-          final overlapX = math.min(box.x + box.effectiveW, other.x + other.effectiveW) - math.max(box.x, other.x);
-          final overlapZ = math.min(box.z + box.effectiveD, other.z + other.effectiveD) - math.max(box.z, other.z);
-          if (overlapX > 0 && overlapZ > 0) {
-            supports.add((topY: other.y + other.h, area: overlapX * overlapZ));
-          }
-        }
-
-        // 휠하우스도 지지면으로 포함
-        final trunk = _space;
-        for (final wh in [
-          (x: 0.0, w: trunk.leftWheelhouse.w, d: trunk.leftWheelhouse.d, h: trunk.leftWheelhouse.h),
-          (x: trunk.w - trunk.rightWheelhouse.w, w: trunk.rightWheelhouse.w, d: trunk.rightWheelhouse.d, h: trunk.rightWheelhouse.h),
-        ]) {
-          if (wh.w <= 0 || wh.d <= 0 || wh.h <= 0) continue;
-          final overlapX = math.min(box.x + box.effectiveW, wh.x + wh.w) - math.max(box.x, wh.x);
-          final overlapZ = math.min(box.z + box.effectiveD, wh.d) - math.max(box.z, 0.0);
-          if (overlapX > 0 && overlapZ > 0) {
-            supports.add((topY: wh.h, area: overlapX * overlapZ));
-          }
-        }
-
-        // 높이별 합산
-        final groups = <double, double>{};
-        for (final s in supports) {
-          bool grouped = false;
-          for (final h in groups.keys.toList()) {
-            if ((s.topY - h).abs() <= heightTol) {
-              groups[h] = groups[h]! + s.area;
-              grouped = true;
-              break;
-            }
-          }
-          if (!grouped) {
-            groups[s.topY] = s.area;
-          }
-        }
-
-        double supportY = 0;
-        for (final entry in groups.entries) {
-          if (entry.value >= boxArea * 0.5 && entry.key > supportY) {
-            supportY = entry.key;
-          }
-        }
-
-        if ((box.y - supportY).abs() > 0.001) {
-          changed = true;
-        }
-        box.y = supportY;
-      }
-
-      if (!changed) break;
-    }
+    SupportRule.settle(_boxes, _space);
   }
 
   // ──── 충돌 업데이트 ────

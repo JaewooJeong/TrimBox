@@ -51,7 +51,7 @@ class KeyboardShortcutsDialog extends StatelessWidget {
                     _shortcutRow(['E'], '우회전 (시계)'),
                     _shortcutRow(['Wheel'], '줌 인/아웃'),
                     _shortcutRow(['우클릭', '드래그'], '패닝'),
-                    _shortcutRow(['0'], '줌/패닝 리셋'),
+                    _shortcutRow(['0'], '카메라 리셋'),
                     const SizedBox(height: 16),
                     _categoryHeader('박스'),
                     _shortcutRow(['←', '→', '↑', '↓'], '이동 (그리드 단위)'),
