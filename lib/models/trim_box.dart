@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 /// 박스 카테고리
@@ -20,6 +21,25 @@ class TrimBox {
   /// 세워서만 실을 수 있는 짐 (쿨러, 버너, 수납함 등). 자동배치가 눕히지 않는다.
   bool keepUpright;
 
+  /// 연질 짐 (침낭·의류·타프 천 등). 눌러 넣을 수 있고, 위에 단단한 짐을 올리지 않는다.
+  bool soft;
+
+  /// 눌러 넣을 수 있는 최대 비율 (0 = 안 눌림, 0.4 = 높이를 40% 까지 줄일 수 있음)
+  double compressibility;
+
+  /// 현재 적용된 압축 비율 (0..compressibility). 높이 방향. 실제 높이는 [effectiveH].
+  double squash;
+
+  /// 폭·깊이 방향 압축 비율 (연질 짐이 옆으로 눌려 들어갈 때). 한 번에 한 축만 쓴다.
+  double squashW;
+  double squashD;
+
+  /// 무게 (kg, 0 = 모름). 무거운 짐은 바닥·안쪽으로, 가벼운 짐 위에 올리지 않는다.
+  double weightKg;
+
+  /// 자주 꺼내는 짐 (쿨러 등) — 테일게이트 쪽을 선호
+  bool accessPriority;
+
   /// Transient display property: load order from auto-layout (1-based).
   /// Not persisted in JSON.
   int? loadOrder;
@@ -37,12 +57,38 @@ class TrimBox {
     required this.color,
     this.category = BoxCategory.custom,
     this.keepUpright = false,
+    this.soft = false,
+    this.compressibility = 0,
+    this.squash = 0,
+    this.squashW = 0,
+    this.squashD = 0,
+    this.weightKg = 0,
+    this.accessPriority = false,
     this.loadOrder,
   });
 
-  /// 회전 적용 후 실제 폭/깊이
-  double get effectiveW => (rotY == 90 || rotY == 270) ? d : w;
-  double get effectiveD => (rotY == 90 || rotY == 270) ? w : d;
+  /// 회전·압축 적용 후 실제 폭/깊이
+  double get effectiveW => (rotY == 90 || rotY == 270)
+      ? d * (1 - squashD.clamp(0.0, 0.9))
+      : w * (1 - squashW.clamp(0.0, 0.9));
+  double get effectiveD => (rotY == 90 || rotY == 270)
+      ? w * (1 - squashW.clamp(0.0, 0.9))
+      : d * (1 - squashD.clamp(0.0, 0.9));
+
+  /// 눌러 넣기를 반영한 실제 높이. 기하(충돌·지지·렌더링)는 이 값을 쓴다.
+  double get effectiveH => h * (1 - squash.clamp(0.0, 0.9));
+
+  /// 윗면 높이
+  double get top => y + effectiveH;
+
+  /// 공칭 부피 (m³, 압축 전)
+  double get volume => w * d * h;
+
+  /// 눌러 넣은 상태인가
+  bool get isSquashed => squashAmount > 1e-6;
+
+  /// 표시용 압축 비율 (세 축 중 최대)
+  double get squashAmount => [squash, squashW, squashD].reduce(math.max);
 
   /// 90도 회전
   void rotate90() {
@@ -74,6 +120,13 @@ class TrimBox {
     Color? color,
     BoxCategory? category,
     bool? keepUpright,
+    bool? soft,
+    double? compressibility,
+    double? squash,
+    double? squashW,
+    double? squashD,
+    double? weightKg,
+    bool? accessPriority,
     int? loadOrder,
   }) {
     final copy = TrimBox(
@@ -89,6 +142,13 @@ class TrimBox {
       color: color ?? this.color,
       category: category ?? this.category,
       keepUpright: keepUpright ?? this.keepUpright,
+      soft: soft ?? this.soft,
+      compressibility: compressibility ?? this.compressibility,
+      squash: squash ?? this.squash,
+      squashW: squashW ?? this.squashW,
+      squashD: squashD ?? this.squashD,
+      weightKg: weightKg ?? this.weightKg,
+      accessPriority: accessPriority ?? this.accessPriority,
     );
     copy.loadOrder = loadOrder ?? this.loadOrder;
     return copy;
@@ -103,6 +163,13 @@ class TrimBox {
         'color': color.toARGB32(),
         if (category != BoxCategory.custom) 'category': category.index,
         if (keepUpright) 'upright': true,
+        if (soft) 'soft': true,
+        if (compressibility > 0) 'compress': compressibility,
+        if (squash > 0) 'squash': squash,
+        if (squashW > 0) 'squashW': squashW,
+        if (squashD > 0) 'squashD': squashD,
+        if (weightKg > 0) 'weight': weightKg,
+        if (accessPriority) 'access': true,
       };
 
   factory TrimBox.fromJson(Map<String, dynamic> json) {
@@ -124,6 +191,13 @@ class TrimBox {
               .clamp(0, BoxCategory.values.length - 1)]
           : BoxCategory.custom,
       keepUpright: json['upright'] == true,
+      soft: json['soft'] == true,
+      compressibility: (json['compress'] as num?)?.toDouble() ?? 0,
+      squash: (json['squash'] as num?)?.toDouble() ?? 0,
+      squashW: (json['squashW'] as num?)?.toDouble() ?? 0,
+      squashD: (json['squashD'] as num?)?.toDouble() ?? 0,
+      weightKg: (json['weight'] as num?)?.toDouble() ?? 0,
+      accessPriority: json['access'] == true,
     );
   }
 }

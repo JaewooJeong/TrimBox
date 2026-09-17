@@ -35,11 +35,12 @@ extension TrunkPresetExt on TrunkPreset {
         TrunkPreset.custom => null,
       };
 
-  /// custom은 별도 다이얼로그로 생성하므로 null 반환
-  TrunkSpace? toTrunkSpace() => switch (this) {
+  /// custom은 별도 다이얼로그로 생성하므로 null 반환.
+  /// [seatSlide]: 2열 시트를 앞으로 당긴 거리 (쏘렌토만 반영, 최대 0.27)
+  TrunkSpace? toTrunkSpace({double seatSlide = 0}) => switch (this) {
         TrunkPreset.tucson => TrunkSpace.tucson(),
-        TrunkPreset.sorento => TrunkSpace.sorento(),
-        TrunkPreset.sorento7 => TrunkSpace.sorento7(),
+        TrunkPreset.sorento => TrunkSpace.sorento(seatSlide: seatSlide),
+        TrunkPreset.sorento7 => TrunkSpace.sorento7(seatSlide: seatSlide),
         TrunkPreset.santafe => TrunkSpace.santafe(),
         TrunkPreset.carnival => TrunkSpace.carnival(),
         TrunkPreset.ioniq5 => TrunkSpace.ioniq5(),
@@ -164,14 +165,22 @@ class Wheelhouse {
   final double d; // 깊이 (m)
   final double h; // 높이 (m)
 
-  const Wheelhouse({required this.w, required this.d, required this.h});
+  /// 뒷좌석 등받이(z=0)에서 휠하우스가 시작하는 z. 2열을 앞으로 당기면 커진다.
+  final double zStart;
 
-  Map<String, dynamic> toJson() => {'w': w, 'd': d, 'h': h};
+  const Wheelhouse(
+      {required this.w, required this.d, required this.h, this.zStart = 0});
+
+  double get zEnd => zStart + d;
+
+  Map<String, dynamic> toJson() =>
+      {'w': w, 'd': d, 'h': h, if (zStart != 0) 'z': zStart};
 
   factory Wheelhouse.fromJson(Map<String, dynamic> json) => Wheelhouse(
         w: (json['w'] as num).toDouble(),
         d: (json['d'] as num).toDouble(),
         h: (json['h'] as num).toDouble(),
+        zStart: (json['z'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -197,7 +206,25 @@ class Wheelhouse {
 const double _sorentoW = 1.38;
 const double _sorentoD = 1.07;
 const double _sorentoH = 0.82;
-const Wheelhouse _sorentoWheelhouse = Wheelhouse(w: 0.145, d: 0.58, h: 0.35);
+
+/// 2열 슬라이드 최대 (기아 UK/미국 VDA 616→821L 차이와 automobiledimension 27cm)
+const double sorentoSeatSlideMax = 0.27;
+
+Wheelhouse _sorentoWheelhouse(double seatSlide) =>
+    Wheelhouse(w: 0.145, d: 0.58, h: 0.35, zStart: seatSlide);
+
+String _sorentoVolumeLabel(bool fiveSeat, double seatSlide) {
+  final t = (seatSlide / sorentoSeatSlideMax).clamp(0.0, 1.0);
+  final rear = fiveSeat ? 705 : 616;
+  final front = fiveSeat ? 910 : 821;
+  final v = (rear + (front - rear) * t).round();
+  final pos = seatSlide <= 0.001
+      ? '2열 최후방'
+      : seatSlide >= sorentoSeatSlideMax - 0.001
+          ? '2열 최전방'
+          : '2열 +${(seatSlide * 100).round()}cm';
+  return 'VDA ${v}L ($pos)';
+}
 const Aperture _sorentoAperture = Aperture(
   bottomWidth: 1.10,
   topWidth: 1.05,
@@ -265,6 +292,9 @@ class TrunkSpace {
 
   /// 제조사/공인 트렁크 용량 표기 (예: 'VDA 813L'). 표시용.
   final String? officialVolumeLabel;
+
+  /// 2열 시트를 앞으로 당긴 거리 (m). 깊이 d 에 이미 반영돼 있고, 표시·복원용.
+  final double seatSlide;
 
   /// 닫힘 검사가 모델링돼 있는가
   bool get hasTailgateModel => rearProfile != null || aperture != null;
@@ -429,6 +459,7 @@ class TrunkSpace {
     this.rearCeilingDrop = 0.0,
     this.ceilingNarrow = 0.0,
     this.officialVolumeLabel,
+    this.seatSlide = 0.0,
   });
 
   /// 투싼 (좌석 올린 상태) — 6:4 분할
@@ -451,20 +482,23 @@ class TrunkSpace {
       );
 
   /// 쏘렌토 MQ4 5인승. 치수 근거는 파일 상단 주석. 위쪽 적재 공간은 7인승과 같다.
-  factory TrunkSpace.sorento() => const TrunkSpace(
+  /// [seatSlide]: 2열 시트를 앞으로 당긴 거리 (0~0.27). 바닥이 그만큼 길어지고
+  /// 차체에 붙은 휠하우스는 등받이에서 그만큼 멀어진다.
+  factory TrunkSpace.sorento({double seatSlide = 0}) => TrunkSpace(
         w: _sorentoW,
-        d: _sorentoD,
+        d: _sorentoD + seatSlide,
         h: _sorentoH,
-        leftWheelhouse: _sorentoWheelhouse,
-        rightWheelhouse: _sorentoWheelhouse,
-        seatSplitRatio: [0.6, 0.4],
+        leftWheelhouse: _sorentoWheelhouse(seatSlide),
+        rightWheelhouse: _sorentoWheelhouse(seatSlide),
+        seatSplitRatio: const [0.6, 0.4],
         taperRatio: 0.0,
         ceilingDrop: 0.0,
         rearCeilingDrop: 0.03,
         rearTopNarrow: 0.0,
         ceilingNarrow: 0.07,
         vehicleName: 'SORENTO 5인승',
-        officialVolumeLabel: 'VDA 910L (바닥 수납함 포함)',
+        officialVolumeLabel: _sorentoVolumeLabel(true, seatSlide),
+        seatSlide: seatSlide,
         bodyWidth: 1.90,
         trunkLipHeight: 0.78,
         roofExtension: 0.12,
@@ -477,20 +511,21 @@ class TrunkSpace {
 
   /// 쏘렌토 MQ4 7인승, 3열 접은 상태. 접힌 3열 위가 바닥이 되며 실측상 5인승과
   /// 같은 상자 치수다 (바닥 아래 수납함만 다름).
-  factory TrunkSpace.sorento7() => const TrunkSpace(
+  factory TrunkSpace.sorento7({double seatSlide = 0}) => TrunkSpace(
         w: _sorentoW,
-        d: _sorentoD,
+        d: _sorentoD + seatSlide,
         h: _sorentoH,
-        leftWheelhouse: _sorentoWheelhouse,
-        rightWheelhouse: _sorentoWheelhouse,
-        seatSplitRatio: [0.6, 0.4],
+        leftWheelhouse: _sorentoWheelhouse(seatSlide),
+        rightWheelhouse: _sorentoWheelhouse(seatSlide),
+        seatSplitRatio: const [0.6, 0.4],
         taperRatio: 0.0,
         ceilingDrop: 0.0,
         rearCeilingDrop: 0.03,
         rearTopNarrow: 0.0,
         ceilingNarrow: 0.07,
         vehicleName: 'SORENTO 7인승 (3열 접음)',
-        officialVolumeLabel: 'VDA 821L (2열 최후방 616L)',
+        officialVolumeLabel: _sorentoVolumeLabel(false, seatSlide),
+        seatSlide: seatSlide,
         bodyWidth: 1.90,
         trunkLipHeight: 0.78,
         roofExtension: 0.12,
@@ -616,6 +651,7 @@ class TrunkSpace {
         if (rearCeilingDrop != 0.0) 'rearCeilingDrop': rearCeilingDrop,
         if (ceilingNarrow != 0.0) 'ceilingNarrow': ceilingNarrow,
         if (officialVolumeLabel != null) 'officialVolumeLabel': officialVolumeLabel,
+        if (seatSlide != 0.0) 'seatSlide': seatSlide,
       };
 
   factory TrunkSpace.fromJson(Map<String, dynamic> json) {
@@ -652,6 +688,7 @@ class TrunkSpace {
       rearCeilingDrop: (json['rearCeilingDrop'] as num?)?.toDouble() ?? 0.0,
       ceilingNarrow: (json['ceilingNarrow'] as num?)?.toDouble() ?? 0.0,
       officialVolumeLabel: json['officialVolumeLabel'] as String?,
+      seatSlide: (json['seatSlide'] as num?)?.toDouble() ?? 0.0,
     );
   }
 }

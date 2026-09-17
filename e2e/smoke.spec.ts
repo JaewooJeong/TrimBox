@@ -48,6 +48,10 @@ const D = {
   dialogAdd: [790, 744], // 추가
   quickCheck: [1029, 773], // 들어갈까? (통계 영역의 상태 행 1줄 포함)
   autoLayout: [1180, 773], // 자동 배치
+  preset: [230, 28], // 차종 드롭다운
+  presetSorento7: [300, 122], // 메뉴: 쏘렌토 7인승·3열 접음 (헤더 + 2번째 항목)
+  seatSlide: [450, 28], // 2열 슬라이드 드롭다운 (차종 드롭다운 오른쪽)
+  seatSlideFront: [520, 150], // 메뉴 3번째 항목: 2열 최전방
 } as const;
 
 test.describe('데스크톱', () => {
@@ -66,11 +70,11 @@ test.describe('데스크톱', () => {
     await page.mouse.click(...D.bundleFamily);
     await page.waitForTimeout(500);
     await page.mouse.click(...D.dialogAdd);
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
     await page.screenshot({ path: `${SHOTS}/desktop-03-auto-packed.png` });
 
     await page.mouse.click(...D.quickCheck);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(6000);
     await page.screenshot({ path: `${SHOTS}/desktop-04-verdict.png` });
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
@@ -85,6 +89,51 @@ test.describe('데스크톱', () => {
     await page.screenshot({ path: `${SHOTS}/desktop-06-after-drag.png` });
     await page.keyboard.press('Control+z');
     await page.waitForTimeout(400);
+
+    expect(errors, errors.join('\n')).toEqual([]);
+  });
+
+  test('테일게이트 닫힘 검사: 짐을 뒤로 밀면 경고, 2열 슬라이드·7인승 전환', async ({ page }) => {
+    const errors = collectErrors(page);
+    await waitForApp(page);
+    await page.mouse.click(...D.onboarding);
+    await page.waitForTimeout(400);
+    await page.mouse.click(...D.cta);
+    await page.waitForTimeout(1200);
+    await page.mouse.click(...D.bundleFamily);
+    await page.waitForTimeout(500);
+    await page.mouse.click(...D.dialogAdd);
+    await page.waitForTimeout(5000);
+
+    // 위쪽에 놓인 박스를 클릭해 선택하고 화살표로 테일게이트 쪽(z+)으로 민다
+    await page.mouse.click(417, 390);
+    await page.waitForTimeout(300);
+    for (let i = 0; i < 40; i++) {
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(15);
+    }
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${SHOTS}/desktop-08-tailgate-blocked.png` });
+    await drag(page, 150, 150, 330, 230);
+    await page.screenshot({ path: `${SHOTS}/desktop-09-tailgate-blocked-orbit.png` });
+    await page.keyboard.press('0');
+    await page.waitForTimeout(300);
+
+    // 2열 슬라이드 메뉴 → 최전방
+    await page.mouse.click(...D.seatSlide);
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: `${SHOTS}/desktop-10-seat-slide-menu.png` });
+    await page.mouse.click(...D.seatSlideFront);
+    await page.waitForTimeout(3000);
+    await page.screenshot({ path: `${SHOTS}/desktop-11-seat-slide-front.png` });
+
+    // 7인승(3열 접음) 프리셋
+    await page.mouse.click(...D.preset);
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: `${SHOTS}/desktop-12-preset-menu.png` });
+    await page.mouse.click(...D.presetSorento7);
+    await page.waitForTimeout(2500);
+    await page.screenshot({ path: `${SHOTS}/desktop-13-sorento7.png` });
 
     expect(errors, errors.join('\n')).toEqual([]);
   });

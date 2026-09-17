@@ -29,12 +29,14 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 | `lib/render3d/picking.dart` | 레이-AABB, 레이-수평면 교차 |
 | `lib/render3d/trunk_painter_3d.dart` | 페인터: 껍데기 Picture 캐시, 바닥 격자, 박스 면/그림자/라벨/순서 배지 |
 | `lib/models/auto_layout.dart` | 자동배치 엔진 (극점 후보 + 눕히기 + 떨어뜨리기 + 검증 게이트 + 재시도) |
-| `lib/models/support.dart` | 적층/중력 규칙 `SupportRule` (지지 면적 50% 이상) |
+| `lib/models/support.dart` | 적층/중력 규칙 `SupportRule` (지지 면적 50% 이상), `supportersAt` |
+| `lib/models/gear_physics.dart` | 장비 물리 속성: 무게·연질·압축률·세움·접근성 (이름 있는 제품은 확인값, 나머지는 카테고리 밀도) |
+| `lib/models/packing_advisor.dart` | 적재 조언 (무거운 짐 위층·가벼운 짐 위·연질 위 단단한 짐·자주 꺼내는 짐 묻힘) |
 | `lib/models/trunk_space.dart` | 트렁크 모델, 형상 함수(xMinAt/xMaxAt, interiorCeilingAt, rearDepthAt, frontDepthAt), `WallProfile`·`Aperture`, 프리셋, `usableVolume` |
-| `lib/models/trim_box.dart` | 박스 모델 (위치, rotY, keepUpright, loadOrder) |
+| `lib/models/trim_box.dart` | 박스 모델 (위치, rotY, keepUpright, soft/compressibility/squash, weightKg, accessPriority, loadOrder). 기하는 `effectiveW/D/H`·`top` 을 쓴다 |
 | `lib/utils/collision.dart` | AABB 충돌: 박스-박스(0.5mm 허용), 경계·테이퍼·C필러·천장, 휠하우스 |
 | `lib/utils/scene_storage.dart` | shared_preferences 저장소: 이름 저장, 자동 저장, 온보딩 플래그 |
-| `lib/widgets/add_box_dialog.dart` | 장비 선택 다이얼로그 (프리셋 199개, 번들 3종, 검색, 수량) |
+| `lib/widgets/add_box_dialog.dart` | 장비 선택 다이얼로그 (프리셋 198개 — 2026-09-17 교차검증 `backlog/gear-db-audit.md`, 번들 3종, 검색, 수량) |
 | `lib/widgets/box_list_panel.dart` | 박스 목록·판정 버튼·통계 패널 (모바일 시트 겸용) |
 
 ### Vehicle Presets
@@ -54,15 +56,24 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 
 형상 규칙: 좌우 경계는 개구부 프레임 구간(z ≥ d − 0.12)에서 개구부 폭으로, 천장 60% 위에서 텀블홈(`ceilingNarrow`)만큼 좁아진다. 천장은 테일게이트 쪽으로 낮아진다. 짐 윗면이 높을수록 뒤(테일게이트)와 앞(등받이) 한계가 안쪽으로 들어오며, 박스는 윗면 높이에서의 한계만 검사하면 된다(프로필이 단조). 다른 프리셋은 옛 세단형 규칙(`ceilingDrop`, `taperRatio`, `rearTopNarrow`)을 그대로 쓴다.
 
+2열 슬라이드: `TrunkSpace.sorento(seatSlide: 0..0.27)`. 바닥 d 가 그만큼 길어지고 차체에 붙은 휠하우스는 `Wheelhouse.zStart` 만큼 등받이에서 멀어진다. 앱바의 "2열 최후방/중간/최전방" 메뉴, 판정 다이얼로그의 "2열 +Ncm 적용" 제안이 이것을 쓴다.
+
+### 짐 물리 규칙 (2순위, 2026-09-17)
+- 연질 짐(`soft`)은 `compressibility` 까지 한 축만 눌러 넣는다: 높이 절반 → 높이 최대 → 깊이 최대. 실제 치수는 `effectiveW/D/H`, 공칭 치수 `w/d/h` 는 유지. 자동배치는 연질 짐을 단단한 짐 뒤에 넣고, 필요한 만큼만 누른다.
+- 무게: 20kg 이상(`floorOnlyKg`)은 바닥에만, 12kg 이상(`heavyKg`)은 낮고 깊게 선호. 8kg 이상 짐을 자기 무게 40% 미만 짐 위에 올리면 벌점·조언. 5kg 이상 단단한 짐은 연질 짐 위에 안 놓는다.
+- `accessPriority`(쿨러·냉장고·구급함)는 테일게이트 쪽 선호.
+- 규칙의 문턱은 `AutoLayoutEngine` 상수 하나에 있고 `PackingAdvisor` 가 같은 상수를 쓴다.
+- 패커 단계: 정렬 변형(바닥 전용 짐 먼저, 연질 뒤) → 못 넣은 것 먼저 재시도 → 무작위 재시도(예산) → 보수(하나 빼고 둘 다시 넣기, 500ms) → 3cm 격자 채우기(400ms).
+
 ## Development Commands
 
 ```bash
 flutter pub get
 flutter run -d chrome        # 개발 실행
-flutter test                 # 단위/통합 테스트 (176개)
+flutter test                 # 단위/통합 테스트 (194개)
 flutter analyze
 flutter build web            # 웹 빌드 → build/web
-npx playwright test          # 스모크 E2E (build/web 을 서빙, 스크린샷은 e2e/screenshots/)
+npx playwright test          # 스모크 E2E 4개 (build/web 을 서빙, 스크린샷은 e2e/screenshots/)
 flutter build apk --debug    # Android (JDK 17 필요: flutter config --jdk-dir <JDK17>)
 ```
 
@@ -75,5 +86,5 @@ WSL 에서 작업할 때는 Windows Flutter 를 `cmd.exe /c "flutter ..."` 로 �
 - 커밋 전 `flutter test` 와 `flutter analyze`. 한국어 커밋 메시지.
 
 ## Status (2026-09-17)
-완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5).
-남은 것: 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), 연질 짐 압축·무게 규칙, 2열 슬라이드 옵션, Android 실기기 확인, 공유 이미지 정리.
+완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5), 장비 DB 교차검증 + 연질·무게·접근성 규칙 + 2열 슬라이드(W6).
+남은 것: 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), Android 실기기 확인, 공유 이미지 정리, 장비 치수 미확인 항목(gear-db-audit 5절).

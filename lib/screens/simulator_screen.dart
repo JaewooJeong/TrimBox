@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../models/auto_layout.dart';
+import '../models/packing_advisor.dart';
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import '../models/scene.dart';
@@ -52,6 +53,23 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   Set<String> _tailgateBlockedIds = {};
   int _boxCounter = 0;
   TrunkPreset _selectedPreset = TrunkPreset.sorento;
+
+  /// 자동배치 무작위 재시도 예산. 웹(JS)은 VM 보다 1.5~2배 느리므로 24회가
+  /// 기기와 무관하게 다 돌도록 넉넉히 준다 (결과가 기기 속도에 따라 흔들리지 않게).
+  static const Duration _packBudget = Duration(milliseconds: 2500);
+
+  /// 쏘렌토 2열 슬라이드 (0 = 최후방, 최대 0.27)
+  double _seatSlide = 0.0;
+
+  static const List<(double, String)> _seatSlideOptions = [
+    (0.0, '2열 최후방'),
+    (0.13, '2열 중간 (+13cm)'),
+    (sorentoSeatSlideMax, '2열 최전방 (+27cm)'),
+  ];
+
+  bool get _hasSeatSlide =>
+      _selectedPreset == TrunkPreset.sorento ||
+      _selectedPreset == TrunkPreset.sorento7;
 
   // 온보딩
   bool _showOnboarding = true;
@@ -160,6 +178,24 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     });
   }
 
+  /// 2열 슬라이드 변경: 트렁크를 다시 만들고, 손으로 옮긴 적이 없으면 다시 배치
+  void _onSeatSlideChanged(double slide) {
+    final space = _selectedPreset.toTrunkSpace(seatSlide: slide);
+    if (space == null) return;
+    setState(() {
+      _seatSlide = slide;
+      _space = space;
+      _detector = CollisionDetector(_space);
+      _refitCamera();
+      for (final box in _boxes) {
+        box.clampTo(_space.w, _space.d);
+      }
+      _resolveGravity();
+      _updateCollisions();
+    });
+    if (!_manualEdited && _boxes.isNotEmpty) _autoPackQuietly();
+  }
+
   /// 씬의 트렁크가 어느 프리셋인지 (차종명으로 식별), 없으면 커스텀
   TrunkPreset _presetForSpace(TrunkSpace space) {
     for (final p in TrunkPreset.values) {
@@ -250,6 +286,46 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               ),
               itemBuilder: (_) => _buildVehicleMenuItems(),
             ),
+            if (_hasSeatSlide) ...[
+              const SizedBox(width: 8),
+              PopupMenuButton<double>(
+                initialValue: _seatSlide,
+                color: const Color(0xFF333333),
+                tooltip: '2열 시트 슬라이드',
+                onSelected: _onSeatSlideChanged,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFF555555)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.airline_seat_recline_normal,
+                          color: Colors.white70, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        _seatSlideOptions
+                            .firstWhere((o) => (o.$1 - _seatSlide).abs() < 1e-6,
+                                orElse: () => (_seatSlide, '2열 +${(_seatSlide * 100).round()}cm'))
+                            .$2,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                      const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
+                    ],
+                  ),
+                ),
+                itemBuilder: (_) => [
+                  for (final o in _seatSlideOptions)
+                    PopupMenuItem<double>(
+                      value: o.$1,
+                      child: Text(o.$2,
+                          style: const TextStyle(color: Colors.white, fontSize: 13)),
+                    ),
+                ],
+              ),
+            ],
           ],
         ),
         backgroundColor: const Color(0xFF1C1C1C),
@@ -1007,6 +1083,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           color: selectedColor,
           category: boxCategory,
           keepUpright: item['upright'] == true,
+          soft: item['soft'] == true,
+          compressibility: (item['compress'] as num?)?.toDouble() ?? 0,
+          weightKg: (item['weight'] as num?)?.toDouble() ?? 0,
+          accessPriority: item['access'] == true,
         );
 
         _placeNewBox(newBox);
@@ -1030,7 +1110,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   void _autoPackQuietly() {
     if (_boxes.isEmpty) return;
     final result =
-        AutoLayoutEngine.computeLayout(_space, _boxes, restarts: 24);
+        AutoLayoutEngine.computeLayout(_space, _boxes,
+        restarts: 24, budget: _packBudget);
     setState(() {
       for (final p in result.placements) {
         p.applyTo(_boxes.firstWhere((b) => b.id == p.box.id));
@@ -1125,7 +1206,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       newSpace = await showDialog<TrunkSpace>(context: context, builder: (_) => const TrunkSizeDialog());
       if (newSpace == null) return;
     } else {
-      newSpace = preset.toTrunkSpace();
+      newSpace = preset.toTrunkSpace(seatSlide: _seatSlide);
     }
 
     if (newSpace == null) return;
@@ -1337,12 +1418,14 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       final scene = JsonIO.importScene(jsonStr);
       // 저장된 트렁크가 프리셋 차종이면 현재 프리셋 정의를 쓴다 (치수 갱신 반영).
       final preset = _presetForSpace(scene.space);
-      final presetSpace = preset.toTrunkSpace();
+      final presetSpace =
+          preset.toTrunkSpace(seatSlide: scene.space.seatSlide);
       final spaceChanged = presetSpace != null &&
           JsonIO.exportScene(Scene(space: presetSpace, boxes: const [])) !=
               JsonIO.exportScene(Scene(space: scene.space, boxes: const []));
       setState(() {
         _space = presetSpace ?? scene.space;
+        _seatSlide = scene.space.seatSlide;
         _detector = CollisionDetector(_space);
         _refitCamera();
         _selectedPreset = preset;
@@ -1657,7 +1740,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     // 계산 시간 측정
     final sw = Stopwatch()..start();
-    final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes, restarts: 24);
+    final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes,
+        restarts: 24, budget: _packBudget);
     sw.stop();
     final computeMs = sw.elapsedMilliseconds;
 
@@ -1682,11 +1766,43 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     if (_boxes.isEmpty) return;
 
     final sw = Stopwatch()..start();
-    final result = AutoLayoutEngine.computeLayout(_space, _boxes, restarts: 24);
+    final result = AutoLayoutEngine.computeLayout(_space, _boxes,
+        restarts: 24, budget: _packBudget);
     sw.stop();
 
     if (!mounted) return;
-    _showVerdictDialog(result, computeTimeMs: sw.elapsedMilliseconds);
+    _showVerdictDialog(
+      result,
+      computeTimeMs: sw.elapsedMilliseconds,
+      slideSuggestion: result.allBoxesFit ? null : _suggestSeatSlide(),
+    );
+  }
+
+  /// 다 안 들어갈 때: 2열을 앞으로 당기면 전부 들어가는 첫 단계를 찾는다
+  ({double slide, AutoLayoutResult result})? _suggestSeatSlide() {
+    if (!_hasSeatSlide) return null;
+    for (final (slide, _) in _seatSlideOptions) {
+      if (slide <= _seatSlide + 1e-6) continue;
+      final space = _selectedPreset.toTrunkSpace(seatSlide: slide);
+      if (space == null) continue;
+      final r = AutoLayoutEngine.computeLayout(space, _boxes,
+          restarts: 12, budget: const Duration(milliseconds: 1500));
+      if (r.allBoxesFit) return (slide: slide, result: r);
+    }
+    return null;
+  }
+
+  /// 제안된 2열 슬라이드를 적용하고 그 배치를 그대로 쓴다
+  void _applySeatSlideSuggestion(({double slide, AutoLayoutResult result}) s) {
+    final space = _selectedPreset.toTrunkSpace(seatSlide: s.slide);
+    if (space == null) return;
+    setState(() {
+      _seatSlide = s.slide;
+      _space = space;
+      _detector = CollisionDetector(_space);
+      _refitCamera();
+    });
+    _applyAutoLayout(s.result);
   }
 
   void _applyAutoLayout(AutoLayoutResult result) {
@@ -1744,7 +1860,11 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     );
   }
 
-  void _showVerdictDialog(AutoLayoutResult result, {int? computeTimeMs}) {
+  void _showVerdictDialog(
+    AutoLayoutResult result, {
+    int? computeTimeMs,
+    ({double slide, AutoLayoutResult result})? slideSuggestion,
+  }) {
     final pct = result.utilizationPercent.round();
     final placed = result.placements.length;
     final total = placed + result.unfitBoxes.length;
@@ -1932,6 +2052,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                   const SizedBox(height: 8),
                   _verdictInfoRow('테일게이트', '닫힙니다 (닫힘 한계·개구부 반영)'),
                 ],
+                ..._verdictExtras(result),
                 if (result.placements.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _verdictLoadOrderSummary(result),
@@ -1973,6 +2094,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           final unfitLabels = result.unfitBoxes
               .map((b) => _labelWithReason(result, b))
               .toList();
+          final extras = _verdictExtras(result);
 
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A2A),
@@ -1997,6 +2119,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 utilizationVisual(),
+                ...extras,
                 const SizedBox(height: 12),
                 const Text(
                   '적재 불가 장비:',
@@ -2027,15 +2150,18 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                     color: const Color(0xFF1E2A1E),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.lightbulb_outline,
+                      const Icon(Icons.lightbulb_outline,
                           color: Color(0xFFFFD700), size: 18),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          '더 작은 장비를 선택하거나\n시트를 접어보세요.',
-                          style: TextStyle(
+                          slideSuggestion != null
+                              ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
+                                  '$total개 모두 들어갑니다.'
+                              : '더 작은 장비를 선택하거나\n2열 시트를 앞으로 당겨 보세요.',
+                          style: const TextStyle(
                               color: Colors.white70, fontSize: 12, height: 1.4),
                         ),
                       ),
@@ -2050,6 +2176,18 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('확인', style: TextStyle(color: Colors.grey)),
               ),
+              if (slideSuggestion != null)
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF00E676),
+                    side: const BorderSide(color: Color(0xFF00E676)),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _applySeatSlideSuggestion(slideSuggestion);
+                  },
+                  child: Text('2열 +${(slideSuggestion.slide * 100).round()}cm 적용'),
+                ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF4DA3FF),
@@ -2125,6 +2263,31 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         ],
       ),
     );
+  }
+
+  /// 눌러 넣은 연질 짐과 적재 조언 (있을 때만)
+  List<Widget> _verdictExtras(AutoLayoutResult result) {
+    final out = <Widget>[];
+    final squashed = result.squashedPlacements;
+    if (squashed.isNotEmpty) {
+      final names = squashed
+          .map((p) => '${p.box.label.isNotEmpty ? p.box.label : p.box.id} ${(p.squashAmount * 100).round()}%')
+          .join(', ');
+      out.add(const SizedBox(height: 8));
+      out.add(_verdictInfoRow('눌러 넣음', '${squashed.length}개 — $names'));
+    }
+    final applied = <TrimBox>[];
+    for (final p in result.placements) {
+      final b = p.box.copyWith();
+      p.applyTo(b);
+      applied.add(b);
+    }
+    final advice = PackingAdvisor.advise(applied, _space);
+    if (advice.isNotEmpty) {
+      out.add(const SizedBox(height: 8));
+      out.add(_verdictInfoRow('조언', advice.map((a) => a.message).join('\n')));
+    }
+    return out;
   }
 
   Widget _verdictInfoRow(String label, String value) {

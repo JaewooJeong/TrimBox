@@ -33,13 +33,15 @@ class SupportRule {
 
     for (final o in others) {
       if (o.id == box.id) continue;
-      add(o.x, o.z, o.x + o.effectiveW, o.z + o.effectiveD, o.y + o.h);
+      add(o.x, o.z, o.x + o.effectiveW, o.z + o.effectiveD, o.top);
     }
     final lw = space.leftWheelhouse;
-    if (lw.w > 0 && lw.d > 0 && lw.h > 0) add(0, 0, lw.w, lw.d, lw.h);
+    if (lw.w > 0 && lw.d > 0 && lw.h > 0) {
+      add(0, lw.zStart, lw.w, lw.zEnd, lw.h);
+    }
     final rw = space.rightWheelhouse;
     if (rw.w > 0 && rw.d > 0 && rw.h > 0) {
-      add(space.w - rw.w, 0, space.w, rw.d, rw.h);
+      add(space.w - rw.w, rw.zStart, space.w, rw.zEnd, rw.h);
     }
     return out;
   }
@@ -126,6 +128,25 @@ class SupportRule {
       if ((s.topY - y).abs() <= heightTol) sum += s.area;
     }
     return (sum / area).clamp(0.0, 1.0);
+  }
+
+  /// 높이 [y]에서 박스 바닥면을 받치는 다른 박스들 (휠하우스·바닥 제외)
+  static List<TrimBox> supportersAt(
+    TrimBox box,
+    double y,
+    Iterable<TrimBox> others,
+  ) {
+    final bx1 = box.x, bx2 = box.x + box.effectiveW;
+    final bz1 = box.z, bz2 = box.z + box.effectiveD;
+    final out = <TrimBox>[];
+    for (final o in others) {
+      if (o.id == box.id) continue;
+      if ((o.top - y).abs() > heightTol) continue;
+      final ox = math.min(bx2, o.x + o.effectiveW) - math.max(bx1, o.x);
+      final oz = math.min(bz2, o.z + o.effectiveD) - math.max(bz1, o.z);
+      if (ox > 1e-6 && oz > 1e-6) out.add(o);
+    }
+    return out;
   }
 
   /// 박스가 현재 y에서 물리적으로 지지되는가

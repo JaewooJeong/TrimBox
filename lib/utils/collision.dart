@@ -47,8 +47,8 @@ class CollisionDetector {
         a.x + a.effectiveW > b.x + t &&
         a.z < b.z + b.effectiveD - t &&
         a.z + a.effectiveD > b.z + t &&
-        a.y < b.y + b.h - t &&
-        a.y + a.h > b.y + t;
+        a.y < b.top - t &&
+        a.top > b.y + t;
   }
 
   /// 박스가 트렁크 경계를 벗어나는지 확인 (바닥 z 범위 + (z, y) 별 좌우 경계).
@@ -59,7 +59,7 @@ class CollisionDetector {
     const tol = boundsTol;
     final z1 = box.z, z2 = box.z + box.effectiveD;
     if (box.x < -tol || z1 < -tol || z2 > space.d + tol) return true;
-    final yTop = box.y + box.h;
+    final yTop = box.top;
     for (final z in [z1, z2]) {
       if (box.x < space.xMinAt(z, yTop) - tol ||
           box.x + box.effectiveW > space.xMaxAt(z, yTop) + tol) {
@@ -74,7 +74,7 @@ class CollisionDetector {
   bool isOverHeight(TrimBox box) {
     final c1 = space.interiorCeilingAt(box.z);
     final c2 = space.interiorCeilingAt(box.z + box.effectiveD);
-    return box.y + box.h > math.min(c1, c2) + boundsTol;
+    return box.top > math.min(c1, c2) + boundsTol;
   }
 
   /// 닫힌 테일게이트(또는 루프 헤더) 안쪽 면보다 뒤로 튀어나온 길이 (m).
@@ -84,7 +84,7 @@ class CollisionDetector {
     if (!space.hasTailgateModel) return 0;
     // 트렁크 밖에 세워 둔(미적재) 박스는 문을 막는 게 아니라 안 실린 것
     if (box.z >= space.d - boundsTol) return 0;
-    final limit = space.rearDepthAt(box.y + box.h);
+    final limit = space.rearDepthAt(box.top);
     return box.z + box.effectiveD - limit;
   }
 
@@ -96,7 +96,7 @@ class CollisionDetector {
   double seatBackIntrusion(TrimBox box) {
     if (space.frontProfile == null) return 0;
     if (box.z >= space.d - boundsTol) return 0; // 트렁크 밖
-    return space.frontDepthAt(box.y + box.h) - box.z;
+    return space.frontDepthAt(box.top) - box.z;
   }
 
   /// 2열 등받이에 걸리는가
@@ -134,25 +134,25 @@ class CollisionDetector {
   /// 박스가 왼쪽 휠하우스와 겹치는지 확인
   bool overlapsLeftWheelhouse(TrimBox box) {
     final lw = space.leftWheelhouse;
-    // 왼쪽 휠하우스: x=[0, lw.w], z=[0, lw.d] (뒷좌석/뒷축 쪽)
+    // 왼쪽 휠하우스: x=[0, lw.w], z=[lw.zStart, lw.zEnd] (뒷좌석/뒷축 쪽)
     return box.x < lw.w &&
         box.x + box.effectiveW > 0 &&
-        box.z < lw.d &&
-        box.z + box.effectiveD > 0 &&
+        box.z < lw.zEnd &&
+        box.z + box.effectiveD > lw.zStart &&
         box.y < lw.h &&
-        box.y + box.h > 0;
+        box.top > 0;
   }
 
   /// 박스가 오른쪽 휠하우스와 겹치는지 확인
   bool overlapsRightWheelhouse(TrimBox box) {
     final rw = space.rightWheelhouse;
-    // 오른쪽 휠하우스: x=[space.w-rw.w, space.w], z=[0, rw.d] (뒷좌석/뒷축 쪽)
+    // 오른쪽 휠하우스: x=[space.w-rw.w, space.w], z=[rw.zStart, rw.zEnd]
     return box.x < space.w &&
         box.x + box.effectiveW > space.w - rw.w &&
-        box.z < rw.d &&
-        box.z + box.effectiveD > 0 &&
+        box.z < rw.zEnd &&
+        box.z + box.effectiveD > rw.zStart &&
         box.y < rw.h &&
-        box.y + box.h > 0;
+        box.top > 0;
   }
 
   /// 트렁크 자체(다른 짐 제외)와의 충돌 사유들
@@ -186,7 +186,7 @@ class CollisionDetector {
         case CollisionKind.ceiling:
           final c = math.min(space.interiorCeilingAt(box.z),
               space.interiorCeilingAt(box.z + box.effectiveD));
-          out.add('천장 초과 +${_cm(box.y + box.h - c)}cm');
+          out.add('천장 초과 +${_cm(box.top - c)}cm');
         case CollisionKind.tailgate:
           out.add('테일게이트 닫힘 불가 (+${_cm(tailgateOverhang(box))}cm 튀어나옴)');
         case CollisionKind.seatBack:

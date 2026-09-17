@@ -12,6 +12,8 @@
 - **추가 즉시 자동 배치**: 장비를 넣으면 바로 배치해 "16개 모두 들어갑니다 (적재율 71%)" 처럼 판정
 - **자동 배치 엔진**: 극점 후보 + 눕히기(쿨러·버너·수납함은 세워서만) + 지지 규칙(면적 50%) + 충돌 판정기 검증. 공중부양·충돌 없는 결과만 낸다
 - **테일게이트 닫힘 검사**: 닫힌 테일게이트의 안쪽 면(허리선 위 유리 기울기)과 2열 등받이 기울기, 개구부 크기를 모델링. 짐이 문에 걸리면 빨간 면과 "테일게이트 안 닫힘"으로 표시하고, 개구부를 어떤 방향으로도 못 지나는 짐은 미적재 사유로 알린다
+- **짐 물리**: 침낭·담요 같은 연질 짐은 필요한 만큼만 눌러 넣고(라벨에 ↓30%), 가득 찬 쿨러 같은 20kg 이상 짐은 바닥에만, 무거운 짐을 가벼운 짐 위에 올리면 조언. 장비 DB 198개는 제조사 스펙으로 교차검증(`backlog/gear-db-audit.md`)
+- **2열 슬라이드**: 쏘렌토 2열 시트를 앞으로 당긴 상태(+13/+27cm)를 선택할 수 있고, 다 안 들어갈 때 "2열 +13cm 당기면 모두 들어갑니다"를 제안한다
 - **수동 조정**: 박스 드래그(적층 지원), 회전, 삭제, Undo/Redo
 - **적재 순서 가이드**: 안쪽·아래부터 번호를 매기고 스텝별로 보여준다
 - **저장**: 이름으로 저장/불러오기, 작업 상태 자동 저장·복원 (웹 localStorage / Android SharedPreferences)
@@ -21,7 +23,7 @@
 ```bash
 flutter pub get
 flutter run -d chrome        # 개발 실행
-flutter test                 # 테스트 176개
+flutter test                 # 테스트 194개
 flutter analyze
 flutter build web            # build/web (로컬 서빙: python -m http.server -d build/web 8080)
 npx playwright test          # 스모크 E2E (build/web 필요, 스크린샷은 e2e/screenshots/)
@@ -75,6 +77,7 @@ lib/
 - `test/render3d/` 카메라 투영·역투영 일관성, 정렬 제약, 피킹
 - `test/models/support_test.dart` 지지 규칙, 중력 정착
 - `test/models/auto_layout_test.dart` 감사에서 찾은 회귀 + 4차종 무작위 800회 물리 유효성(충돌 0·부양 0·테일게이트 닫힘)
+- `test/models/packing_physics_test.dart` 연질 압축(한 축), 무게 규칙, 접근성, 조언, 2열 슬라이드
 - `test/utils/collision_test.dart` 쏘렌토 실측 형상: 테일게이트 닫힘, 등받이, 개구부 통과, 프레임 구간 폭
 - `e2e/smoke.spec.ts` 실제 웹 빌드 플로우 스모크 (고정 뷰포트 좌표 클릭, 에러 0 + 스크린샷)
 
@@ -82,6 +85,7 @@ lib/
 
 - `backlog/release-1-deep-analysis.md` — 1차 배포 심층 분석 (왜 다시 만들었는지, 남은 확인 사항)
 - `backlog/sorento-mq4-measurements.md` — 쏘렌토 MQ4 치수 교차검증 기록과 사용자 실측 체크리스트
+- `backlog/gear-db-audit.md` — 장비 DB 교차검증 (치수·무게·연질 여부, 확인 못 한 항목)
 - `CLAUDE.md` — 작업 가이드
 
 ## 라이선스

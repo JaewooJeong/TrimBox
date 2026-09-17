@@ -17,22 +17,22 @@ class Aabb {
         b.y,
         b.z,
         b.x + b.effectiveW,
-        b.y + b.h,
+        b.top,
         b.z + b.effectiveD,
       );
 
-  /// 왼쪽 휠하우스: x=[0, w], z=[0, d]
-  factory Aabb.leftWheelhouse(TrunkSpace s) => Aabb(
-      0, 0, 0, s.leftWheelhouse.w, s.leftWheelhouse.h, s.leftWheelhouse.d);
+  /// 왼쪽 휠하우스: x=[0, w], z=[zStart, zEnd]
+  factory Aabb.leftWheelhouse(TrunkSpace s) => Aabb(0, 0, s.leftWheelhouse.zStart,
+      s.leftWheelhouse.w, s.leftWheelhouse.h, s.leftWheelhouse.zEnd);
 
-  /// 오른쪽 휠하우스: x=[W-w, W], z=[0, d]
+  /// 오른쪽 휠하우스: x=[W-w, W], z=[zStart, zEnd]
   factory Aabb.rightWheelhouse(TrunkSpace s) => Aabb(
       s.w - s.rightWheelhouse.w,
       0,
-      0,
+      s.rightWheelhouse.zStart,
       s.w,
       s.rightWheelhouse.h,
-      s.rightWheelhouse.d);
+      s.rightWheelhouse.zEnd);
 
   Vec3 get min => Vec3(x1, y1, z1);
   Vec3 get max => Vec3(x2, y2, z2);

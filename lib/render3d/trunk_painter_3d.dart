@@ -499,7 +499,9 @@ class TrunkPainter3D extends CustomPainter {
     final maxW = math.max(40.0, math.min(bounds.width - 8, 160.0));
     final tp = TextPainter(
       text: TextSpan(
-        text: box.label,
+        text: box.isSquashed
+            ? '${box.label} ↓${(box.squashAmount * 100).round()}%'
+            : box.label,
         style: TextStyle(
           color: Colors.white.withValues(alpha: opacity),
           fontSize: 11,
@@ -554,8 +556,9 @@ class TrunkPainter3D extends CustomPainter {
     final hMin = (space.ceilingHeightAt(space.rearDepthAt(space.h)) * 100).round();
     final hMax = (space.h * 100).round();
     final heightText = hMin < hMax ? '높이 $hMin~$hMax' : '높이 $hMax';
+    final official = space.officialVolumeLabel;
     final text =
-        '$name · $widthText × 깊이 ${(space.d * 100).round()} × $heightText cm';
+        '$name · $widthText × 깊이 ${(space.d * 100).round()} × $heightText cm${official != null ? ' · $official' : ''}';
     final tp = TextPainter(
       text: TextSpan(
         text: text,

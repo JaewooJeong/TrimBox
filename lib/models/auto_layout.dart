@@ -32,6 +32,11 @@ class BoxPlacement {
   final double h;
   final int loadOrder; // 1 = 가장 먼저 싣는 짐 (가장 깊숙이·아래)
 
+  /// 눌러 넣은 비율 (연질 짐만, 0 = 안 누름): 높이 / 폭 / 깊이 방향
+  final double squash;
+  final double squashW;
+  final double squashD;
+
   const BoxPlacement({
     required this.box,
     required this.x,
@@ -41,7 +46,13 @@ class BoxPlacement {
     required this.d,
     required this.h,
     required this.loadOrder,
+    this.squash = 0,
+    this.squashW = 0,
+    this.squashD = 0,
   });
+
+  bool get squashed => squashAmount > 1e-6;
+  double get squashAmount => math.max(squash, math.max(squashW, squashD));
 
   /// 원래 치수 그대로가 아니면(90° 회전 또는 눕힘) true
   bool get rotated =>
@@ -62,6 +73,9 @@ class BoxPlacement {
       ..x = x
       ..y = y
       ..z = z
+      ..squash = squash
+      ..squashW = squashW
+      ..squashD = squashD
       ..loadOrder = loadOrder;
   }
 }
@@ -86,11 +100,35 @@ class AutoLayoutResult {
 
   int get placedCount => placements.length;
   int get totalCount => placements.length + unfitBoxes.length;
+
+  /// 눌러 넣은 연질 짐
+  List<BoxPlacement> get squashedPlacements =>
+      placements.where((p) => p.squashed).toList();
+
+  /// 바닥이 아닌 곳에 놓인 무거운 짐 수 (적을수록 좋은 배치)
+  int get heavyStackedCount => placements
+      .where((p) => p.box.weightKg >= AutoLayoutEngine.heavyKg && p.y > 0.015)
+      .length;
 }
 
 class _Orientation {
   final double w, d, h;
-  const _Orientation(this.w, this.d, this.h);
+  final double sw, sd, sh; // 연질 짐 축별 압축 비율
+  const _Orientation(this.w, this.d, this.h, [this.sw = 0, this.sd = 0, this.sh = 0]);
+
+  /// 압축 반영 치수
+  double get ew => w * (1 - sw);
+  double get ed => d * (1 - sd);
+  double get eh => h * (1 - sh);
+
+  _Orientation withSquash(_Squash s) => _Orientation(w, d, h, s.w, s.d, s.h);
+}
+
+/// 축별 압축 조합 (한 번에 한 축만)
+class _Squash {
+  final double w, d, h;
+  const _Squash(this.w, this.d, this.h);
+  static const none = _Squash(0, 0, 0);
 }
 
 class _Candidate {
@@ -110,6 +148,39 @@ class _Candidate {
 class AutoLayoutEngine {
   /// 좌표 격자 (1cm). 후보 좌표는 이 격자로 올림해 화면 스냅과 어긋나지 않게 한다.
   static const double grid = 0.01;
+
+  /// 이 무게(kg) 이상이면 "무거운 짐": 바닥·안쪽을 강하게 선호하고 높이 올리면 조언
+  static const double heavyKg = 12;
+
+  /// 이 무게(kg) 이상이면 자동배치는 바닥에만 놓는다 (가득 찬 쿨러 등)
+  static const double floorOnlyKg = 20;
+
+  /// 마지막 격자 전수 탐색에 쓰는 최대 시간
+  static const Duration scanBudget = Duration(milliseconds: 500);
+
+  /// 보수(ejection chain) 단계에 쓰는 최대 시간
+  static const Duration repairBudget = Duration(milliseconds: 700);
+
+  /// "무거운 짐이 가벼운 짐 위" 규칙: 이 무게 이상인 짐이 자기 무게의
+  /// [lightBaseRatio] 미만인 짐 위에 놓이면 벌점·조언
+  static const double lightBaseKg = 8;
+  static const double lightBaseRatio = 0.4;
+
+  /// 연질 짐 압축 단계: 안 누름 → 높이 절반 → 높이 최대 → 깊이 최대.
+  /// [coarse] 는 전수 탐색용 축약 단계.
+  static List<_Squash> _squashLevels(TrimBox b, {bool coarse = false}) {
+    if (!b.soft || b.compressibility <= 0) return const [_Squash.none];
+    final c = b.compressibility;
+    if (coarse) {
+      return [_Squash.none, _Squash(0, 0, c), _Squash(0, c, 0)];
+    }
+    return [
+      _Squash.none,
+      _Squash(0, 0, c * 0.5),
+      _Squash(0, 0, c),
+      _Squash(0, c, 0),
+    ];
+  }
 
   /// [restarts]: 기본 정렬들로 전부 못 넣었을 때 추가로 시도할 무작위 순서 수.
   /// [budget]: 추가 시도에 쓸 최대 시간. [seed]: 재현용 난수 시드.
@@ -135,10 +206,14 @@ class AutoLayoutEngine {
     final sw = Stopwatch()..start();
     AutoLayoutResult? best;
     void consider(AutoLayoutResult r) {
-      if (best == null ||
-          r.placedCount > best!.placedCount ||
-          (r.placedCount == best!.placedCount &&
-              r.utilizationPercent > best!.utilizationPercent + 1e-9)) {
+      final b = best;
+      if (b == null || r.placedCount > b.placedCount) {
+        best = r;
+        return;
+      }
+      if (r.placedCount < b.placedCount) return;
+      final rh = r.heavyStackedCount, bh = b.heavyStackedCount;
+      if (rh < bh || (rh == bh && r.utilizationPercent > b.utilizationPercent + 1e-9)) {
         best = r;
       }
     }
@@ -178,8 +253,61 @@ class AutoLayoutEngine {
       consider(_pack(trunk, order, boxes, strategy, scan: false));
     }
 
+    if (!best!.allBoxesFit) best = _repair(trunk, best!, boxes, strategy);
     if (!best!.allBoxesFit) best = _scanFill(trunk, best!, boxes);
     return best!;
+  }
+
+  /// 보수: 못 넣은 박스마다, 이미 놓인 작은 박스 하나를 빼고 둘을 다시 넣어 본다
+  /// (깊이 1 의 ejection chain). 시간 예산 안에서만.
+  static AutoLayoutResult _repair(
+    TrunkSpace trunk,
+    AutoLayoutResult result,
+    List<TrimBox> boxes,
+    LayoutStrategy strategy,
+  ) {
+    final detector = CollisionDetector(trunk);
+    var placed = <TrimBox>[
+      for (final p in result.placements)
+        p.box.copyWith(
+            x: p.x, y: p.y, z: p.z, w: p.w, d: p.d, h: p.h, rotY: 0,
+            squash: p.squash, squashW: p.squashW, squashD: p.squashD),
+    ];
+    final unfit = List<TrimBox>.from(result.unfitBoxes);
+    final sw = Stopwatch()..start();
+    var improved = false;
+
+    TrimBox? tryPlace(TrimBox original, List<TrimBox> into) {
+      final c = _bestCandidate(trunk, detector, into, original, strategy, boxes);
+      if (c == null) return null;
+      return original.copyWith(
+          x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0,
+          squash: c.o.sh, squashW: c.o.sw, squashD: c.o.sd);
+    }
+
+    for (final u in List<TrimBox>.from(unfit)) {
+      if (sw.elapsed > repairBudget) break;
+      // 작은 박스부터 빼 본다 (큰 박스를 빼면 되돌려 넣기 어렵다)
+      final candidates = List<TrimBox>.from(placed)
+        ..sort((a, b) => _vol(a).compareTo(_vol(b)));
+      for (final p in candidates) {
+        if (sw.elapsed > repairBudget) break;
+        final without = placed.where((b) => b.id != p.id).toList();
+        final uPlaced = tryPlace(u, without);
+        if (uPlaced == null) continue;
+        without.add(uPlaced);
+        final pOriginal = boxes.firstWhere((b) => b.id == p.id);
+        final pPlaced = tryPlace(pOriginal, without);
+        if (pPlaced == null) continue;
+        without.add(pPlaced);
+        placed = without;
+        unfit.remove(u);
+        improved = true;
+        break;
+      }
+    }
+    if (!improved) return result;
+    return _finalize(trunk, detector, placed, unfit, boxes, result.strategy);
   }
 
   /// [result] 의 미적재 박스를 3cm 격자 전수 탐색으로 빈틈에 채운다.
@@ -188,17 +316,23 @@ class AutoLayoutEngine {
     final detector = CollisionDetector(trunk);
     final placed = <TrimBox>[
       for (final p in result.placements)
-        p.box.copyWith(x: p.x, y: p.y, z: p.z, w: p.w, d: p.d, h: p.h, rotY: 0),
+        p.box.copyWith(
+            x: p.x, y: p.y, z: p.z, w: p.w, d: p.d, h: p.h, rotY: 0,
+            squash: p.squash, squashW: p.squashW, squashD: p.squashD),
     ];
     final unfit = <TrimBox>[];
+    final sw = Stopwatch()..start();
     for (final box in result.unfitBoxes) {
-      final c = _scanCandidate(trunk, detector, placed, box);
+      final c = sw.elapsed < scanBudget
+          ? _scanCandidate(trunk, detector, placed, box)
+          : null;
       if (c == null) {
         unfit.add(box);
         continue;
       }
       placed.add(box.copyWith(
-          x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0));
+          x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0,
+          squash: c.o.sh, squashW: c.o.sw, squashD: c.o.sd));
     }
     if (unfit.length == result.unfitBoxes.length) return result;
     return _finalize(trunk, detector, placed, unfit, boxes, result.strategy);
@@ -229,6 +363,7 @@ class AutoLayoutEngine {
         d: c.o.d,
         h: c.o.h,
         rotY: 0,
+        squash: c.o.sh, squashW: c.o.sw, squashD: c.o.sd,
       );
       placed.add(copy);
     }
@@ -255,7 +390,8 @@ class AutoLayoutEngine {
           continue;
         }
         placed.add(box.copyWith(
-            x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0));
+            x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0,
+            squash: c.o.sh, squashW: c.o.sw, squashD: c.o.sd));
       }
     }
 
@@ -305,6 +441,9 @@ class AutoLayoutEngine {
         d: p.d,
         h: p.h,
         loadOrder: i + 1,
+        squash: p.squash,
+        squashW: p.squashW,
+        squashD: p.squashD,
       ));
     }
 
@@ -312,7 +451,7 @@ class AutoLayoutEngine {
       for (final b in unfit) b.id: _unfitReason(trunk, b, placed),
     };
 
-    final usedVol = placed.fold<double>(0, (s, b) => s + b.w * b.d * b.h);
+    final usedVol = placed.fold<double>(0, (s, b) => s + b.volume);
     final totalVol = trunk.usableVolume;
     return AutoLayoutResult(
       placements: placements,
@@ -348,7 +487,7 @@ class AutoLayoutEngine {
 
   // ── 내부 ──
 
-  static double _vol(TrimBox b) => b.w * b.d * b.h;
+  static double _vol(TrimBox b) => b.volume;
 
   /// 가장 납작하게 놓았을 때의 바닥 면적 (세워야 하는 짐은 w×d)
   static double _footprint(TrimBox b) {
@@ -392,11 +531,33 @@ class AutoLayoutEngine {
       return c != 0 ? c : _vol(b).compareTo(_vol(a));
     }
 
-    return switch (s) {
-      LayoutStrategy.balanced => [by(volDesc), by(areaDesc), by(uprightFirst), by(longDesc), by(thickDesc)],
-      LayoutStrategy.maxUtilization => [by(longDesc), by(areaDesc), by(volDesc), by(thickDesc), by(uprightFirst)],
-      LayoutStrategy.easyAccess => [by(volDesc), by(thickDesc), by(areaDesc), by(uprightFirst), by(longDesc)],
+    // 무거운 것 먼저 (바닥·안쪽을 차지), 같은 무게면 부피
+    int heavyFirst(TrimBox a, TrimBox b) {
+      final c = b.weightKg.compareTo(a.weightKg);
+      return c != 0 ? c : volDesc(a, b);
+    }
+
+    final variants = switch (s) {
+      LayoutStrategy.balanced => [by(volDesc), by(heavyFirst), by(areaDesc), by(uprightFirst), by(longDesc), by(thickDesc)],
+      LayoutStrategy.maxUtilization => [by(longDesc), by(areaDesc), by(volDesc), by(heavyFirst), by(thickDesc), by(uprightFirst)],
+      LayoutStrategy.easyAccess => [by(volDesc), by(heavyFirst), by(thickDesc), by(areaDesc), by(uprightFirst), by(longDesc)],
     };
+    // 바닥에만 둘 수 있는 무거운 짐(가득 찬 쿨러 등)은 항상 먼저 바닥을 차지하고,
+    // 연질 짐(침낭·타프 천 등)은 단단한 짐을 다 놓은 뒤 틈과 위에 채운다
+    return [for (final v in variants) _softLast(_floorOnlyFirst(v))];
+  }
+
+  /// 단단한 짐 먼저, 연질 짐은 원래 순서를 유지한 채 뒤로
+  static List<TrimBox> _softLast(List<TrimBox> order) => [
+        ...order.where((b) => !b.soft),
+        ...order.where((b) => b.soft),
+      ];
+
+  /// 바닥 전용(20kg 이상) 짐을 부피 순으로 맨 앞에
+  static List<TrimBox> _floorOnlyFirst(List<TrimBox> order) {
+    final heavy = order.where((b) => b.weightKg >= floorOnlyKg).toList()
+      ..sort((a, b) => _vol(b).compareTo(_vol(a)));
+    return [...heavy, ...order.where((b) => b.weightKg < floorOnlyKg)];
   }
 
   static List<_Orientation> _orientations(TrimBox b) {
@@ -437,46 +598,48 @@ class AutoLayoutEngine {
     for (final p in placed) {
       xs.add(_snapUp(p.x + p.effectiveW));
       xs.add(_snapDown(p.x));
-      xs.add(_snapDown(p.x - o.w));
+      xs.add(_snapDown(p.x - o.ew));
       zs.add(_snapUp(p.z + p.effectiveD));
       zs.add(_snapDown(p.z));
-      zs.add(_snapDown(p.z - o.d));
+      zs.add(_snapDown(p.z - o.ed));
     }
     final lw = trunk.leftWheelhouse;
     final rw = trunk.rightWheelhouse;
     if (lw.w > 0) {
       xs.add(_snapUp(lw.w));
-      zs.add(_snapUp(lw.d));
+      zs.add(_snapUp(lw.zEnd));
+      if (lw.zStart > 0) zs.add(_snapDown(lw.zStart - o.ed));
     }
     if (rw.w > 0) {
-      xs.add(_snapDown(trunk.w - rw.w - o.w));
-      zs.add(_snapUp(rw.d));
+      xs.add(_snapDown(trunk.w - rw.w - o.ew));
+      zs.add(_snapUp(rw.zEnd));
+      if (rw.zStart > 0) zs.add(_snapDown(rw.zStart - o.ed));
     }
     // 오른쪽 벽에 붙이는 후보
-    xs.add(_snapDown(trunk.w - o.w));
+    xs.add(_snapDown(trunk.w - o.ew));
     // 테일게이트 닫힘 한계에 붙이는 후보: 바닥에 놓일 때와 각 박스 위에 놓일 때
     // 윗면 높이에서 허용되는 최대 z 에서 뒤로 물린 자리
     if (trunk.hasTailgateModel) {
-      zs.add(_snapDown(trunk.rearDepthAt(o.h) - o.d));
+      zs.add(_snapDown(trunk.rearDepthAt(o.eh) - o.ed));
       for (final p in placed) {
-        zs.add(_snapDown(trunk.rearDepthAt(p.y + p.h + o.h) - o.d));
+        zs.add(_snapDown(trunk.rearDepthAt(p.top + o.eh) - o.ed));
       }
     }
     // 등받이 기울기: 윗면 높이에서 허용되는 최소 z 에 붙이는 후보
     if (trunk.frontProfile != null) {
-      zs.add(_snapUp(trunk.frontDepthAt(o.h)));
+      zs.add(_snapUp(trunk.frontDepthAt(o.eh)));
       for (final p in placed) {
-        zs.add(_snapUp(trunk.frontDepthAt(p.y + p.h + o.h)));
+        zs.add(_snapUp(trunk.frontDepthAt(p.top + o.eh)));
       }
     }
     // 테이퍼 왼쪽 경계 (뒤쪽이 가장 좁다)
     for (final z in zs.toList()) {
       xs.add(_snapUp(trunk.taperAt(z)));
-      xs.add(_snapDown(trunk.w - trunk.taperAt(z) - o.w));
+      xs.add(_snapDown(trunk.w - trunk.taperAt(z) - o.ew));
     }
-    final xl = xs.where((x) => x >= -1e-9 && x + o.w <= trunk.w + 1e-9).toList()
+    final xl = xs.where((x) => x >= -1e-9 && x + o.ew <= trunk.w + 1e-9).toList()
       ..sort();
-    final zl = zs.where((z) => z >= -1e-9 && z + o.d <= trunk.d + 1e-9).toList()
+    final zl = zs.where((z) => z >= -1e-9 && z + o.ed <= trunk.d + 1e-9).toList()
       ..sort();
     return (xl, zl);
   }
@@ -489,7 +652,6 @@ class AutoLayoutEngine {
     LayoutStrategy strategy,
     List<TrimBox> all,
   ) {
-    _Candidate? best;
     final (wy, wz, wx, contactBonus) = switch (strategy) {
       LayoutStrategy.balanced => (6.0, 1.0, 0.3, 0.03),
       LayoutStrategy.maxUtilization => (4.0, 1.0, 0.5, 0.08),
@@ -498,47 +660,85 @@ class AutoLayoutEngine {
     // 접근 우선: 부피 하위 40% 는 테일게이트 쪽을 선호
     var zWeight = wz;
     if (strategy == LayoutStrategy.easyAccess) {
-      final vols = all.map((b) => b.w * b.d * b.h).toList()..sort();
+      final vols = all.map((b) => b.volume).toList()..sort();
       final cut = vols[(vols.length * 0.4).floor().clamp(0, vols.length - 1)];
-      if (box.w * box.d * box.h <= cut) zWeight = -0.4;
+      if (box.volume <= cut) zWeight = -0.4;
     }
+    // 자주 꺼내는 짐(쿨러 등)은 전략과 무관하게 테일게이트 쪽
+    if (box.accessPriority) zWeight = -0.8;
+    // 무거운 짐은 낮고 깊게
+    final heavy = box.weightKg >= heavyKg;
+    final yWeight = heavy ? wy * 2.5 : wy;
+    if (heavy && !box.accessPriority) zWeight = wz * 2.0;
 
-    for (final o in _orientations(box)) {
-      if (o.w > trunk.w + 1e-9 || o.d > trunk.d + 1e-9 || o.h > trunk.h + 1e-9) {
-        continue;
-      }
-      final probe = box.copyWith(w: o.w, d: o.d, h: o.h, rotY: 0);
-      final (xs, zs) = _candidateAxes(trunk, placed, o);
-      for (final z in zs) {
-        for (final x in xs) {
-          probe
-            ..x = x
-            ..z = z;
-          // 떨어뜨리기: 낮은 유효 층부터 충돌 없는 첫 층
-          double? y;
-          for (final level in SupportRule.validLevels(probe, placed, trunk)) {
-            probe.y = level;
-            if (!detector.hasCollision(probe, placed)) {
+    // 압축은 필요한 만큼만: 덜 누른 단계에서 자리가 나오면 그걸로 끝
+    for (final squash in _squashLevels(box)) {
+      _Candidate? best;
+      for (final o0 in _orientations(box)) {
+        final o = o0.withSquash(squash);
+        if (o.ew > trunk.w + 1e-9 || o.ed > trunk.d + 1e-9 || o.eh > trunk.h + 1e-9) {
+          continue;
+        }
+        final probe = box.copyWith(
+            w: o.w, d: o.d, h: o.h, rotY: 0,
+            squash: o.sh, squashW: o.sw, squashD: o.sd);
+        final (xs, zs) = _candidateAxes(trunk, placed, o);
+        for (final z in zs) {
+          for (final x in xs) {
+            probe
+              ..x = x
+              ..z = z;
+            // 떨어뜨리기: 낮은 유효 층부터 충돌 없는 첫 층
+            double? y;
+            var stackPenalty = 0.0;
+            for (final level in SupportRule.validLevels(probe, placed, trunk)) {
+              probe.y = level;
+              if (detector.hasCollision(probe, placed)) continue;
+              final penalty = _stackPenalty(probe, level, placed);
+              if (penalty == null) continue; // 허용 안 함 (단단한 짐이 연질 위)
               y = level;
+              stackPenalty = penalty;
               break;
             }
-          }
-          if (y == null) continue;
+            if (y == null) continue;
 
-          var score = y * wy + z * zWeight + x * wx;
-          if (trunk.hasTailgateModel) {
-            // 윗면이 높을수록 테일게이트 쪽(z 큼)에서 닫힘 한계에 걸리므로
-            // 윗면 높이 비율만큼 z 를 더 무겁게 본다
-            score += z * ((y + o.h) / trunk.h) * 1.5;
-          }
-          score -= contactBonus * _contacts(trunk, placed, probe);
-          if (best == null || score < best.score) {
-            best = _Candidate(x, y, z, o, score);
+            var score = y * yWeight + z * zWeight + x * wx + stackPenalty;
+            if (trunk.hasTailgateModel) {
+              // 윗면이 높을수록 테일게이트 쪽(z 큼)에서 닫힘 한계에 걸리므로
+              // 윗면 높이 비율만큼 z 를 더 무겁게 본다
+              score += z * ((y + o.eh) / trunk.h) * 1.5;
+            }
+            score -= contactBonus * _contacts(trunk, placed, probe);
+            if (best == null || score < best.score) {
+              best = _Candidate(x, y, z, o, score);
+            }
           }
         }
       }
+      if (best != null) return best;
     }
-    return best;
+    return null;
+  }
+
+  /// 층 [y]에 놓았을 때의 적층 벌점. null 이면 그 층은 쓰지 않는다.
+  /// - 단단한 짐을 연질 짐 위에: 불허 (눌리고 불안정)
+  /// - 무거운 짐을 자기 절반보다 가벼운 짐 위에: 벌점
+  static double? _stackPenalty(TrimBox probe, double y, List<TrimBox> placed) {
+    if (y <= SupportRule.heightTol) return 0;
+    if (probe.weightKg >= floorOnlyKg) return null; // 가득 찬 쿨러 등은 바닥에만
+    final supporters = SupportRule.supportersAt(probe, y, placed);
+    if (supporters.isEmpty) return 0; // 휠하우스 위
+    var penalty = 0.0;
+    if (!probe.soft && supporters.any((s) => s.soft)) {
+      if (probe.weightKg >= 5) return null;
+      penalty += 0.15;
+    }
+    if (probe.weightKg >= lightBaseKg) {
+      final lightest = supporters.map((s) => s.weightKg).reduce(math.min);
+      if (lightest > 0 && lightest < probe.weightKg * lightBaseRatio) penalty += 0.4;
+      if (lightest == 0 && probe.weightKg >= heavyKg) penalty += 0.2;
+    }
+    return penalty;
   }
 
   /// 2cm 격자 전수 탐색 (극점 후보로 못 찾은 틈새용). 낮고 깊은 자리 우선.
@@ -549,38 +749,47 @@ class AutoLayoutEngine {
     TrimBox box,
   ) {
     const step = 0.03;
-    final used = placed.fold<double>(0, (s, p) => s + p.w * p.d * p.h);
-    if (used + _vol(box) > trunk.usableVolume) return null;
-    _Candidate? best;
-    for (final o in _orientations(box)) {
-      if (o.w > trunk.w + 1e-9 || o.d > trunk.d + 1e-9 || o.h > trunk.h + 1e-9) {
-        continue;
-      }
-      final probe = box.copyWith(w: o.w, d: o.d, h: o.h, rotY: 0);
-      final maxX = trunk.w - o.w;
-      final maxZ = trunk.d - o.d;
-      for (var z = 0.0; z <= maxZ + 1e-9; z += step) {
-        for (var x = 0.0; x <= maxX + 1e-9; x += step) {
-          probe
-            ..x = _snapDown(x)
-            ..z = _snapDown(z);
-          double? y;
-          for (final level in SupportRule.validLevels(probe, placed, trunk)) {
-            probe.y = level;
-            if (!detector.hasCollision(probe, placed)) {
+    final used = placed.fold<double>(0, (s, p) => s + p.volume);
+    if (used + box.volume > trunk.usableVolume) return null;
+    for (final squash in _squashLevels(box, coarse: true)) {
+      _Candidate? best;
+      for (final o0 in _orientations(box)) {
+        final o = o0.withSquash(squash);
+        if (o.ew > trunk.w + 1e-9 || o.ed > trunk.d + 1e-9 || o.eh > trunk.h + 1e-9) {
+          continue;
+        }
+        final probe = box.copyWith(
+            w: o.w, d: o.d, h: o.h, rotY: 0,
+            squash: o.sh, squashW: o.sw, squashD: o.sd);
+        final maxX = trunk.w - o.ew;
+        final maxZ = trunk.d - o.ed;
+        for (var z = 0.0; z <= maxZ + 1e-9; z += step) {
+          for (var x = 0.0; x <= maxX + 1e-9; x += step) {
+            probe
+              ..x = _snapDown(x)
+              ..z = _snapDown(z);
+            double? y;
+            var stackPenalty = 0.0;
+            for (final level in SupportRule.validLevels(probe, placed, trunk)) {
+              probe.y = level;
+              if (detector.hasCollision(probe, placed)) continue;
+              final penalty = _stackPenalty(probe, level, placed);
+              if (penalty == null) continue;
               y = level;
+              stackPenalty = penalty;
               break;
             }
-          }
-          if (y == null) continue;
-          final score = y * 6 + probe.z + probe.x * 0.3;
-          if (best == null || score < best.score) {
-            best = _Candidate(probe.x, y, probe.z, o, score);
+            if (y == null) continue;
+            final score = y * 6 + probe.z + probe.x * 0.3 + stackPenalty;
+            if (best == null || score < best.score) {
+              best = _Candidate(probe.x, y, probe.z, o, score);
+            }
           }
         }
       }
+      if (best != null) return best;
     }
-    return best;
+    return null;
   }
 
   /// 벽·바닥·이웃과 맞닿은 면 수 (빈틈 줄이기용 보너스)
@@ -592,7 +801,7 @@ class AutoLayoutEngine {
     if ((b.x - trunk.taperAt(b.z)).abs() <= tol) n++;
     if ((b.x + b.effectiveW - (trunk.w - trunk.taperAt(b.z))).abs() <= tol) n++;
     for (final p in placed) {
-      final yOverlap = b.y < p.y + p.h && b.y + b.h > p.y;
+      final yOverlap = b.y < p.top && b.top > p.y;
       final zOverlap = b.z < p.z + p.effectiveD && b.z + b.effectiveD > p.z;
       final xOverlap = b.x < p.x + p.effectiveW && b.x + b.effectiveW > p.x;
       if (yOverlap && zOverlap) {
@@ -630,9 +839,12 @@ class AutoLayoutEngine {
       final how = b.keepUpright ? ' (세운 채로)' : '';
       return '개구부 ${_cm(ap.bottomWidth)}×${_cm(ap.height)}cm 를 통과 못 함$how';
     }
-    final used = placed.fold<double>(0, (s, p) => s + p.w * p.d * p.h);
-    if (used + b.w * b.d * b.h > trunk.usableVolume) return '남은 부피 부족';
+    final used = placed.fold<double>(0, (s, p) => s + p.volume);
+    if (used + b.volume > trunk.usableVolume) return '남은 부피 부족';
     final shaped = trunk.hasTailgateModel || trunk.frontProfile != null;
+    if (b.soft && b.compressibility > 0) {
+      return '${(b.compressibility * 100).round()}% 눌러도 빈 자리 없음';
+    }
     return shaped ? '빈 자리 없음 (등받이·테일게이트 기울기 반영)' : '빈 자리 없음';
   }
 

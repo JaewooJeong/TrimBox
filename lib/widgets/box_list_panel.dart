@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
+import '../models/packing_advisor.dart';
 import '../utils/collision.dart';
 
 /// 박스 리스트 패널 — 각 박스 정보 + 회전/삭제 버튼
@@ -373,9 +374,10 @@ class BoxListPanel extends StatelessWidget {
                       ],
                     ),
                     Text(
-                      '$wCm × $dCm × ${hCm}cm  R:${box.rotY}°',
+                      '$wCm × $dCm × ${hCm}cm  R:${box.rotY}°${_badges(box)}',
                       style: const TextStyle(
                           color: Colors.grey, fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
@@ -401,6 +403,24 @@ class BoxListPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 무게·연질·세움·접근성 배지 (있는 것만)
+  static String _badges(TrimBox box) {
+    final parts = <String>[];
+    if (box.weightKg > 0) {
+      parts.add(box.weightKg == box.weightKg.roundToDouble()
+          ? '${box.weightKg.round()}kg'
+          : '${box.weightKg.toStringAsFixed(1)}kg');
+    }
+    if (box.isSquashed) {
+      parts.add('눌림 ${(box.squashAmount * 100).round()}%');
+    } else if (box.soft) {
+      parts.add('연질');
+    }
+    if (box.keepUpright) parts.add('세움');
+    if (box.accessPriority) parts.add('자주 꺼냄');
+    return parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
   }
 
   Widget _statsBar(BuildContext context) {
@@ -474,13 +494,36 @@ class BoxListPanel extends StatelessWidget {
           _progressRow('부피', volPct, volRatio),
           const SizedBox(height: 6),
           // 배치 상태 — 항상 한 줄 (레이아웃이 흔들리지 않게). 탭하면 전체 사유.
-          _statusRow(context, warnings),
+          _statusRow(context, warnings,
+              PackingAdvisor.advise(boxes, space).map((a) => a.message).toList()),
         ],
       ),
     );
   }
 
-  Widget _statusRow(BuildContext context, List<String> warnings) {
+  Widget _statusRow(
+      BuildContext context, List<String> warnings, List<String> advice) {
+    if (warnings.isEmpty && advice.isNotEmpty) {
+      final more = advice.length > 1 ? ' (+${advice.length - 1})' : '';
+      return InkWell(
+        onTap: () => _showWarningsDialog(context, advice, title: '적재 조언'),
+        child: Row(
+          children: [
+            const Icon(Icons.lightbulb_outline,
+                color: Color(0xFFFFC46B), size: 14),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                '${advice.first}$more',
+                style: const TextStyle(color: Color(0xFFFFC46B), fontSize: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Color(0xFFFFC46B), size: 14),
+          ],
+        ),
+      );
+    }
     if (warnings.isEmpty) {
       return const Row(
         children: [
@@ -517,12 +560,13 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
-  void _showWarningsDialog(BuildContext context, List<String> warnings) {
+  void _showWarningsDialog(BuildContext context, List<String> warnings,
+      {String title = '배치 문제'}) {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A2A),
-        title: Text('배치 문제 ${warnings.length}개',
+        title: Text('$title ${warnings.length}개',
             style: const TextStyle(color: Colors.white, fontSize: 16)),
         content: SizedBox(
           width: 360,
