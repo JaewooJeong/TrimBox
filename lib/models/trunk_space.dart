@@ -10,12 +10,13 @@ extension VehicleCategoryExt on VehicleCategory {
 }
 
 /// 트렁크 크기 프리셋 — 실제 한국 인기 차종 기반
-enum TrunkPreset { tucson, sorento, santafe, carnival, ioniq5, avante, custom }
+enum TrunkPreset { tucson, sorento, sorento7, santafe, carnival, ioniq5, avante, custom }
 
 extension TrunkPresetExt on TrunkPreset {
   String get label => switch (this) {
         TrunkPreset.tucson => '투싼 (104×91cm)',
-        TrunkPreset.sorento => '쏘렌토 (108×110cm)',
+        TrunkPreset.sorento => '쏘렌토 5인승 (108×110cm)',
+        TrunkPreset.sorento7 => '쏘렌토 7인승·3열 접음 (108×118cm)',
         TrunkPreset.santafe => '싼타페 (111×105cm)',
         TrunkPreset.carnival => '카니발 (125×85cm)',
         TrunkPreset.ioniq5 => '아이오닉5 (100×95cm)',
@@ -26,6 +27,7 @@ extension TrunkPresetExt on TrunkPreset {
   VehicleCategory? get category => switch (this) {
         TrunkPreset.tucson => VehicleCategory.suv,
         TrunkPreset.sorento => VehicleCategory.suv,
+        TrunkPreset.sorento7 => VehicleCategory.suv,
         TrunkPreset.santafe => VehicleCategory.suv,
         TrunkPreset.carnival => VehicleCategory.minivan,
         TrunkPreset.ioniq5 => VehicleCategory.suv,
@@ -37,6 +39,7 @@ extension TrunkPresetExt on TrunkPreset {
   TrunkSpace? toTrunkSpace() => switch (this) {
         TrunkPreset.tucson => TrunkSpace.tucson(),
         TrunkPreset.sorento => TrunkSpace.sorento(),
+        TrunkPreset.sorento7 => TrunkSpace.sorento7(),
         TrunkPreset.santafe => TrunkSpace.santafe(),
         TrunkPreset.carnival => TrunkSpace.carnival(),
         TrunkPreset.ioniq5 => TrunkSpace.ioniq5(),
@@ -179,19 +182,42 @@ class TrunkSpace {
         bodyDepth: 0.55,
       );
 
-  /// 쏘렌토 MQ4 — 4:2:4 분할 (리서치 기반 수정: carwow.de, cinch.co.uk, kia-forums)
-  /// 적재폭 1,080~1,100mm, 깊이 1,130~1,280mm, 높이 774mm
+  /// 쏘렌토 MQ4 5인승 (2020~, 디 올 뉴 쏘렌토) — 추정치.
+  /// 근거: 휠웰 사이 폭 1,041~1,053mm(kia-forums), 상부 폭 ~1,200mm(cinch),
+  /// 최대 높이 774mm(how-many-bags-fit), 2열 뒤 깊이 약 1,100mm(국내 매트 제작사 실측 108~112cm).
+  /// 휠하우스는 뒷축(테일게이트에서 약 0.6~1.1m)에 걸쳐 있어 뒷좌석 쪽 약 48cm 구간.
   factory TrunkSpace.sorento() => const TrunkSpace(
         w: 1.08,
         d: 1.10,
         h: 0.78,
-        leftWheelhouse: Wheelhouse(w: 0.08, d: 0.40, h: 0.30),
-        rightWheelhouse: Wheelhouse(w: 0.08, d: 0.40, h: 0.30),
-        seatSplitRatio: [0.4, 0.2, 0.4],
+        leftWheelhouse: Wheelhouse(w: 0.08, d: 0.48, h: 0.30),
+        rightWheelhouse: Wheelhouse(w: 0.08, d: 0.48, h: 0.30),
+        seatSplitRatio: [0.6, 0.4],
         taperRatio: 0.07,
         ceilingDrop: 0.12,
         rearTopNarrow: 0.05,
-        vehicleName: 'SORENTO',
+        vehicleName: 'SORENTO 5인승',
+        bodyWidth: 1.44,
+        trunkLipHeight: 0.58,
+        roofExtension: 0.12,
+        bumperDepth: 0.07,
+        bodyDepth: 0.60,
+      );
+
+  /// 쏘렌토 MQ4 7인승, 3열 접은 상태 — 추정치.
+  /// 근거: how-many-bags-fit 3열 접은 깊이 1,183mm, 최대 높이 774mm.
+  /// 접힌 3열 시트 위가 바닥이 되므로 5인승보다 천장이 1cm 낮고 깊이는 8cm 길다.
+  factory TrunkSpace.sorento7() => const TrunkSpace(
+        w: 1.08,
+        d: 1.18,
+        h: 0.77,
+        leftWheelhouse: Wheelhouse(w: 0.08, d: 0.52, h: 0.30),
+        rightWheelhouse: Wheelhouse(w: 0.08, d: 0.52, h: 0.30),
+        seatSplitRatio: [0.6, 0.4],
+        taperRatio: 0.07,
+        ceilingDrop: 0.12,
+        rearTopNarrow: 0.05,
+        vehicleName: 'SORENTO 7인승 (3열 접음)',
         bodyWidth: 1.44,
         trunkLipHeight: 0.58,
         roofExtension: 0.12,

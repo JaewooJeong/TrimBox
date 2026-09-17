@@ -90,22 +90,23 @@ class BoxListPanel extends StatelessWidget {
         padding: EdgeInsets.zero,
         children: [
           if (showDragHandle) _buildDragHandle(),
-          _buildActionBar(),
+          // 모바일: 시트를 조금만 올려도 핵심 동작이 보이도록 위쪽에 배치
           if (boxes.isEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
+              padding: const EdgeInsets.symmetric(vertical: 8),
               child: _buildEmptyState(),
             )
-          else
-            ...boxes.map((b) => Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: _boxTile(b),
-                )),
-          // 히어로 자동 배치 버튼
-          if (boxes.isNotEmpty && onAutoLayout != null) _heroAutoLayoutButton(),
-          // 적재 순서 가이드 버튼
-          if (boxes.isNotEmpty && onStepView != null && _hasLoadOrders()) _stepViewButton(),
-          if (boxes.isNotEmpty) _statsBar(),
+          else ...[
+            if (onAutoLayout != null) _heroAutoLayoutButton(),
+            if (onStepView != null && _hasLoadOrders()) _stepViewButton(),
+            _statsBar(),
+          ],
+          _buildActionBar(),
+          ...boxes.map((b) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: _boxTile(b),
+              )),
+          const SizedBox(height: 24),
         ],
       ),
     );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
@@ -55,6 +56,18 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   bool _showOnboarding = true;
   bool _hasEverAddedBox = false;
 
+  /// 사용자가 손으로 옮기거나 돌린 적이 있으면 true.
+  /// false 인 동안은 장비를 추가할 때마다 전체를 다시 자동 배치한다.
+  bool _manualEdited = false;
+  Timer? _autosaveTimer;
+
+  /// 1차 배포 차종 메뉴: 쏘렌토 MQ4 두 구성 + 커스텀
+  static const List<TrunkPreset> _releasePresets = [
+    TrunkPreset.sorento,
+    TrunkPreset.sorento7,
+    TrunkPreset.custom,
+  ];
+
   // 3D 카메라 (첫 레이아웃에서 트렁크에 맞춰 초기화)
   OrbitCamera? _camera;
   double _fitDistance = 1.0;
@@ -103,14 +116,56 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     super.initState();
     _space = TrunkPreset.sorento.toTrunkSpace()!;
     _detector = CollisionDetector(_space);
+    // 웹에서 한글 폴백 폰트가 늦게 로드되면 캔버스 라벨이 □ 로 남는다.
+    // 폰트 변경 알림을 받으면 다시 그린다.
+    PaintingBinding.instance.systemFonts.addListener(_onSystemFontsChanged);
+    _restoreSession();
+  }
 
+  void _onSystemFontsChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    PaintingBinding.instance.systemFonts.removeListener(_onSystemFontsChanged);
+    _autosaveTimer?.cancel();
     _canvasFocusNode.dispose();
     _sceneCache.dispose();
     super.dispose();
+  }
+
+  /// 온보딩 표시 여부와 마지막 작업 상태 복원
+  Future<void> _restoreSession() async {
+    try {
+      final seen = await storage.hasSeenOnboarding();
+      final auto = await storage.loadAutosave();
+      if (!mounted) return;
+      if (seen) setState(() => _showOnboarding = false);
+      if (auto != null && _boxes.isEmpty) _applySceneJson(auto, silent: true);
+    } catch (_) {
+      // 저장소를 못 쓰는 환경에서는 조용히 넘어간다
+    }
+  }
+
+  /// 마지막 작업 상태를 잠시 뒤 저장 (연속 조작 중 과도한 저장 방지)
+  void _scheduleAutosave() {
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(milliseconds: 800), () {
+      try {
+        storage.saveAutosave(
+            JsonIO.exportScene(Scene(space: _space, boxes: _boxes)));
+      } catch (_) {}
+    });
+  }
+
+  /// 씬의 트렁크가 어느 프리셋인지 (차종명으로 식별), 없으면 커스텀
+  TrunkPreset _presetForSpace(TrunkSpace space) {
+    for (final p in TrunkPreset.values) {
+      if (p == TrunkPreset.custom) continue;
+      if (p.toTrunkSpace()?.vehicleName == space.vehicleName) return p;
+    }
+    return TrunkPreset.custom;
   }
 
   /// 캔버스 크기에 맞는 카메라 확보. 크기가 바뀌면 현재 각도·줌 비율을 유지한 채
@@ -227,11 +282,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           } else {
             return Stack(
               children: [
-                _buildCanvas(),
+                // 시트 초기 높이만큼 비워 트렁크가 가려지지 않게 한다
+                Positioned.fill(
+                  bottom: constraints.maxHeight * 0.28,
+                  child: _buildCanvas(),
+                ),
                 DraggableScrollableSheet(
-                  initialChildSize: 0.15,
-                  minChildSize: 0.10,
-                  maxChildSize: 0.7,
+                  initialChildSize: 0.28,
+                  minChildSize: 0.12,
+                  maxChildSize: 0.85,
                   builder: (ctx, scrollCtrl) => _buildDraggablePanel(scrollCtrl),
                 ),
               ],
@@ -509,7 +568,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     return Positioned.fill(
       child: GestureDetector(
-        onTap: () => setState(() => _showOnboarding = false),
+        onTap: () {
+          setState(() => _showOnboarding = false);
+          storage.markOnboardingSeen();
+        },
         child: Container(
           color: const Color(0x88000000),
           child: Center(
@@ -694,6 +756,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       final p = rayPlaneY(ray, hit.y) ?? Vec3(hit.x, hit.y, hit.z);
       _pushUndo();
       setState(() {
+        _manualEdited = true;
         _selectedBoxId = hit.id;
         _isDragging = true;
         _dragGrabOffset = Vec3(p.x - hit.x, 0, p.z - hit.z);
@@ -822,6 +885,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     _pushUndo();
     setState(() {
+      _manualEdited = true;
       switch (event.logicalKey) {
         case LogicalKeyboardKey.arrowLeft:
           box.x -= unit;
@@ -890,6 +954,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     _pushUndo();
     final box = _boxes.firstWhere((b) => b.id == id);
     setState(() {
+      _manualEdited = true;
       box.rotate90();
       box.snapToGrid(_space.gridUnit);
       box.clampTo(_space.w, _space.d);
@@ -952,8 +1017,42 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       if (!_hasEverAddedBox) {
         _hasEverAddedBox = true;
         _showOnboarding = false;
+        storage.markOnboardingSeen();
       }
     });
+    // 손으로 옮긴 적이 없으면 전체를 다시 자동 배치해 바로 판정을 보여준다
+    if (!_manualEdited) _autoPackQuietly();
+  }
+
+  /// 모달 없이 자동 배치를 적용하고 스낵바로 판정만 알린다
+  void _autoPackQuietly() {
+    if (_boxes.isEmpty) return;
+    final result =
+        AutoLayoutEngine.computeLayout(_space, _boxes, restarts: 24);
+    setState(() {
+      for (final p in result.placements) {
+        p.applyTo(_boxes.firstWhere((b) => b.id == p.box.id));
+      }
+      _parkUnfitBoxes(result);
+      _selectedBoxId = null;
+      _updateCollisions();
+    });
+    if (mounted) _showVerdictSnackBar(result);
+  }
+
+  /// 못 넣은 박스는 테일게이트 앞 바닥에 나란히 둔다 (경계 밖 = 빨간 표시)
+  void _parkUnfitBoxes(AutoLayoutResult result) {
+    var x = 0.0;
+    for (final u in result.unfitBoxes) {
+      final box = _boxes.firstWhere((b) => b.id == u.id);
+      box
+        ..rotY = 0
+        ..x = x
+        ..z = _space.d + 0.06
+        ..y = 0
+        ..loadOrder = null;
+      x += box.effectiveW + 0.05;
+    }
   }
 
   /// 새 박스를 비어 있는 자리에 놓는다: 바닥(뒷좌석 쪽부터) → 기존 박스 위 →
@@ -988,7 +1087,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     final items = <PopupMenuEntry<TrunkPreset>>[];
     VehicleCategory? lastCat;
 
-    for (final p in TrunkPreset.values) {
+    for (final p in _releasePresets) {
       final cat = p.category;
 
       if (cat != null && cat != lastCat) {
@@ -1104,7 +1203,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     try {
       // Check for duplicate name and confirm overwrite
-      final existingScenes = storage.listSavedScenes();
+      final existingScenes = await storage.listSavedScenes();
       final hasDuplicate = existingScenes.any((s) => s.name == name);
       if (hasDuplicate && mounted) {
         final overwrite = await showDialog<bool>(
@@ -1136,7 +1235,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
       final scene = Scene(space: _space, boxes: _boxes);
       final jsonStr = JsonIO.exportScene(scene);
-      storage.saveSceneToStorage(
+      await storage.saveSceneToStorage(
           name, jsonStr, _currentVehicleName, _boxes.length);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1231,14 +1330,14 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     }
   }
 
-  void _applySceneJson(String jsonStr) {
+  void _applySceneJson(String jsonStr, {bool silent = false}) {
     try {
       final scene = JsonIO.importScene(jsonStr);
       setState(() {
         _space = scene.space;
         _detector = CollisionDetector(_space);
         _refitCamera();
-        _selectedPreset = TrunkPreset.custom;
+        _selectedPreset = _presetForSpace(scene.space);
         _boxes..clear()..addAll(scene.boxes);
         _resolveGravity();
         int maxId = 0;
@@ -1257,7 +1356,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           _showOnboarding = false;
         }
       });
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
               content: Text('${scene.boxes.length}개 박스를 불러왔습니다'),
@@ -1585,14 +1684,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         placement.applyTo(box);
       }
 
-      // Move unfit boxes to overflow area (just outside trunk opening, spread apart)
-      for (int i = 0; i < result.unfitBoxes.length; i++) {
-        final box = _boxes.firstWhere((b) => b.id == result.unfitBoxes[i].id);
-        box.x = _space.w * 0.1 + i * _space.gridUnit;
-        box.z = _space.d + 0.05;
-        box.y = 0;
-        box.loadOrder = null;
-      }
+      _parkUnfitBoxes(result);
+      _manualEdited = false;
 
       _selectedBoxId = null;
       _updateCollisions();
@@ -2084,6 +2177,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   void _updateCollisions() {
     _collidingIds = _detector.findAllCollisions(_boxes);
+    _scheduleAutosave();
   }
 }
 
@@ -2168,7 +2262,7 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
         ],
       ),
       content: SizedBox(
-        width: 400,
+        width: math.min(400.0, MediaQuery.sizeOf(context).width - 48),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2369,7 +2463,7 @@ class _SavedScenesDialog extends StatefulWidget {
 }
 
 class _SavedScenesDialogState extends State<_SavedScenesDialog> {
-  late List<storage.SavedSceneMeta> _scenes;
+  List<storage.SavedSceneMeta> _scenes = [];
 
   @override
   void initState() {
@@ -2377,12 +2471,14 @@ class _SavedScenesDialogState extends State<_SavedScenesDialog> {
     _refreshList();
   }
 
-  void _refreshList() {
+  Future<void> _refreshList() async {
+    List<storage.SavedSceneMeta> list;
     try {
-      _scenes = storage.listSavedScenes();
+      list = await storage.listSavedScenes();
     } catch (_) {
-      _scenes = [];
+      list = [];
     }
+    if (mounted) setState(() => _scenes = list);
   }
 
   String _formatDate(String isoDate) {
@@ -2406,7 +2502,7 @@ class _SavedScenesDialogState extends State<_SavedScenesDialog> {
         style: TextStyle(color: Colors.white, fontSize: 18),
       ),
       content: SizedBox(
-        width: 400,
+        width: math.min(400.0, MediaQuery.sizeOf(context).width - 48),
         height: 360,
         child: _scenes.isEmpty
             ? Center(
@@ -2433,20 +2529,12 @@ class _SavedScenesDialogState extends State<_SavedScenesDialog> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: ListTile(
-                      onTap: () {
-                        try {
-                          final jsonStr =
-                              storage.loadSceneFromStorage(scene.key);
-                          if (jsonStr != null) {
-                            Navigator.pop(context, jsonStr);
-                          }
-                        } on UnsupportedError {
-                          Navigator.pop(context);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('이 플랫폼에서는 저장 기능을 지원하지 않습니다'),
-                                backgroundColor: Color(0xFFFF4D4D)),
-                          );
+                      onTap: () async {
+                        final jsonStr =
+                            await storage.loadSceneFromStorage(scene.key);
+                        if (!context.mounted) return;
+                        if (jsonStr != null) {
+                          Navigator.pop(context, jsonStr);
                         }
                       },
                       title: Text(
@@ -2514,8 +2602,8 @@ class _SavedScenesDialogState extends State<_SavedScenesDialog> {
     );
 
     if (confirmed == true) {
-      storage.deleteSceneFromStorage(scene.key);
-      setState(_refreshList);
+      await storage.deleteSceneFromStorage(scene.key);
+      await _refreshList();
     }
   }
 }

@@ -145,6 +145,8 @@ class TrunkPainter3D extends CustomPainter {
           .length
           .compareTo((a.face.centroid - camPos).length));
 
+    _drawOutsideGround(canvas, size);
+
     var seatVisible = false;
     for (final sf in faces) {
       final path = _projectPath(sf.face.pts, size);
@@ -165,6 +167,19 @@ class TrunkPainter3D extends CustomPainter {
     _drawFloorGrid(canvas, size);
     if (seatVisible) _drawSeatSplitLines(canvas, size);
     _drawOpeningOutline(canvas, size);
+  }
+
+  /// 테일게이트 바깥 지면 (못 넣은 짐을 세워 두는 자리)
+  void _drawOutsideGround(Canvas canvas, Size size) {
+    if (camera.position.y <= 0.01) return;
+    final path = _projectPath([
+      Vec3(-0.15, -0.002, space.d),
+      Vec3(space.w + 0.15, -0.002, space.d),
+      Vec3(space.w + 0.15, -0.002, space.d + 0.8),
+      Vec3(-0.15, -0.002, space.d + 0.8),
+    ], size);
+    if (path == null) return;
+    canvas.drawPath(path, Paint()..color = Colors.white.withValues(alpha: 0.05));
   }
 
   void _drawFloorGrid(Canvas canvas, Size size) {

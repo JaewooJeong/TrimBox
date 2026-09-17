@@ -30,7 +30,7 @@ void main() {
       expect(trunk.w, 1.08);
       expect(trunk.d, 1.10);
       expect(trunk.h, 0.78);
-      expect(trunk.vehicleName, 'SORENTO');
+      expect(trunk.vehicleName, contains('SORENTO'));
 
       // Step 2: 캠핑 장비 선택 (4인 기본세트)
       final boxes = [
