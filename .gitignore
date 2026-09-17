@@ -61,3 +61,8 @@ e2e-screenshots/
 e2e/actuals/
 e2e/diffs/
 e2e/similarity-report/
+
+# Playwright 산출물
+e2e/screenshots/
+test-results/
+e2e-report/

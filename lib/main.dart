@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'screens/simulator_screen.dart';
 
 void main() {
+  // 주의: 웹에서 SemanticsBinding.ensureSemantics() 를 켜면 (Flutter 3.35 기준)
+  // 포인터 입력이 먹지 않는 것을 확인했다. 접근성은 기본 플레이스홀더에 맡긴다.
   runApp(const TrimBoxApp());
 }
 

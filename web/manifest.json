@@ -1,12 +1,12 @@
 {
-    "name": "trimbox",
-    "short_name": "trimbox",
+    "name": "TrimBox 트렁크 적재 시뮬레이터",
+    "short_name": "TrimBox",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#1C1C1C",
+    "theme_color": "#1C1C1C",
+    "description": "내 캠핑 짐이 내 차 트렁크에 들어가는지 3초 안에 확인",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {

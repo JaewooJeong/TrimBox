@@ -1,14 +1,15 @@
 {
   "name": "trim-box",
   "version": "1.0.0",
-  "description": "**내 캠핑 짐이 내 차 트렁크에 들어가는지 3초 안에 확인**",
+  "description": "TrimBox — 캠핑 짐 트렁크 3D 적재 시뮬레이터",
   "main": "index.js",
   "directories": {
     "lib": "lib",
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed"
   },
   "repository": {
     "type": "git",
@@ -23,11 +24,8 @@
   "homepage": "https://github.com/JaewooJeong/TrimBox#readme",
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@types/pngjs": "^6.0.5",
     "pixelmatch": "^7.1.0",
     "pngjs": "^7.0.0"
-  },
-  "dependencies": {
-    "sharp": "^0.34.5",
-    "ssim.js": "^3.5.0"
   }
 }

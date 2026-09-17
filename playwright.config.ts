@@ -1,40 +1,28 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig } from '@playwright/test';
 
+/**
+ * 실행: `flutter build web` 후 `npx playwright test`
+ * build/web 을 정적 서버로 띄워 스모크 테스트를 돌린다.
+ */
 export default defineConfig({
   testDir: './e2e',
+  testMatch: /.*\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
-  reporter: [
-    ['html', { outputFolder: 'e2e-report' }],
-    ['list'],
-  ],
+  timeout: 60000,
+  reporter: [['list']],
   use: {
     baseURL: 'http://localhost:8080',
     trace: 'on-first-retry',
-    screenshot: 'on',
-    video: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
-  projects: [
-    {
-      name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-        viewport: { width: 1280, height: 960 },
-      },
-    },
-  ],
-  expect: {
-    toHaveScreenshot: {
-      maxDiffPixelRatio: 0.01,
-      threshold: 0.2,
-    },
-  },
+  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
   webServer: {
     command: 'npx http-server build/web -p 8080 -c-1 --silent',
     port: 8080,
     reuseExistingServer: !process.env.CI,
-    timeout: 10000,
+    timeout: 15000,
   },
 });
