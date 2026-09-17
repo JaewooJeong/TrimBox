@@ -44,16 +44,11 @@ extension TrunkPresetExt on TrunkPreset {
         TrunkPreset.custom => null,
       };
 
-  /// 트렁크 적재량(리터)
+  /// 트렁크 적재량(리터) — 천장 드롭·테이퍼·휠하우스를 반영한 실사용 부피
   int? get volumeLiters {
     final s = toTrunkSpace();
     if (s == null) return null;
-    // 전체 공간에서 휠하우스 부피 제외
-    final totalVol = s.w * s.d * s.h;
-    final lhVol = s.leftWheelhouse.w * s.leftWheelhouse.d * s.leftWheelhouse.h;
-    final rhVol =
-        s.rightWheelhouse.w * s.rightWheelhouse.d * s.rightWheelhouse.h;
-    return ((totalVol - lhVol - rhVol) * 1000).round(); // m³ → L
+    return (s.usableVolume * 1000).round(); // m³ → L
   }
 }
 
@@ -108,6 +103,21 @@ class TrunkSpace {
 
   /// 계산된 바디 확장 (각 측면)
   double get bodyExtX => (bodyWidth - w) / 2;
+
+  /// 실사용 부피(m³): 깊이 방향으로 잘라 (폭 − 테이퍼) × 천장 높이를 적분하고
+  /// 휠하우스 부피를 뺀다. 직육면체 w·d·h 보다 작고 현실에 가깝다.
+  double get usableVolume {
+    const n = 50;
+    var v = 0.0;
+    for (var i = 0; i < n; i++) {
+      final z = (i + 0.5) / n * d;
+      final width = w - 2 * taperAt(z);
+      v += width * ceilingHeightAt(z) * (d / n);
+    }
+    v -= leftWheelhouse.w * leftWheelhouse.d * leftWheelhouse.h;
+    v -= rightWheelhouse.w * rightWheelhouse.d * rightWheelhouse.h;
+    return v < 0 ? 0 : v;
+  }
 
   /// 깊이 z 위치에서의 천장 높이
   double ceilingHeightAt(double z) {

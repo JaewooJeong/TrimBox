@@ -22,7 +22,14 @@ class TrimBoxApp extends StatelessWidget {
           surface: Color(0xFF252525),
           error: Color(0xFFFF4D4D),
         ),
-        fontFamily: 'NotoSansKR',
+        // M3 ElevatedButton 은 전경색 기본값이 primary 라서 primary 배경 위에 글자가
+        // 사라진다. 흰 글자로 고정.
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            foregroundColor: Colors.white,
+            backgroundColor: const Color(0xFF4DA3FF),
+          ),
+        ),
       ),
       home: const SimulatorScreen(),
     );

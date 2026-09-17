@@ -1387,6 +1387,10 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
           }
 
           results.add({
+            // 쿨러·버너·수납함은 세워서만 (자동배치가 눕히지 않음)
+            'upright': preset.subCategory == _PresetSubCategory.cooler ||
+                preset.subCategory == _PresetSubCategory.cooking ||
+                preset.subCategory == _PresetSubCategory.storage,
             'w': preset.w / 100.0,
             'd': preset.d / 100.0,
             'h': preset.h / 100.0,

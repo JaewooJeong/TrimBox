@@ -1,750 +1,261 @@
+import 'dart:math' as math;
 import 'dart:ui';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trimbox/models/auto_layout.dart';
+import 'package:trimbox/models/support.dart';
 import 'package:trimbox/models/trim_box.dart';
 import 'package:trimbox/models/trunk_space.dart';
+import 'package:trimbox/utils/collision.dart';
 
-TrimBox _box(String id, double w, double d, double h) => TrimBox(
+TrimBox box(String id, double wCm, double dCm, double hCm,
+        {bool upright = false}) =>
+    TrimBox(
       id: id,
       label: id,
-      w: w,
-      d: d,
-      h: h,
-      color: const Color(0xFFFF0000),
+      w: wCm / 100,
+      d: dCm / 100,
+      h: hCm / 100,
+      color: const Color(0xFF888888),
+      keepUpright: upright,
     );
 
+/// 4인 가족 캠핑 번들 (add_box_dialog 의 프리셋 치수)
+List<TrimBox> familyBundle() => [
+      box('tent', 80, 35, 35),
+      box('tarp', 80, 32, 32),
+      box('table', 87, 19, 17),
+      box('chair1', 85, 20, 15),
+      box('chair2', 85, 20, 15),
+      box('chair3', 85, 20, 15),
+      box('chair4', 85, 20, 15),
+      box('cooler', 60, 40, 42, upright: true),
+      box('bag1', 43, 20, 20),
+      box('bag2', 43, 20, 20),
+      box('bag3', 43, 20, 20),
+      box('bag4', 43, 20, 20),
+      box('burner', 54, 34, 7, upright: true),
+      box('cookset', 28, 23, 13, upright: true),
+      box('container', 63, 41, 27, upright: true),
+      box('firewood', 40, 25, 20),
+    ];
+
+/// 배치 결과를 실제 박스 사본에 적용해 돌려준다
+List<TrimBox> applied(AutoLayoutResult r) {
+  final out = <TrimBox>[];
+  for (final p in r.placements) {
+    final b = p.box.copyWith();
+    p.applyTo(b);
+    out.add(b);
+  }
+  return out;
+}
+
+/// 물리적으로 말이 되는 배치인지: 충돌 0, 부양 0, 회전은 rotY 0 으로 정규화
+void expectPhysicallyValid(TrunkSpace trunk, AutoLayoutResult r) {
+  final boxes = applied(r);
+  final det = CollisionDetector(trunk);
+  final coll = det.findAllCollisions(boxes);
+  expect(coll, isEmpty, reason: '충돌: $coll');
+  for (final b in boxes) {
+    final others = boxes.where((o) => o.id != b.id);
+    expect(SupportRule.isSupported(b, others, trunk), isTrue,
+        reason: '${b.id} 부양 y=${b.y}');
+    expect(b.rotY, 0);
+    expect(b.x, greaterThanOrEqualTo(-1e-9));
+    expect(b.z, greaterThanOrEqualTo(-1e-9));
+  }
+  // 적재 순서는 1..n 으로 빠짐없이
+  final orders = r.placements.map((p) => p.loadOrder).toList()..sort();
+  expect(orders, List.generate(orders.length, (i) => i + 1));
+  // 미적재 사유는 미적재 박스마다 있다
+  for (final u in r.unfitBoxes) {
+    expect(r.unfitReasons[u.id], isNotNull);
+  }
+  expect(r.allBoxesFit, r.unfitBoxes.isEmpty);
+}
+
 void main() {
-  group('AutoLayoutEngine', () {
-    late TrunkSpace trunk;
+  final sorento = TrunkSpace.sorento();
 
-    setUp(() {
-      // Simple rectangular trunk for testing: 1.0 x 1.0 x 1.0m, no wheelhousees
-      trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
+  group('기본', () {
+    test('빈 목록', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, []);
+      expect(r.placements, isEmpty);
+      expect(r.allBoxesFit, isTrue);
+      expect(r.utilizationPercent, 0);
     });
 
-    test('empty box list returns empty result', () {
-      final result = AutoLayoutEngine.computeLayout(trunk, []);
-      expect(result.placements, isEmpty);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.unfitBoxes, isEmpty);
-      expect(result.utilizationPercent, 0);
+    test('박스 하나는 바닥, 뒷좌석 쪽 구석에', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, [box('a', 40, 30, 20)]);
+      expect(r.placements.length, 1);
+      final p = r.placements.single;
+      expect(p.y, 0);
+      expect(p.z, lessThan(0.05));
+      expectPhysicallyValid(sorento, r);
     });
 
-    test('single box is placed at origin', () {
-      final boxes = [_box('a', 0.3, 0.3, 0.3)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 1);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements[0].x, closeTo(0, 0.01));
-      expect(result.placements[0].y, closeTo(0, 0.01));
-      expect(result.placements[0].z, closeTo(0, 0.01));
+    test('트렁크보다 큰 박스는 사유와 함께 미적재', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, [box('huge', 200, 50, 50)]);
+      expect(r.placements, isEmpty);
+      expect(r.unfitBoxes.length, 1);
+      expect(r.unfitReasons['huge'], contains('트렁크보다 큼'));
     });
 
-    test('two non-overlapping boxes are both placed', () {
-      final boxes = [_box('a', 0.4, 0.4, 0.4), _box('b', 0.4, 0.4, 0.4)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 2);
-      expect(result.allBoxesFit, isTrue);
+    test('세워서만 두는 박스는 눕히지 않는다', () {
+      // 높이 90cm 는 천장(78cm)을 넘지만 눕히면 들어간다
+      final upright = box('tall', 30, 30, 90, upright: true);
+      final r1 = AutoLayoutEngine.computeLayout(sorento, [upright]);
+      expect(r1.placements, isEmpty);
+      expect(r1.unfitReasons['tall'], contains('천장'));
 
-      // Verify no overlap
-      final p1 = result.placements[0];
-      final p2 = result.placements[1];
-      final w1 = p1.rotated ? p1.box.d : p1.box.w;
-      final d1 = p1.rotated ? p1.box.w : p1.box.d;
-      final w2 = p2.rotated ? p2.box.d : p2.box.w;
-      final d2 = p2.rotated ? p2.box.w : p2.box.d;
-
-      // At least one axis must be non-overlapping
-      final sepX = p1.x + w1 <= p2.x + 0.01 || p2.x + w2 <= p1.x + 0.01;
-      final sepY = p1.y + p1.box.h <= p2.y + 0.01 || p2.y + p2.box.h <= p1.y + 0.01;
-      final sepZ = p1.z + d1 <= p2.z + 0.01 || p2.z + d2 <= p1.z + 0.01;
-      expect(sepX || sepY || sepZ, isTrue);
-    });
-
-    test('box too large for trunk is reported as unfit', () {
-      final boxes = [_box('big', 1.5, 1.5, 1.5)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements, isEmpty);
-      expect(result.allBoxesFit, isFalse);
-      expect(result.unfitBoxes.length, 1);
-      expect(result.unfitBoxes[0].id, 'big');
-    });
-
-    test('stacking: small box placed on top of large box', () {
-      final boxes = [
-        _box('large', 0.8, 0.8, 0.3),
-        _box('small', 0.3, 0.3, 0.3),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 2);
-      expect(result.allBoxesFit, isTrue);
-    });
-
-    test('utilization percent is calculated correctly', () {
-      // Box that fills exactly 50% of the volume
-      final boxes = [_box('half', 1.0, 1.0, 0.5)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.utilizationPercent, closeTo(50, 1));
-    });
-
-    test('BFD sorts largest volume first', () {
-      final boxes = [
-        _box('small', 0.1, 0.1, 0.1),
-        _box('large', 0.5, 0.5, 0.5),
-        _box('medium', 0.3, 0.3, 0.3),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      // Large box should be placed first (loadOrder 1)
-      final largePlacement = result.placements.firstWhere((p) => p.box.id == 'large');
-      expect(largePlacement.loadOrder, 1);
-    });
-
-    test('wheelhouse avoidance works', () {
-      final trunkWithWH = TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 1.0,
-        leftWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-        rightWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-      );
-      // Box that would overlap with wheelhousees if placed at corners
-      final boxes = [_box('a', 0.5, 0.5, 0.2)];
-      final result = AutoLayoutEngine.computeLayout(trunkWithWH, boxes);
-      expect(result.placements.length, 1);
-
-      // Verify not overlapping with left wheelhouse
-      final p = result.placements[0];
-      final pw = p.rotated ? p.box.d : p.box.w;
-      final pd = p.rotated ? p.box.w : p.box.d;
-
-      // Left WH: x=[0, 0.3], z=[0, 0.4], y=[0, 0.3] (뒷축 쪽)
-      final overlapsLeft = p.x < 0.3 && p.x + pw > 0 &&
-          p.z < 0.4 && p.z + pd > 0 &&
-          p.y < 0.3 && p.y + p.box.h > 0;
-      // Right WH: x=[0.7, 1.0], z=[0, 0.4], y=[0, 0.3] (뒷축 쪽)
-      final overlapsRight = p.x < 1.0 && p.x + pw > 0.7 &&
-          p.z < 0.4 && p.z + pd > 0 &&
-          p.y < 0.3 && p.y + p.box.h > 0;
-      expect(overlapsLeft, isFalse);
-      expect(overlapsRight, isFalse);
-    });
-
-    test('ceiling height constraint respected', () {
-      final lowCeilingTrunk = const TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 0.8,
-        leftWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        rightWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        ceilingDrop: 0.3, // significant ceiling drop at the back
-      );
-      // Tall box that only fits near the opening
-      final boxes = [_box('tall', 0.3, 0.3, 0.7)];
-      final result = AutoLayoutEngine.computeLayout(lowCeilingTrunk, boxes);
-      if (result.placements.isNotEmpty) {
-        final p = result.placements[0];
-        // Must be placed where ceiling is high enough
-        final ceilAtZ = lowCeilingTrunk.ceilingHeightAt(p.z);
-        expect(p.y + p.box.h, lessThanOrEqualTo(ceilAtZ + 0.01));
-      }
-    });
-
-    test('rotation is used when needed', () {
-      // Narrow trunk, box only fits when rotated
-      final narrowTrunk = TrunkSpace.custom(w: 0.3, d: 1.0, h: 1.0);
-      final boxes = [_box('wide', 0.5, 0.2, 0.2)]; // w=0.5 > 0.3, but d=0.2 fits
-      final result = AutoLayoutEngine.computeLayout(narrowTrunk, boxes);
-      expect(result.placements.length, 1);
-      expect(result.placements[0].rotated, isTrue);
-    });
-
-    test('load order is sequential', () {
-      final boxes = [
-        _box('a', 0.3, 0.3, 0.3),
-        _box('b', 0.2, 0.2, 0.2),
-        _box('c', 0.1, 0.1, 0.1),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 3);
-      for (int i = 0; i < result.placements.length; i++) {
-        expect(result.placements[i].loadOrder, i + 1);
-      }
+      final free = box('tall2', 30, 30, 90);
+      final r2 = AutoLayoutEngine.computeLayout(sorento, [free]);
+      expect(r2.placements.length, 1);
+      expect(r2.placements.single.laidFlat, isTrue);
+      expectPhysicallyValid(sorento, r2);
     });
   });
 
-  group('AutoLayoutEngine.generateAlternatives', () {
-    test('returns 3 alternatives (one per strategy)', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes = [
-        _box('a', 0.3, 0.3, 0.3),
-        _box('b', 0.2, 0.2, 0.2),
-      ];
-      final alts = AutoLayoutEngine.generateAlternatives(trunk, boxes);
+  group('감사에서 발견된 회귀', () {
+    test('접이식 의자 4개 (85×20×15)는 모두 바닥에 놓인다 — 공중부양 없음', () {
+      final chairs = List.generate(4, (i) => box('c$i', 85, 20, 15));
+      final r = AutoLayoutEngine.computeLayout(sorento, chairs);
+      expect(r.placements.length, 4);
+      for (final p in r.placements) {
+        expect(p.y, 0, reason: '${p.box.id} 는 바닥이어야 한다');
+      }
+      expectPhysicallyValid(sorento, r);
+    });
+
+    test('접이식 의자 8개도 전부 들어간다', () {
+      final chairs = List.generate(8, (i) => box('c$i', 85, 20, 15));
+      final r = AutoLayoutEngine.computeLayout(sorento, chairs);
+      expect(r.allBoxesFit, isTrue);
+      expectPhysicallyValid(sorento, r);
+    });
+
+    test('침낭 12개 (43×20×20)', () {
+      final bags = List.generate(12, (i) => box('b$i', 43, 20, 20));
+      final r = AutoLayoutEngine.computeLayout(sorento, bags);
+      expect(r.allBoxesFit, isTrue);
+      expectPhysicallyValid(sorento, r);
+    });
+
+    test('4인 가족 16개: 591L / 830L 이면 전부 들어가야 한다', () {
+      for (final s in LayoutStrategy.values) {
+        final r = AutoLayoutEngine.computeLayout(sorento, familyBundle(),
+            strategy: s, restarts: 20);
+        expectPhysicallyValid(sorento, r);
+        expect(r.allBoxesFit, isTrue,
+            reason: '$s 미적재: ${r.unfitBoxes.map((b) => b.id)} ${r.unfitReasons}');
+        expect(r.utilizationPercent, greaterThan(60));
+      }
+    });
+
+    test('적용 후 1cm 스냅을 해도 충돌이 생기지 않는다', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, familyBundle());
+      final boxes = applied(r);
+      for (final b in boxes) {
+        b.snapToGrid(0.01);
+      }
+      expect(CollisionDetector(sorento).findAllCollisions(boxes), isEmpty);
+    });
+
+    test('무작위 재시도 없이도 15개 이상, 적재율 65% 이상', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, familyBundle());
+      expectPhysicallyValid(sorento, r);
+      expect(r.placedCount, greaterThanOrEqualTo(15));
+      expect(r.utilizationPercent, greaterThan(65));
+    });
+
+    test('generateAlternatives 는 배치 개수·적재율 순', () {
+      final alts = AutoLayoutEngine.generateAlternatives(sorento, familyBundle());
       expect(alts.length, 3);
-      // Each should have a different strategy
-      final strategies = alts.map((a) => a.strategy).toSet();
-      expect(strategies.length, 3);
-    });
-
-    test('alternatives are sorted by utilization descending', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes = [
-        _box('a', 0.4, 0.4, 0.4),
-        _box('b', 0.3, 0.3, 0.3),
-        _box('c', 0.2, 0.2, 0.2),
-      ];
-      final alts = AutoLayoutEngine.generateAlternatives(trunk, boxes);
-      for (int i = 1; i < alts.length; i++) {
-        expect(alts[i - 1].utilizationPercent,
-            greaterThanOrEqualTo(alts[i].utilizationPercent));
-      }
-    });
-  });
-
-  group('AutoLayoutEngine with real vehicle presets', () {
-    test('Sorento trunk fits multiple boxes', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('cooler', 0.40, 0.30, 0.30),
-        _box('tent', 0.60, 0.20, 0.20),
-        _box('bag', 0.30, 0.30, 0.25),
-        _box('snack', 0.20, 0.20, 0.15),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, greaterThanOrEqualTo(3));
-      expect(result.utilizationPercent, greaterThan(0));
-    });
-
-    test('easyAccess strategy places near opening (high z)', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('a', 0.3, 0.3, 0.3),
-        _box('b', 0.2, 0.2, 0.2),
-      ];
-      final balanced = AutoLayoutEngine.computeLayout(
-          trunk, boxes, strategy: LayoutStrategy.balanced);
-      final easy = AutoLayoutEngine.computeLayout(
-          trunk, boxes, strategy: LayoutStrategy.easyAccess);
-
-      // easyAccess should have higher average z (closer to opening)
-      if (balanced.placements.isNotEmpty && easy.placements.isNotEmpty) {
-        final avgZBalanced = balanced.placements
-            .map((p) => p.z).reduce((a, b) => a + b) / balanced.placements.length;
-        final avgZEasy = easy.placements
-            .map((p) => p.z).reduce((a, b) => a + b) / easy.placements.length;
-        expect(avgZEasy, greaterThanOrEqualTo(avgZBalanced - 0.01));
-      }
-    });
-  });
-
-  group('LayoutStrategy', () {
-    test('label returns Korean text', () {
-      expect(LayoutStrategy.balanced.label, isNotEmpty);
-      expect(LayoutStrategy.maxUtilization.label, isNotEmpty);
-      expect(LayoutStrategy.easyAccess.label, isNotEmpty);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
-  // Stress & Edge-Case Tests (Murat — Test Architect)
-  // ═══════════════════════════════════════════════════════════════════
-
-  group('Edge Cases', () {
-    test('10 identical boxes — no overlaps', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes = List.generate(10, (i) => _box('id_$i', 0.2, 0.2, 0.2));
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-
-      // All should fit (10 * 0.008 = 0.08 m³ vs 1.0 m³ trunk)
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements.length, 10);
-
-      // Verify no pairwise AABB overlap
-      for (int i = 0; i < result.placements.length; i++) {
-        final pi = result.placements[i];
-        final wi = pi.rotated ? pi.box.d : pi.box.w;
-        final di = pi.rotated ? pi.box.w : pi.box.d;
-        for (int j = i + 1; j < result.placements.length; j++) {
-          final pj = result.placements[j];
-          final wj = pj.rotated ? pj.box.d : pj.box.w;
-          final dj = pj.rotated ? pj.box.w : pj.box.d;
-
-          final overlapX = pi.x < pj.x + wj && pi.x + wi > pj.x;
-          final overlapY = pi.y < pj.y + pj.box.h && pi.y + pi.box.h > pj.y;
-          final overlapZ = pi.z < pj.z + dj && pi.z + di > pj.z;
-          final overlaps = overlapX && overlapY && overlapZ;
-          expect(overlaps, isFalse,
-              reason: 'Box ${pi.box.id} overlaps ${pj.box.id}');
+      for (var i = 1; i < alts.length; i++) {
+        final a = alts[i - 1], b = alts[i];
+        expect(a.placedCount >= b.placedCount, isTrue);
+        if (a.placedCount == b.placedCount) {
+          expect(a.utilizationPercent + 1e-9 >= b.utilizationPercent, isTrue);
         }
       }
     });
-
-    test('one huge box fills entire trunk — utilization near 100%', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes = [_box('huge', 1.0, 1.0, 1.0)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 1);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.utilizationPercent, closeTo(100, 1));
-    });
-
-    test('30 tiny boxes (10x10x10cm) all fit in standard trunk', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes =
-          List.generate(30, (i) => _box('tiny_$i', 0.10, 0.10, 0.10));
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      // 30 * 0.001 = 0.03 m³ — should easily fit in 1.0 m³
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements.length, 30);
-    });
-
-    test('box exactly matching trunk dimensions', () {
-      final trunk = TrunkSpace.custom(w: 0.80, d: 0.60, h: 0.50);
-      final boxes = [_box('exact', 0.80, 0.60, 0.50)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 1);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.utilizationPercent, closeTo(100, 1));
-    });
-
-    test('box height equals ceiling at back (z=0) with ceilingDrop', () {
-      // At z=0 ceiling = h - ceilingDrop*(1-0)^2 = 0.8 - 0.2 = 0.6
-      final trunk = const TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 0.8,
-        leftWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        rightWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        ceilingDrop: 0.2,
-      );
-      // Box that is exactly 0.6 tall — can fit at z=0
-      final boxes = [_box('tall_back', 0.3, 0.3, 0.60)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements.length, 1);
-      // If placed at z=0, verify height respects ceiling
-      final p = result.placements[0];
-      final ceilAtZ = trunk.ceilingHeightAt(p.z);
-      final ceilAtZEnd =
-          trunk.ceilingHeightAt(p.z + (p.rotated ? p.box.w : p.box.d));
-      final minCeiling = ceilAtZ < ceilAtZEnd ? ceilAtZ : ceilAtZEnd;
-      expect(p.y + p.box.h, lessThanOrEqualTo(minCeiling + 0.01));
-    });
   });
 
-  group('Property-Based Validation', () {
-    // Helper to run property checks on any result
-    void verifyNoOverlaps(AutoLayoutResult result) {
-      final placements = result.placements;
-      for (int i = 0; i < placements.length; i++) {
-        final pi = placements[i];
-        final wi = pi.rotated ? pi.box.d : pi.box.w;
-        final di = pi.rotated ? pi.box.w : pi.box.d;
-        for (int j = i + 1; j < placements.length; j++) {
-          final pj = placements[j];
-          final wj = pj.rotated ? pj.box.d : pj.box.w;
-          final dj = pj.rotated ? pj.box.w : pj.box.d;
-
-          final overlapX = pi.x < pj.x + wj + -0.001 && pi.x + wi > pj.x + 0.001;
-          final overlapY =
-              pi.y < pj.y + pj.box.h - 0.001 && pi.y + pi.box.h > pj.y + 0.001;
-          final overlapZ =
-              pi.z < pj.z + dj - 0.001 && pi.z + di > pj.z + 0.001;
-          expect(overlapX && overlapY && overlapZ, isFalse,
-              reason:
-                  'Overlap: ${pi.box.id}@(${pi.x},${pi.y},${pi.z}) vs ${pj.box.id}@(${pj.x},${pj.y},${pj.z})');
+  group('프로퍼티 기반: 무작위 장비 셋', () {
+    for (final preset in [
+      TrunkPreset.sorento,
+      TrunkPreset.tucson,
+      TrunkPreset.avante,
+      TrunkPreset.carnival,
+    ]) {
+      test('${preset.name}: 200회 × 최대 25개, 항상 물리적으로 유효', () {
+        final trunk = preset.toTrunkSpace()!;
+        final rnd = math.Random(preset.index * 1000 + 7);
+        var totalPlaced = 0, totalBoxes = 0;
+        final sw = Stopwatch()..start();
+        for (var iter = 0; iter < 200; iter++) {
+          final n = 1 + rnd.nextInt(25);
+          final boxes = List.generate(n, (i) {
+            final w = 10 + rnd.nextInt(80).toDouble();
+            final d = 10 + rnd.nextInt(60).toDouble();
+            final h = 5 + rnd.nextInt(50).toDouble();
+            return box('r$i', w, d, h, upright: rnd.nextBool());
+          });
+          final s = LayoutStrategy.values[iter % 3];
+          final r = AutoLayoutEngine.computeLayout(trunk, boxes, strategy: s);
+          expectPhysicallyValid(trunk, r);
+          totalPlaced += r.placedCount;
+          totalBoxes += n;
         }
-      }
+        sw.stop();
+        // 성능 회귀 방지: 200회 합계가 20초를 넘으면 안 된다
+        expect(sw.elapsedMilliseconds, lessThan(20000));
+        // 완전 실패 방지 (아반떼는 작은 세단 트렁크라 큰 박스가 많이 탈락한다)
+        expect(totalPlaced / totalBoxes,
+            greaterThan(preset == TrunkPreset.avante ? 0.25 : 0.5));
+      });
     }
 
-    test('no placement overlaps — mixed box sizes on Sorento', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('a', 0.40, 0.30, 0.30),
-        _box('b', 0.30, 0.30, 0.25),
-        _box('c', 0.20, 0.20, 0.20),
-        _box('d', 0.50, 0.25, 0.20),
-        _box('e', 0.15, 0.15, 0.15),
-        _box('f', 0.35, 0.20, 0.25),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      verifyNoOverlaps(result);
-    });
-
-    test('all placements within bounds', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('a', 0.40, 0.30, 0.30),
-        _box('b', 0.25, 0.25, 0.20),
-        _box('c', 0.30, 0.20, 0.35),
-        _box('d', 0.20, 0.20, 0.15),
-        _box('e', 0.35, 0.30, 0.25),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-
-      for (final p in result.placements) {
-        final pw = p.rotated ? p.box.d : p.box.w;
-        final pd = p.rotated ? p.box.w : p.box.d;
-        expect(p.x, greaterThanOrEqualTo(-0.01),
-            reason: '${p.box.id} x=${p.x} out of bounds');
-        expect(p.y, greaterThanOrEqualTo(-0.01),
-            reason: '${p.box.id} y=${p.y} out of bounds');
-        expect(p.z, greaterThanOrEqualTo(-0.01),
-            reason: '${p.box.id} z=${p.z} out of bounds');
-        expect(p.x + pw, lessThanOrEqualTo(trunk.w + 0.01),
-            reason: '${p.box.id} x+w=${p.x + pw} exceeds trunk.w=${trunk.w}');
-        expect(p.z + pd, lessThanOrEqualTo(trunk.d + 0.01),
-            reason: '${p.box.id} z+d=${p.z + pd} exceeds trunk.d=${trunk.d}');
-      }
-    });
-
-    test('all placements respect ceiling height', () {
-      final trunk = TrunkSpace.sorento(); // has ceilingDrop=0.12
-      final boxes = [
-        _box('a', 0.30, 0.30, 0.60),
-        _box('b', 0.25, 0.25, 0.50),
-        _box('c', 0.20, 0.40, 0.40),
-        _box('d', 0.35, 0.20, 0.30),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-
-      for (final p in result.placements) {
-        final pd = p.rotated ? p.box.w : p.box.d;
-        final ceilStart = trunk.ceilingHeightAt(p.z);
-        final ceilEnd = trunk.ceilingHeightAt(p.z + pd);
-        final minCeiling = ceilStart < ceilEnd ? ceilStart : ceilEnd;
-        expect(p.y + p.box.h, lessThanOrEqualTo(minCeiling + 0.01),
-            reason:
-                '${p.box.id} top=${p.y + p.box.h} exceeds ceiling=$minCeiling at z=${p.z}');
-      }
-    });
-
-    test('no placement inside wheelhouse', () {
-      final trunk = TrunkSpace.sorento();
-      final lw = trunk.leftWheelhouse;
-      final rw = trunk.rightWheelhouse;
-      final boxes = [
-        _box('a', 0.30, 0.30, 0.25),
-        _box('b', 0.25, 0.25, 0.20),
-        _box('c', 0.20, 0.20, 0.20),
-        _box('d', 0.40, 0.30, 0.25),
-        _box('e', 0.15, 0.35, 0.15),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-
-      for (final p in result.placements) {
-        final pw = p.rotated ? p.box.d : p.box.w;
-        final pd = p.rotated ? p.box.w : p.box.d;
-
-        // Left wheelhouse: x=[0, lw.w], z=[0, lw.d], y=[0, lw.h] (뒷축 쪽)
-        if (lw.w > 0 && lw.d > 0 && lw.h > 0) {
-          final olX = p.x < lw.w && p.x + pw > 0;
-          final olZ = p.z < lw.d && p.z + pd > 0;
-          final olY = p.y < lw.h && p.y + p.box.h > 0;
-          expect(olX && olY && olZ, isFalse,
-              reason: '${p.box.id} overlaps left wheelhouse');
-        }
-
-        // Right wheelhouse: x=[trunk.w-rw.w, trunk.w], z=[0, rw.d], y=[0, rw.h] (뒷축 쪽)
-        if (rw.w > 0 && rw.d > 0 && rw.h > 0) {
-          final orX = p.x < trunk.w && p.x + pw > trunk.w - rw.w;
-          final orZ = p.z < rw.d && p.z + pd > 0;
-          final orY = p.y < rw.h && p.y + p.box.h > 0;
-          expect(orX && orY && orZ, isFalse,
-              reason: '${p.box.id} overlaps right wheelhouse');
-        }
-      }
-    });
-
-    test('utilization math is correct — sum of volumes / trunk volume', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('a', 0.40, 0.30, 0.30),
-        _box('b', 0.25, 0.25, 0.20),
-        _box('c', 0.30, 0.20, 0.25),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-
-      // Manually calculate expected utilization
-      final lhVol = trunk.leftWheelhouse.w *
-          trunk.leftWheelhouse.d *
-          trunk.leftWheelhouse.h;
-      final rhVol = trunk.rightWheelhouse.w *
-          trunk.rightWheelhouse.d *
-          trunk.rightWheelhouse.h;
-      final trunkVol = trunk.w * trunk.d * trunk.h - lhVol - rhVol;
-
-      double boxVol = 0;
-      for (final p in result.placements) {
-        boxVol += p.box.w * p.box.d * p.box.h;
-      }
-      final expectedUtil = (boxVol / trunkVol * 100).clamp(0, 100);
-      expect(result.utilizationPercent, closeTo(expectedUtil, 0.01));
-    });
-  });
-
-  group('Vehicle-Specific Tests', () {
-    test('Sorento with typical family camping gear', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('tent', 0.60, 0.20, 0.20),       // rolled tent bag
-        _box('cooler', 0.40, 0.30, 0.30),      // cooler box
-        _box('chair1', 0.12, 0.12, 0.80),      // folded chair (tall)
-        _box('chair2', 0.12, 0.12, 0.80),
-        _box('chair3', 0.12, 0.12, 0.80),
-        _box('chair4', 0.12, 0.12, 0.80),
-        _box('table', 0.60, 0.10, 0.10),       // folded table
-        _box('sleepbag1', 0.25, 0.25, 0.50),   // sleeping bag
-        _box('sleepbag2', 0.25, 0.25, 0.50),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      // At least most items should fit in Sorento's decent trunk
-      expect(result.placements.length, greaterThanOrEqualTo(5),
-          reason: 'Sorento should fit at least 5 of 9 camping items');
-      expect(result.utilizationPercent, greaterThan(0));
-    });
-
-    test('Avante (smallest trunk) handles tight space gracefully', () {
-      final trunk = TrunkSpace.avante(); // 1.02 x 0.71 x 0.43
-      final boxes = [
-        _box('suitcase', 0.50, 0.35, 0.25),
-        _box('bag1', 0.30, 0.25, 0.20),
-        _box('bag2', 0.30, 0.25, 0.20),
-        _box('laptop', 0.40, 0.30, 0.05),
-        _box('grocery', 0.35, 0.25, 0.25),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      // Should place some boxes without crashing
-      expect(result.placements.length, greaterThanOrEqualTo(1));
-      // All placed boxes must respect the low ceiling
-      for (final p in result.placements) {
-        expect(p.y + p.box.h, lessThanOrEqualTo(trunk.h + 0.01),
-            reason: '${p.box.id} exceeds Avante trunk height');
-      }
-    });
-
-    test('Carnival (widest trunk) distributes boxes properly', () {
-      final trunk = TrunkSpace.carnival(); // 1.25 x 0.85 x 0.88
-      final boxes = [
-        _box('a', 0.40, 0.30, 0.30),
-        _box('b', 0.40, 0.30, 0.30),
-        _box('c', 0.40, 0.30, 0.30),
-        _box('d', 0.40, 0.30, 0.30),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements.length, 4);
-
-      // Verify spread: not all boxes at same x
-      final xPositions = result.placements.map((p) => p.x).toSet();
-      expect(xPositions.length, greaterThan(1),
-          reason: 'Boxes should spread across the wide Carnival trunk');
-    });
-  });
-
-  group('Strategy Comparison', () {
-    test('maxUtilization packs at least as much as easyAccess', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('a', 0.40, 0.30, 0.30),
-        _box('b', 0.30, 0.30, 0.25),
-        _box('c', 0.25, 0.20, 0.20),
-        _box('d', 0.35, 0.25, 0.30),
-        _box('e', 0.20, 0.20, 0.15),
-        _box('f', 0.30, 0.25, 0.20),
-      ];
-      final maxUtil = AutoLayoutEngine.computeLayout(
-        trunk, boxes,
-        strategy: LayoutStrategy.maxUtilization,
-      );
-      final easyAccess = AutoLayoutEngine.computeLayout(
-        trunk, boxes,
-        strategy: LayoutStrategy.easyAccess,
-      );
-      expect(maxUtil.utilizationPercent,
-          greaterThanOrEqualTo(easyAccess.utilizationPercent - 0.01),
-          reason:
-              'maxUtilization (${maxUtil.utilizationPercent}%) should pack >= easyAccess (${easyAccess.utilizationPercent}%)');
-    });
-
-    test('easyAccess puts items closer to opening (higher avg z)', () {
-      final trunk = TrunkSpace.custom(w: 1.0, d: 1.0, h: 1.0);
-      final boxes = [
-        _box('a', 0.3, 0.3, 0.3),
-        _box('b', 0.25, 0.25, 0.25),
-        _box('c', 0.2, 0.2, 0.2),
-        _box('d', 0.15, 0.15, 0.15),
-      ];
-      final balanced = AutoLayoutEngine.computeLayout(
-        trunk, boxes,
-        strategy: LayoutStrategy.balanced,
-      );
-      final easy = AutoLayoutEngine.computeLayout(
-        trunk, boxes,
-        strategy: LayoutStrategy.easyAccess,
-      );
-
-      if (balanced.placements.isNotEmpty && easy.placements.isNotEmpty) {
-        double avgZ(AutoLayoutResult r) =>
-            r.placements.map((p) => p.z).reduce((a, b) => a + b) /
-            r.placements.length;
-        expect(avgZ(easy), greaterThanOrEqualTo(avgZ(balanced) - 0.01),
-            reason:
-                'easyAccess avgZ=${avgZ(easy)} should be >= balanced avgZ=${avgZ(balanced)}');
+    test('작은 박스만 있으면 항상 전부 들어간다', () {
+      final rnd = math.Random(99);
+      for (var iter = 0; iter < 50; iter++) {
+        final boxes = List.generate(6, (i) {
+          return box('s$i', 10 + rnd.nextInt(20).toDouble(),
+              10 + rnd.nextInt(20).toDouble(), 5 + rnd.nextInt(15).toDouble());
+        });
+        final r = AutoLayoutEngine.computeLayout(sorento, boxes);
+        expect(r.allBoxesFit, isTrue, reason: '$iter: ${r.unfitReasons}');
+        expectPhysicallyValid(sorento, r);
       }
     });
   });
 
-  group('Performance — 3초 내 결과', () {
-    test('20 boxes on Sorento completes under 3 seconds', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = List.generate(20, (i) => _box('box_$i', 0.15 + (i % 5) * 0.05, 0.15 + (i % 3) * 0.05, 0.10 + (i % 4) * 0.05));
-      final sw = Stopwatch()..start();
-      final alts = AutoLayoutEngine.generateAlternatives(trunk, boxes);
-      sw.stop();
-      expect(sw.elapsedMilliseconds, lessThan(3000),
-          reason: '20 boxes x 3 strategies took ${sw.elapsedMilliseconds}ms');
-      expect(alts.length, 3);
-    });
-
-    test('30 boxes on Carnival completes under 3 seconds', () {
-      final trunk = TrunkSpace.carnival();
-      final boxes = List.generate(30, (i) => _box('box_$i', 0.10 + (i % 4) * 0.05, 0.10 + (i % 3) * 0.05, 0.10 + (i % 5) * 0.03));
-      final sw = Stopwatch()..start();
-      final alts = AutoLayoutEngine.generateAlternatives(trunk, boxes);
-      sw.stop();
-      expect(sw.elapsedMilliseconds, lessThan(3000),
-          reason: '30 boxes x 3 strategies took ${sw.elapsedMilliseconds}ms');
-      expect(alts.length, 3);
-    });
-  });
-
-  group('Wheelhouse Space Utilization', () {
-    test('items can be placed ON TOP of wheelhouse', () {
-      final trunkWithWH = TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 1.0,
-        leftWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-        rightWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-      );
-      // Fill the floor first, then check if wheelhouse top is used
-      final boxes = [
-        _box('floor1', 0.4, 0.4, 0.3), // center, takes floor space
-        _box('floor2', 0.4, 0.4, 0.3), // fills more floor
-        _box('floor3', 0.4, 0.4, 0.3), // more floor
-        _box('floor4', 0.4, 0.4, 0.3), // more floor
-        _box('ontop', 0.25, 0.3, 0.2),  // should go on wheelhouse top
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunkWithWH, boxes);
-      expect(result.allBoxesFit, isTrue,
-          reason: 'All 5 boxes should fit including on wheelhouse top');
-    });
-
-    test('wheelhouse top treated as valid floor for scoring', () {
-      final trunkWithWH = TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 1.0,
-        leftWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-        rightWheelhouse: const Wheelhouse(w: 0.3, d: 0.4, h: 0.3),
-      );
-      // Many boxes that need to use wheelhouse-top space
-      final boxes = List.generate(8, (i) => _box('b$i', 0.25, 0.25, 0.25));
-      final result = AutoLayoutEngine.computeLayout(trunkWithWH, boxes);
-      expect(result.allBoxesFit, isTrue);
-
-      // Verify no pairwise overlaps
-      for (int i = 0; i < result.placements.length; i++) {
-        final pi = result.placements[i];
-        final wi = pi.rotated ? pi.box.d : pi.box.w;
-        final di = pi.rotated ? pi.box.w : pi.box.d;
-        for (int j = i + 1; j < result.placements.length; j++) {
-          final pj = result.placements[j];
-          final wj = pj.rotated ? pj.box.d : pj.box.w;
-          final dj = pj.rotated ? pj.box.w : pj.box.d;
-          final overlapX = pi.x < pj.x + wj && pi.x + wi > pj.x;
-          final overlapY = pi.y < pj.y + pj.box.h && pi.y + pi.box.h > pj.y;
-          final overlapZ = pi.z < pj.z + dj && pi.z + di > pj.z;
-          expect(overlapX && overlapY && overlapZ, isFalse,
-              reason: 'Box ${pi.box.id} overlaps ${pj.box.id}');
-        }
-      }
-    });
-
-    test('items beside wheelhouse with matching height create flat layer', () {
-      final trunk = TrunkSpace.sorento();
-      final whH = trunk.leftWheelhouse.h; // 0.30
-      // Box that matches wheelhouse height placed beside it
-      final boxes = [
-        _box('match', 0.30, 0.30, whH), // height matches wheelhouse
-        _box('small', 0.20, 0.20, 0.15),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements.length, 2);
-    });
-
-    test('Sorento: 6 camping boxes use wheelhouse-adjacent space', () {
-      final trunk = TrunkSpace.sorento();
-      final boxes = [
-        _box('cooler', 0.40, 0.30, 0.30),
-        _box('tent', 0.60, 0.20, 0.20),
-        _box('bag1', 0.30, 0.30, 0.25),
-        _box('bag2', 0.30, 0.30, 0.25),
-        _box('chair', 0.12, 0.12, 0.70),
-        _box('snack', 0.20, 0.20, 0.15),
-      ];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.placements.length, 6);
-
-      // Verify no wheelhouse overlap
-      for (final p in result.placements) {
-        final pw = p.rotated ? p.box.d : p.box.w;
-        final pd = p.rotated ? p.box.w : p.box.d;
-        final lw = trunk.leftWheelhouse;
-        final rw = trunk.rightWheelhouse;
-        final olL = p.x < lw.w && p.x + pw > 0 &&
-            p.z < lw.d && p.z + pd > 0 &&
-            p.y < lw.h && p.y + p.box.h > 0;
-        final olR = p.x < trunk.w && p.x + pw > trunk.w - rw.w &&
-            p.z < rw.d && p.z + pd > 0 &&
-            p.y < rw.h && p.y + p.box.h > 0;
-        expect(olL, isFalse, reason: '${p.box.id} overlaps left WH');
-        expect(olR, isFalse, reason: '${p.box.id} overlaps right WH');
+  group('적재 순서', () {
+    test('깊은(z 작은) 박스가 먼저, 같은 구간이면 낮은 박스가 먼저', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, familyBundle());
+      final ps = List<BoxPlacement>.from(r.placements)
+        ..sort((a, b) => a.loadOrder.compareTo(b.loadOrder));
+      for (var i = 1; i < ps.length; i++) {
+        final a = ps[i - 1], b = ps[i];
+        final za = (a.z / 0.25).floor(), zb = (b.z / 0.25).floor();
+        expect(za <= zb, isTrue, reason: '${a.box.id} → ${b.box.id}');
+        if (za == zb) expect(a.y <= b.y + 1e-9, isTrue);
       }
     });
   });
 
-  group('Regression Guards', () {
-    test('empty trunk with auto-layout — 0 boxes, no crash', () {
-      final trunk = TrunkSpace.sorento();
-      final result = AutoLayoutEngine.computeLayout(trunk, []);
-      expect(result.placements, isEmpty);
-      expect(result.allBoxesFit, isTrue);
-      expect(result.unfitBoxes, isEmpty);
-      expect(result.utilizationPercent, 0);
-      expect(result.strategy, LayoutStrategy.balanced);
+  group('적재율', () {
+    test('실사용 부피는 직육면체보다 작다 (형상 반영)', () {
+      final boxVol = sorento.w * sorento.d * sorento.h;
+      expect(sorento.usableVolume, lessThan(boxVol));
+      expect(sorento.usableVolume, greaterThan(boxVol * 0.7));
     });
 
-    test('single oversized box — too tall for ceiling, in unfitBoxes', () {
-      // Trunk with ceiling drop: at z=0, ceiling = 0.8 - 0.3 = 0.5
-      // At z=d, ceiling = 0.8 (full height)
-      // A box that is 0.85 tall won't fit anywhere since max ceiling = 0.8
-      final trunk = const TrunkSpace(
-        w: 1.0,
-        d: 1.0,
-        h: 0.8,
-        leftWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        rightWheelhouse: Wheelhouse(w: 0, d: 0, h: 0),
-        ceilingDrop: 0.3,
-      );
-      final boxes = [_box('tooTall', 0.3, 0.3, 0.85)];
-      final result = AutoLayoutEngine.computeLayout(trunk, boxes);
-      expect(result.placements, isEmpty);
-      expect(result.allBoxesFit, isFalse);
-      expect(result.unfitBoxes.length, 1);
-      expect(result.unfitBoxes[0].id, 'tooTall');
+    test('적재율은 배치된 박스 부피 / 실사용 부피', () {
+      final r = AutoLayoutEngine.computeLayout(sorento, [box('a', 50, 50, 40)]);
+      final expected = 0.5 * 0.5 * 0.4 / sorento.usableVolume * 100;
+      expect(r.utilizationPercent, closeTo(expected, 1e-6));
     });
   });
 }

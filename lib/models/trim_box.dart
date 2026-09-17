@@ -17,6 +17,9 @@ class TrimBox {
   Color color;
   BoxCategory category;
 
+  /// 세워서만 실을 수 있는 짐 (쿨러, 버너, 수납함 등). 자동배치가 눕히지 않는다.
+  bool keepUpright;
+
   /// Transient display property: load order from auto-layout (1-based).
   /// Not persisted in JSON.
   int? loadOrder;
@@ -33,6 +36,7 @@ class TrimBox {
     this.rotY = 0,
     required this.color,
     this.category = BoxCategory.custom,
+    this.keepUpright = false,
     this.loadOrder,
   });
 
@@ -69,23 +73,25 @@ class TrimBox {
     int? rotY,
     Color? color,
     BoxCategory? category,
+    bool? keepUpright,
     int? loadOrder,
   }) {
-      final copy = TrimBox(
-        id: id ?? this.id,
-        label: label ?? this.label,
-        w: w ?? this.w,
-        d: d ?? this.d,
-        h: h ?? this.h,
-        x: x ?? this.x,
-        y: y ?? this.y,
-        z: z ?? this.z,
-        rotY: rotY ?? this.rotY,
-        color: color ?? this.color,
-        category: category ?? this.category,
-      );
-      copy.loadOrder = loadOrder ?? this.loadOrder;
-      return copy;
+    final copy = TrimBox(
+      id: id ?? this.id,
+      label: label ?? this.label,
+      w: w ?? this.w,
+      d: d ?? this.d,
+      h: h ?? this.h,
+      x: x ?? this.x,
+      y: y ?? this.y,
+      z: z ?? this.z,
+      rotY: rotY ?? this.rotY,
+      color: color ?? this.color,
+      category: category ?? this.category,
+      keepUpright: keepUpright ?? this.keepUpright,
+    );
+    copy.loadOrder = loadOrder ?? this.loadOrder;
+    return copy;
   }
 
   Map<String, dynamic> toJson() => {
@@ -96,6 +102,7 @@ class TrimBox {
         'rotY': rotY,
         'color': color.toARGB32(),
         if (category != BoxCategory.custom) 'category': category.index,
+        if (keepUpright) 'upright': true,
       };
 
   factory TrimBox.fromJson(Map<String, dynamic> json) {
@@ -116,6 +123,7 @@ class TrimBox {
           ? BoxCategory.values[(json['category'] as int)
               .clamp(0, BoxCategory.values.length - 1)]
           : BoxCategory.custom,
+      keepUpright: json['upright'] == true,
     );
   }
 }

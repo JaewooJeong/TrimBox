@@ -317,11 +317,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   // ──── 적재율 계산 ────
 
-  double _totalTrunkVolume() {
-    final lhVol = _space.leftWheelhouse.w * _space.leftWheelhouse.d * _space.leftWheelhouse.h;
-    final rhVol = _space.rightWheelhouse.w * _space.rightWheelhouse.d * _space.rightWheelhouse.h;
-    return _space.w * _space.d * _space.h - lhVol - rhVol;
-  }
+  double _totalTrunkVolume() => _space.usableVolume;
 
   double _usedVolume() {
     return _boxes.fold<double>(0.0, (sum, b) => sum + b.w * b.d * b.h);
@@ -943,6 +939,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           h: item['h'] as double,
           color: selectedColor,
           category: boxCategory,
+          keepUpright: item['upright'] == true,
         );
 
         _placeNewBox(newBox);
@@ -1548,7 +1545,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
     // 계산 시간 측정
     final sw = Stopwatch()..start();
-    final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes);
+    final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes, restarts: 24);
     sw.stop();
     final computeMs = sw.elapsedMilliseconds;
 
@@ -1573,7 +1570,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     if (_boxes.isEmpty) return;
 
     final sw = Stopwatch()..start();
-    final result = AutoLayoutEngine.computeLayout(_space, _boxes);
+    final result = AutoLayoutEngine.computeLayout(_space, _boxes, restarts: 24);
     sw.stop();
 
     if (!mounted) return;
@@ -1585,17 +1582,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     setState(() {
       for (final placement in result.placements) {
         final box = _boxes.firstWhere((b) => b.id == placement.box.id);
-        box.x = placement.x;
-        box.y = placement.y;
-        box.z = placement.z;
-        if (placement.rotated && box.rotY % 180 == 0) {
-          box.rotY = 90;
-        } else if (!placement.rotated && box.rotY % 180 != 0) {
-          box.rotY = 0;
-        }
-        box.snapToGrid(_space.gridUnit);
-        box.clampTo(_space.w, _space.d);
-        box.loadOrder = placement.loadOrder;
+        placement.applyTo(box);
       }
 
       // Move unfit boxes to overflow area (just outside trunk opening, spread apart)
@@ -1617,6 +1604,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     }
   }
 
+  /// "라벨 — 사유" (사유가 있을 때)
+  String _labelWithReason(AutoLayoutResult result, TrimBox b) {
+    final label = b.label.isNotEmpty ? b.label : b.id;
+    final reason = result.unfitReasons[b.id];
+    return reason == null ? label : '$label — $reason';
+  }
+
   void _showVerdictSnackBar(AutoLayoutResult result) {
     final pct = result.utilizationPercent.round();
     final placed = result.placements.length;
@@ -1628,7 +1622,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     String snackMsg = msg;
     if (result.unfitBoxes.isNotEmpty) {
       final unfitLabels = result.unfitBoxes
-          .map((b) => b.label.isNotEmpty ? b.label : b.id)
+          .map((b) => _labelWithReason(result, b))
           .join(', ');
       snackMsg = '$msg\n적재 불가: $unfitLabels';
     }
@@ -1867,7 +1861,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         } else {
           // SOME boxes don't fit
           final unfitLabels = result.unfitBoxes
-              .map((b) => b.label.isNotEmpty ? b.label : b.id)
+              .map((b) => _labelWithReason(result, b))
               .toList();
 
           return AlertDialog(
@@ -2352,10 +2346,11 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
         ElevatedButton(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF4DA3FF),
+            foregroundColor: Colors.white,
           ),
           onPressed: () =>
               Navigator.pop(context, widget.alternatives[_selectedIndex]),
-          child: const Text('적용'),
+          child: const Text('이 배치 적용'),
         ),
       ],
     );

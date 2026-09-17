@@ -59,16 +59,16 @@ void main() {
       // 모든 배치된 박스가 트렁크 안에 있는지 검증
       final cd = CollisionDetector(trunk);
       for (final p in result.placements) {
-        final placed = p.box.copyWith(x: p.x, y: p.y, z: p.z);
-        if (p.rotated) placed.rotate90();
+        final placed = p.box.copyWith();
+        p.applyTo(placed);
         expect(cd.isOutOfBounds(placed), isFalse,
             reason: '${p.box.label} is out of bounds');
       }
 
       // 배치된 박스끼리 겹치지 않는지 검증
       final placedBoxes = result.placements.map((p) {
-        final b = p.box.copyWith(x: p.x, y: p.y, z: p.z);
-        if (p.rotated) b.rotate90();
+        final b = p.box.copyWith();
+        p.applyTo(b);
         return b;
       }).toList();
 
@@ -236,8 +236,8 @@ void main() {
       // 배치 결과로 박스 위치 설정
       final placed = <TrimBox>[];
       for (final p in result.placements) {
-        final b = p.box.copyWith(x: p.x, y: p.y, z: p.z);
-        if (p.rotated) b.rotate90();
+        final b = p.box.copyWith();
+        p.applyTo(b);
         placed.add(b);
       }
 
@@ -257,8 +257,8 @@ void main() {
       final cd = CollisionDetector(trunk);
 
       for (final p in result.placements) {
-        final b = p.box.copyWith(x: p.x, y: p.y, z: p.z);
-        if (p.rotated) b.rotate90();
+        final b = p.box.copyWith();
+        p.applyTo(b);
         expect(cd.overlapsLeftWheelhouse(b), isFalse,
             reason: '${b.label} overlaps left wheelhouse');
         expect(cd.overlapsRightWheelhouse(b), isFalse,

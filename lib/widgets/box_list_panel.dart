@@ -416,13 +416,8 @@ class BoxListPanel extends StatelessWidget {
     // 부피 점유율
     final totalBoxVol = boxes.fold<double>(
         0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
-    final lhVol = space.leftWheelhouse.w *
-        space.leftWheelhouse.d *
-        space.leftWheelhouse.h;
-    final rhVol = space.rightWheelhouse.w *
-        space.rightWheelhouse.d *
-        space.rightWheelhouse.h;
-    final totalSpaceVol = space.w * space.d * space.h - lhVol - rhVol;
+    // 화면 오버레이·자동배치와 같은 분모 (천장 드롭·테이퍼·휠하우스 반영)
+    final totalSpaceVol = space.usableVolume;
     final volRatio = totalSpaceVol > 0
         ? (totalBoxVol / totalSpaceVol).clamp(0.0, 1.0)
         : 0.0;
@@ -444,7 +439,8 @@ class BoxListPanel extends StatelessWidget {
       final ceilAtZ2 = space.ceilingHeightAt(b.z + b.effectiveD);
       final minCeil = ceilAtZ1 < ceilAtZ2 ? ceilAtZ1 : ceilAtZ2;
       final over = b.y + b.h - minCeil;
-      if (over > 0.001) {
+      // CollisionDetector.isOverHeight 와 같은 5mm 허용 오차
+      if (over > 0.005) {
         final name = b.label.isNotEmpty ? b.label : b.id;
         overHeightBoxes.add('$name (+${(over * 100).round()}cm)');
       }

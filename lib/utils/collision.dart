@@ -7,15 +7,20 @@ class CollisionDetector {
 
   const CollisionDetector(this.space);
 
+  /// 겹침 판정 허용 오차 (0.5mm). 1cm 격자 스냅과 부동소수점 반올림으로
+  /// 맞닿은 박스가 겹침으로 오판되는 것을 막는다.
+  static const double overlapTol = 0.0005;
+
   /// 두 박스가 겹치는지 확인 (AABB)
   bool boxesOverlap(TrimBox a, TrimBox b) {
     if (a.id == b.id) return false;
-    return a.x < b.x + b.effectiveW &&
-        a.x + a.effectiveW > b.x &&
-        a.z < b.z + b.effectiveD &&
-        a.z + a.effectiveD > b.z &&
-        a.y < b.y + b.h &&
-        a.y + a.h > b.y;
+    const t = overlapTol;
+    return a.x < b.x + b.effectiveW - t &&
+        a.x + a.effectiveW > b.x + t &&
+        a.z < b.z + b.effectiveD - t &&
+        a.z + a.effectiveD > b.z + t &&
+        a.y < b.y + b.h - t &&
+        a.y + a.h > b.y + t;
   }
 
   /// 박스가 트렁크 경계를 벗어나는지 확인 (taper/topNarrow 포함)
