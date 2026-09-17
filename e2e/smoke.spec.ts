@@ -46,8 +46,8 @@ const D = {
   bundleFamily: [608, 430], // 4인 가족 캠핑 카드
   bundleSolo: [778, 430], // 솔로 백패킹 카드
   dialogAdd: [790, 744], // 추가
-  quickCheck: [1029, 799], // 들어갈까? (적재 순서 가이드 버튼이 생기면 한 줄 위로 올라온다)
-  autoLayout: [1180, 799], // 자동 배치
+  quickCheck: [1029, 773], // 들어갈까? (통계 영역의 상태 행 1줄 포함)
+  autoLayout: [1180, 773], // 자동 배치
 } as const;
 
 test.describe('데스크톱', () => {

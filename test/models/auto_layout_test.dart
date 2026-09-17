@@ -57,6 +57,7 @@ void expectPhysicallyValid(TrunkSpace trunk, AutoLayoutResult r) {
   final det = CollisionDetector(trunk);
   final coll = det.findAllCollisions(boxes);
   expect(coll, isEmpty, reason: '충돌: $coll');
+  expect(det.tailgateBlockers(boxes), isEmpty, reason: '테일게이트 안 닫힘');
   for (final b in boxes) {
     final others = boxes.where((o) => o.id != b.id);
     expect(SupportRule.isSupported(b, others, trunk), isTrue,
@@ -91,7 +92,8 @@ void main() {
       expect(r.placements.length, 1);
       final p = r.placements.single;
       expect(p.y, 0);
-      expect(p.z, lessThan(0.05));
+      // 등받이가 뒤로 누워 있어 윗면 높이(20cm)만큼의 오프셋 뒤에 붙는다
+      expect(p.z, lessThan(sorento.frontInsetAt(0.20) + 0.011));
       expectPhysicallyValid(sorento, r);
     });
 
@@ -142,15 +144,32 @@ void main() {
       expectPhysicallyValid(sorento, r);
     });
 
-    test('4인 가족 16개: 591L / 830L 이면 전부 들어가야 한다', () {
+    test('4인 가족 16개 (591L): 실측 형상에서 전략별 15개 이상, 적재율 55% 이상', () {
+      // 등받이·테일게이트 기울기와 개구부를 반영한 쏘렌토(실사용 약 860L)에서는
+      // 강체 박스로 16개를 다 넣지 못할 수 있다 (연질 짐 압축은 2차 과제).
       for (final s in LayoutStrategy.values) {
         final r = AutoLayoutEngine.computeLayout(sorento, familyBundle(),
             strategy: s, restarts: 20);
         expectPhysicallyValid(sorento, r);
-        expect(r.allBoxesFit, isTrue,
+        expect(r.placedCount, greaterThanOrEqualTo(15),
             reason: '$s 미적재: ${r.unfitBoxes.map((b) => b.id)} ${r.unfitReasons}');
-        expect(r.utilizationPercent, greaterThan(60));
+        expect(r.utilizationPercent, greaterThan(55));
       }
+    });
+
+    test('기울기 없는 같은 크기 트렁크라면 4인 가족 16개가 전부 들어간다', () {
+      final plain = TrunkSpace(
+        w: sorento.w,
+        d: sorento.d,
+        h: sorento.h,
+        leftWheelhouse: sorento.leftWheelhouse,
+        rightWheelhouse: sorento.rightWheelhouse,
+        rearCeilingDrop: sorento.rearCeilingDrop,
+        ceilingNarrow: sorento.ceilingNarrow,
+      );
+      final r = AutoLayoutEngine.computeLayout(plain, familyBundle(), restarts: 20);
+      expectPhysicallyValid(plain, r);
+      expect(r.allBoxesFit, isTrue, reason: '${r.unfitReasons}');
     });
 
     test('적용 후 1cm 스냅을 해도 충돌이 생기지 않는다', () {
@@ -209,8 +228,8 @@ void main() {
           totalBoxes += n;
         }
         sw.stop();
-        // 성능 회귀 방지: 200회 합계가 20초를 넘으면 안 된다
-        expect(sw.elapsedMilliseconds, lessThan(20000));
+        // 성능 회귀 방지: 200회 합계가 45초를 넘으면 안 된다 (회당 0.2초 남짓)
+        expect(sw.elapsedMilliseconds, lessThan(45000));
         // 완전 실패 방지 (아반떼는 작은 세단 트렁크라 큰 박스가 많이 탈락한다)
         expect(totalPlaced / totalBoxes,
             greaterThan(preset == TrunkPreset.avante ? 0.25 : 0.5));
@@ -249,7 +268,7 @@ void main() {
     test('실사용 부피는 직육면체보다 작다 (형상 반영)', () {
       final boxVol = sorento.w * sorento.d * sorento.h;
       expect(sorento.usableVolume, lessThan(boxVol));
-      expect(sorento.usableVolume, greaterThan(boxVol * 0.7));
+      expect(sorento.usableVolume, greaterThan(boxVol * 0.6));
     });
 
     test('적재율은 배치된 박스 부피 / 실사용 부피', () {

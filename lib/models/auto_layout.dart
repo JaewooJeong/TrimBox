@@ -143,8 +143,10 @@ class AutoLayoutEngine {
       }
     }
 
+    // 탐색 단계는 격자 전수 탐색(느림) 없이 돌리고, 마지막에 가장 좋은 결과의
+    // 남은 박스만 전수 탐색으로 채운다.
     for (final order in _sortVariants(boxes, strategy)) {
-      consider(_pack(trunk, order, boxes, strategy));
+      consider(_pack(trunk, order, boxes, strategy, scan: false));
       if (best!.allBoxesFit) return best!;
     }
 
@@ -156,7 +158,7 @@ class AutoLayoutEngine {
         ...base.where((b) => unfitIds.contains(b.id)),
         ...base.where((b) => !unfitIds.contains(b.id)),
       ];
-      consider(_pack(trunk, order, boxes, strategy));
+      consider(_pack(trunk, order, boxes, strategy, scan: false));
     }
 
     // 무작위 순서 재시도 (시간 예산 안에서)
@@ -164,26 +166,53 @@ class AutoLayoutEngine {
     for (var i = 0;
         i < restarts && !best!.allBoxesFit && sw.elapsed < budget;
         i++) {
-      // 부피에 잡음을 섞은 내림차순: 큰 것 먼저라는 원칙은 대체로 유지
+      // 부피에 잡음을 섞은 내림차순: 큰 것 먼저라는 원칙은 대체로 유지.
+      // 짝수 회차는 바닥 면적 기준으로 섞어 다양성을 준다.
       final keyed = {
-        for (final b in boxes) b.id: _vol(b) * (0.6 + rnd.nextDouble() * 0.8),
+        for (final b in boxes)
+          b.id: (i.isEven ? _vol(b) : _footprint(b)) *
+              (0.6 + rnd.nextDouble() * 0.8),
       };
       final order = List<TrimBox>.from(boxes)
         ..sort((a, b) => keyed[b.id]!.compareTo(keyed[a.id]!));
-      consider(_pack(trunk, order, boxes, strategy));
+      consider(_pack(trunk, order, boxes, strategy, scan: false));
     }
+
+    if (!best!.allBoxesFit) best = _scanFill(trunk, best!, boxes);
     return best!;
+  }
+
+  /// [result] 의 미적재 박스를 3cm 격자 전수 탐색으로 빈틈에 채운다.
+  static AutoLayoutResult _scanFill(
+      TrunkSpace trunk, AutoLayoutResult result, List<TrimBox> boxes) {
+    final detector = CollisionDetector(trunk);
+    final placed = <TrimBox>[
+      for (final p in result.placements)
+        p.box.copyWith(x: p.x, y: p.y, z: p.z, w: p.w, d: p.d, h: p.h, rotY: 0),
+    ];
+    final unfit = <TrimBox>[];
+    for (final box in result.unfitBoxes) {
+      final c = _scanCandidate(trunk, detector, placed, box);
+      if (c == null) {
+        unfit.add(box);
+        continue;
+      }
+      placed.add(box.copyWith(
+          x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0));
+    }
+    if (unfit.length == result.unfitBoxes.length) return result;
+    return _finalize(trunk, detector, placed, unfit, boxes, result.strategy);
   }
 
   static AutoLayoutResult _pack(
     TrunkSpace trunk,
     List<TrimBox> sorted,
     List<TrimBox> boxes,
-    LayoutStrategy strategy,
-  ) {
+    LayoutStrategy strategy, {
+    bool scan = true,
+  }) {
     final detector = CollisionDetector(trunk);
     final placed = <TrimBox>[]; // 배치된 사본 (rotY = 0, 치수 = 배치 방향)
-    final placedOf = <String, TrimBox>{};
     final unfit = <TrimBox>[];
 
     void tryPlace(TrimBox box) {
@@ -202,7 +231,6 @@ class AutoLayoutEngine {
         rotY: 0,
       );
       placed.add(copy);
-      placedOf[box.id] = copy;
     }
 
     for (final box in sorted) {
@@ -217,7 +245,7 @@ class AutoLayoutEngine {
       }
     }
     // 3차: 극점 후보에 없는 틈새를 3cm 격자로 전수 탐색 (남은 박스만)
-    if (unfit.isNotEmpty) {
+    if (scan && unfit.isNotEmpty) {
       final retry = List<TrimBox>.from(unfit);
       unfit.clear();
       for (final box in retry) {
@@ -226,13 +254,23 @@ class AutoLayoutEngine {
           unfit.add(box);
           continue;
         }
-        final copy = box.copyWith(
-            x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0);
-        placed.add(copy);
-        placedOf[box.id] = copy;
+        placed.add(box.copyWith(
+            x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0));
       }
     }
 
+    return _finalize(trunk, detector, placed, unfit, boxes, strategy);
+  }
+
+  /// 검증 게이트 → 적재 순서 → 결과 객체
+  static AutoLayoutResult _finalize(
+    TrunkSpace trunk,
+    CollisionDetector detector,
+    List<TrimBox> placed,
+    List<TrimBox> unfit,
+    List<TrimBox> boxes,
+    LayoutStrategy strategy,
+  ) {
     // 결과 게이트: 충돌·부양이 있으면 그 박스는 미적재로
     final bad = detector.findAllCollisions(placed);
     for (final p in placed) {
@@ -243,7 +281,6 @@ class AutoLayoutEngine {
       for (final id in bad) {
         final orig = boxes.firstWhere((b) => b.id == id);
         if (!unfit.contains(orig)) unfit.add(orig);
-        placedOf.remove(id);
       }
       placed.removeWhere((p) => bad.contains(p.id));
     }
@@ -312,6 +349,13 @@ class AutoLayoutEngine {
   // ── 내부 ──
 
   static double _vol(TrimBox b) => b.w * b.d * b.h;
+
+  /// 가장 납작하게 놓았을 때의 바닥 면적 (세워야 하는 짐은 w×d)
+  static double _footprint(TrimBox b) {
+    if (b.keepUpright) return b.w * b.d;
+    final dims = [b.w, b.d, b.h]..sort();
+    return dims[1] * dims[2];
+  }
   static double _maxDim(TrimBox b) => math.max(b.w, math.max(b.d, b.h));
   static double _minDim(TrimBox b) => math.min(b.w, math.min(b.d, b.h));
 
@@ -342,10 +386,16 @@ class AutoLayoutEngine {
       return volDesc(a, b);
     }
 
+    // 바닥 면적 큰 것부터: 바닥층을 빈틈 없이 깔고 작은 것을 위에 올린다
+    int areaDesc(TrimBox a, TrimBox b) {
+      final c = _footprint(b).compareTo(_footprint(a));
+      return c != 0 ? c : _vol(b).compareTo(_vol(a));
+    }
+
     return switch (s) {
-      LayoutStrategy.balanced => [by(volDesc), by(uprightFirst), by(longDesc), by(thickDesc)],
-      LayoutStrategy.maxUtilization => [by(longDesc), by(volDesc), by(thickDesc), by(uprightFirst)],
-      LayoutStrategy.easyAccess => [by(volDesc), by(thickDesc), by(uprightFirst), by(longDesc)],
+      LayoutStrategy.balanced => [by(volDesc), by(areaDesc), by(uprightFirst), by(longDesc), by(thickDesc)],
+      LayoutStrategy.maxUtilization => [by(longDesc), by(areaDesc), by(volDesc), by(thickDesc), by(uprightFirst)],
+      LayoutStrategy.easyAccess => [by(volDesc), by(thickDesc), by(areaDesc), by(uprightFirst), by(longDesc)],
     };
   }
 
@@ -404,6 +454,21 @@ class AutoLayoutEngine {
     }
     // 오른쪽 벽에 붙이는 후보
     xs.add(_snapDown(trunk.w - o.w));
+    // 테일게이트 닫힘 한계에 붙이는 후보: 바닥에 놓일 때와 각 박스 위에 놓일 때
+    // 윗면 높이에서 허용되는 최대 z 에서 뒤로 물린 자리
+    if (trunk.hasTailgateModel) {
+      zs.add(_snapDown(trunk.rearDepthAt(o.h) - o.d));
+      for (final p in placed) {
+        zs.add(_snapDown(trunk.rearDepthAt(p.y + p.h + o.h) - o.d));
+      }
+    }
+    // 등받이 기울기: 윗면 높이에서 허용되는 최소 z 에 붙이는 후보
+    if (trunk.frontProfile != null) {
+      zs.add(_snapUp(trunk.frontDepthAt(o.h)));
+      for (final p in placed) {
+        zs.add(_snapUp(trunk.frontDepthAt(p.y + p.h + o.h)));
+      }
+    }
     // 테이퍼 왼쪽 경계 (뒤쪽이 가장 좁다)
     for (final z in zs.toList()) {
       xs.add(_snapUp(trunk.taperAt(z)));
@@ -461,6 +526,11 @@ class AutoLayoutEngine {
           if (y == null) continue;
 
           var score = y * wy + z * zWeight + x * wx;
+          if (trunk.hasTailgateModel) {
+            // 윗면이 높을수록 테일게이트 쪽(z 큼)에서 닫힘 한계에 걸리므로
+            // 윗면 높이 비율만큼 z 를 더 무겁게 본다
+            score += z * ((y + o.h) / trunk.h) * 1.5;
+          }
           score -= contactBonus * _contacts(trunk, placed, probe);
           if (best == null || score < best.score) {
             best = _Candidate(x, y, z, o, score);
@@ -553,9 +623,17 @@ class AutoLayoutEngine {
     if (b.keepUpright && b.h > trunk.h + 1e-9) {
       return '세운 높이 ${_cm(b.h)}cm 가 천장 ${_cm(trunk.h)}cm 초과';
     }
+    final ap = trunk.aperture;
+    if (ap != null &&
+        !CollisionDetector.fitsThroughAperture(b.w, b.d, b.h, ap,
+            keepUpright: b.keepUpright)) {
+      final how = b.keepUpright ? ' (세운 채로)' : '';
+      return '개구부 ${_cm(ap.bottomWidth)}×${_cm(ap.height)}cm 를 통과 못 함$how';
+    }
     final used = placed.fold<double>(0, (s, p) => s + p.w * p.d * p.h);
     if (used + b.w * b.d * b.h > trunk.usableVolume) return '남은 부피 부족';
-    return '빈 자리 없음';
+    final shaped = trunk.hasTailgateModel || trunk.frontProfile != null;
+    return shaped ? '빈 자리 없음 (등받이·테일게이트 기울기 반영)' : '빈 자리 없음';
   }
 
   static String _cm(double m) => (m * 100).round().toString();

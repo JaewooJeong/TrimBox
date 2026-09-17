@@ -268,7 +268,8 @@ void main() {
         onSave: () {},
         onLoad: () {},
       )));
-      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+      // 목록 행의 경고 아이콘 + 통계 영역의 사유 행 (둘 다 CollisionDetector 기준)
+      expect(find.byIcon(Icons.warning_amber_rounded), findsAtLeastNWidgets(1));
     });
   });
 }

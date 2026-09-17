@@ -40,9 +40,12 @@ class _SceneObject {
   final Color color;
   final TrimBox? box;
 
-  const _SceneObject(this.aabb, this.color, this.box);
+  /// 지정하면 AABB 면 대신 이 면들을 그린다 (개구부 프레임 등)
+  final List<Face>? faces;
 
-  bool get isWheelhouse => box == null;
+  const _SceneObject(this.aabb, this.color, this.box, {this.faces});
+
+  bool get isFixture => box == null;
 }
 
 /// 원근 카메라 + painter's algorithm 기반 트렁크 3D 페인터.
@@ -57,6 +60,9 @@ class TrunkPainter3D extends CustomPainter {
   final Set<String> collidingBoxIds;
   final String? draggingBoxId;
 
+  /// 테일게이트를 못 닫게 하는 박스 (닫힘 한계 면을 빨갛게 보여준다)
+  final Set<String> tailgateBlockedIds;
+
   /// 적재 순서 스텝 뷰: null 이면 전부 표시. 값이 있으면 그보다 큰 loadOrder는
   /// 숨기고, 작은 것은 흐리게 그린다.
   final int? highlightLoadOrder;
@@ -70,6 +76,7 @@ class TrunkPainter3D extends CustomPainter {
     this.selectedBoxId,
     this.collidingBoxIds = const {},
     this.draggingBoxId,
+    this.tailgateBlockedIds = const {},
     this.highlightLoadOrder,
     this.cache,
     this.showLabels = true,
@@ -82,6 +89,8 @@ class TrunkPainter3D extends CustomPainter {
   static const Color _ceilingColor = Color(0xFF605D5A);
   static const Color _seatColor = Color(0xFF3C4046);
   static const Color _wheelhouseColor = Color(0xFF66625E);
+  static const Color _frameColor = Color(0xFF2B2D31);
+  static const Color _limitLine = Color(0xFFFFC46B);
   static const Color _accent = Color(0xFF4DA3FF);
   static const Color _danger = Color(0xFFFF4D4D);
 
@@ -90,6 +99,7 @@ class TrunkPainter3D extends CustomPainter {
     _paintBackground(canvas, size);
     _paintShell(canvas, size);
     _paintObjects(canvas, size);
+    _paintTailgateWarning(canvas, size);
     _paintCaption(canvas, size);
   }
 
@@ -134,6 +144,8 @@ class TrunkPainter3D extends CustomPainter {
         ShellPart.ceiling => _ceilingColor,
         ShellPart.leftWall || ShellPart.rightWall => _wallColor,
         ShellPart.seatBack => _seatColor,
+        ShellPart.frame => _frameColor,
+        ShellPart.tailgate => _wallColor,
       };
 
   void _drawShell(Canvas canvas, Size size) {
@@ -166,7 +178,79 @@ class TrunkPainter3D extends CustomPainter {
 
     _drawFloorGrid(canvas, size);
     if (seatVisible) _drawSeatSplitLines(canvas, size);
+    _drawTailgateLimitLines(canvas, size);
     _drawOpeningOutline(canvas, size);
+  }
+
+  /// 닫힌 테일게이트 안쪽 면이 양쪽 벽과 만나는 선 (= 이 선 뒤로는 못 놓음).
+  /// 프레임 구간 안쪽은 프레임 면이 가리므로 프레임 앞까지만 그린다.
+  void _drawTailgateLimitLines(Canvas canvas, Size size) {
+    if (!space.hasTailgateModel) return;
+    final prof = rearProfilePolyline(space);
+    if (prof.length < 2) return;
+    final paint = Paint()
+      ..color = _limitLine.withValues(alpha: 0.75)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    for (final side in [0, 1]) {
+      final pts = <Vec3>[];
+      for (final p in prof) {
+        final x = side == 0
+            ? space.xMinAt(p.z, p.y) + 0.004
+            : space.xMaxAt(p.z, p.y) - 0.004;
+        pts.add(Vec3(x, p.y, p.z));
+      }
+      final proj = _projectPoints(pts, size);
+      if (proj == null) continue;
+      _drawDashedPolyline(canvas, proj, paint);
+    }
+    // 바닥에도: 테일게이트 바닥선에서 천장 한계까지 안쪽으로 얼마나 들어오는지
+    final zTop = prof.last.z;
+    if (space.d - zTop > 0.01) {
+      final floor = _projectPoints([
+        Vec3(space.xMinAt(zTop, 0), 0.002, zTop),
+        Vec3(space.xMaxAt(zTop, 0), 0.002, zTop),
+      ], size);
+      if (floor != null) {
+        _drawDashedPolyline(canvas, floor,
+            Paint()
+              ..color = _limitLine.withValues(alpha: 0.35)
+              ..strokeWidth = 1.0
+              ..style = PaintingStyle.stroke);
+      }
+    }
+  }
+
+  void _drawDashedPolyline(Canvas canvas, List<Offset> pts, Paint paint,
+      {double dash = 6, double gap = 4}) {
+    for (var i = 0; i + 1 < pts.length; i++) {
+      final a = pts[i], b = pts[i + 1];
+      final len = (b - a).distance;
+      if (len < 1e-3) continue;
+      final dir = (b - a) / len;
+      var t = 0.0;
+      while (t < len) {
+        final e = math.min(len, t + dash);
+        canvas.drawLine(a + dir * t, a + dir * e, paint);
+        t = e + gap;
+      }
+    }
+  }
+
+  /// 테일게이트가 안 닫힐 때: 닫힘 한계 면을 반투명 빨강으로 덮어 보여준다.
+  void _paintTailgateWarning(Canvas canvas, Size size) {
+    if (tailgateBlockedIds.isEmpty || !space.hasTailgateModel) return;
+    final fill = Paint()..color = _danger.withValues(alpha: 0.16);
+    final edge = Paint()
+      ..color = _danger.withValues(alpha: 0.8)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    for (final f in tailgateFaces(space)) {
+      final path = _projectPath(f.pts, size);
+      if (path == null) continue;
+      canvas.drawPath(path, fill);
+      canvas.drawPath(path, edge);
+    }
   }
 
   /// 테일게이트 바깥 지면 (못 넣은 짐을 세워 두는 자리)
@@ -214,18 +298,26 @@ class TrunkPainter3D extends CustomPainter {
   void _drawSeatSplitLines(Canvas canvas, Size size) {
     final ratios = space.seatSplitRatio;
     if (ratios == null || ratios.length < 2) return;
-    final xl = space.taperAt(0);
-    final xr = space.w - space.taperAt(0);
-    final top = space.ceilingHeightAt(0);
+    final xl = space.xMinAt(0, 0);
+    final xr = space.xMaxAt(0, 0);
     final paint = Paint()
       ..color = Colors.black.withValues(alpha: 0.45)
       ..strokeWidth = 2.0;
+    // 등받이 프로필을 따라 (기울어진 등받이도 선이 면 위에 붙도록)
+    final prof = frontProfilePolyline(space);
     var cum = 0.0;
     for (var i = 0; i < ratios.length - 1; i++) {
       cum += ratios[i];
       final x = xl + (xr - xl) * cum;
-      _drawSegment(canvas, size, Vec3(x, 0.03, 0.003),
-          Vec3(x, top - 0.03, 0.003), paint);
+      for (var k = 0; k + 1 < prof.length; k++) {
+        final a = prof[k], b = prof[k + 1];
+        final y0 = math.max(a.y, 0.03);
+        final y1 = math.min(b.y, space.h - 0.03);
+        if (y1 <= y0) continue;
+        double zAt(double y) => a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
+        _drawSegment(canvas, size, Vec3(x, y0, zAt(y0) + 0.003),
+            Vec3(x, y1, zAt(y1) + 0.003), paint);
+      }
     }
   }
 
@@ -249,6 +341,7 @@ class TrunkPainter3D extends CustomPainter {
     if (!lw.isEmpty) objects.add(_SceneObject(lw, _wheelhouseColor, null));
     final rw = Aabb.rightWheelhouse(space);
     if (!rw.isEmpty) objects.add(_SceneObject(rw, _wheelhouseColor, null));
+    objects.addAll(_frameObjects());
 
     for (final b in boxes) {
       if (!_isVisibleInStepView(b)) continue;
@@ -261,6 +354,46 @@ class TrunkPainter3D extends CustomPainter {
     for (final idx in order) {
       _drawObject(canvas, size, objects[idx], camPos);
     }
+  }
+
+  /// 개구부 프레임(D필러 트림·헤더)을 고정물 3개로. AABB 는 정렬용이며
+  /// 실제 면은 [frameFaces] 의 사다리꼴이다.
+  List<_SceneObject> _frameObjects() {
+    final ap = space.aperture;
+    if (ap == null) return const [];
+    final zf = space.d - ap.frameDepth;
+    final ceil = space.interiorCeilingAt(zf);
+    final top = math.min(ap.height, ceil);
+    final xl = space.xMinAt(zf - 1e-6, 0), xr = space.xMaxAt(zf - 1e-6, 0);
+    final al0 = (space.w - ap.widthAt(0)) / 2;
+    final faces = frameFaces(space).map((f) => f.face).toList();
+    // 왼쪽 기둥 / 오른쪽 기둥 / 헤더로 면을 나눈다
+    final left = <Face>[], right = <Face>[], header = <Face>[];
+    for (final f in faces) {
+      final c = f.centroid;
+      if (c.y >= top - 1e-6) {
+        header.add(f);
+      } else if (c.x < space.w / 2) {
+        left.add(f);
+      } else {
+        right.add(f);
+      }
+    }
+    final out = <_SceneObject>[];
+    if (left.isNotEmpty && al0 > xl + 1e-6) {
+      out.add(_SceneObject(Aabb(xl, 0, zf, al0, top, space.d), _frameColor, null,
+          faces: left));
+    }
+    if (right.isNotEmpty && space.w - al0 < xr - 1e-6) {
+      out.add(_SceneObject(
+          Aabb(space.w - al0, 0, zf, xr, top, space.d), _frameColor, null,
+          faces: right));
+    }
+    if (header.isNotEmpty && ceil > top + 1e-6) {
+      out.add(_SceneObject(Aabb(xl, top, zf, xr, ceil, space.d), _frameColor, null,
+          faces: header));
+    }
+    return out;
   }
 
   bool _isVisibleInStepView(TrimBox b) {
@@ -288,7 +421,8 @@ class TrunkPainter3D extends CustomPainter {
 
     if (box != null) _drawContactShadow(canvas, size, obj.aabb, opacity);
 
-    final faces = aabbFaces(obj.aabb).where((f) => f.facesCamera(camPos));
+    final faces =
+        (obj.faces ?? aabbFaces(obj.aabb)).where((f) => f.facesCamera(camPos));
     Path? largestPath;
     var largestArea = 0.0;
     final edgePaint = Paint()
@@ -303,7 +437,7 @@ class TrunkPainter3D extends CustomPainter {
       final path = _pathFrom(pts);
       final color = shadeColor(base, f.normal).withValues(alpha: opacity);
       canvas.drawPath(path, Paint()..color = color);
-      if (obj.isWheelhouse) {
+      if (obj.isFixture) {
         canvas.drawPath(
           path,
           Paint()
@@ -414,8 +548,14 @@ class TrunkPainter3D extends CustomPainter {
 
   void _paintCaption(Canvas canvas, Size size) {
     final name = space.vehicleName ?? '커스텀';
+    final wIn = (space.floorWidthBetweenWheelhouses * 100).round();
+    final wMax = (space.w * 100).round();
+    final widthText = wIn < wMax ? '폭 $wIn~$wMax' : '폭 $wMax';
+    final hMin = (space.ceilingHeightAt(space.rearDepthAt(space.h)) * 100).round();
+    final hMax = (space.h * 100).round();
+    final heightText = hMin < hMax ? '높이 $hMin~$hMax' : '높이 $hMax';
     final text =
-        '$name · ${(space.w * 100).round()} × ${(space.d * 100).round()} × ${(space.h * 100).round()} cm';
+        '$name · $widthText × 깊이 ${(space.d * 100).round()} × $heightText cm';
     final tp = TextPainter(
       text: TextSpan(
         text: text,
@@ -426,7 +566,34 @@ class TrunkPainter3D extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, Offset(12, size.height - tp.height - 10));
+    var y = size.height - tp.height - 10;
+    tp.paint(canvas, Offset(12, y));
+
+    if (space.hasTailgateModel && boxes.isNotEmpty) {
+      final blocked = tailgateBlockedIds.length;
+      final status = blocked == 0
+          ? '테일게이트 닫힘 OK'
+          : '테일게이트 안 닫힘 · $blocked개 걸림';
+      final color = blocked == 0 ? const Color(0xFF6BD06B) : _danger;
+      final sp = TextPainter(
+        text: TextSpan(
+          text: status,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      y -= sp.height + 4;
+      final pill = Rect.fromLTWH(8, y - 3, sp.width + 12, sp.height + 6);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(pill, const Radius.circular(6)),
+        Paint()..color = Colors.black.withValues(alpha: 0.45),
+      );
+      sp.paint(canvas, Offset(14, y));
+    }
   }
 
   // ── 투영 헬퍼 ──

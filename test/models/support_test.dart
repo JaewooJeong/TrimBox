@@ -61,9 +61,10 @@ void main() {
     });
 
     test('휠하우스 윗면도 지지면이다', () {
-      // 쏘렌토 왼쪽 휠하우스: x 0~0.08, z 0~0.40, h 0.30
-      final small = box('s', 0.08, 0.3, 0.1, x: 0, z: 0.05);
-      expect(SupportRule.highestLevel(small, [], sorento), closeTo(0.30, 1e-9));
+      // 쏘렌토 왼쪽 휠하우스 윗면 높이 = leftWheelhouse.h
+      final lw = sorento.leftWheelhouse;
+      final small = box('s', lw.w, 0.3, 0.1, x: 0, z: 0.05);
+      expect(SupportRule.highestLevel(small, [], sorento), closeTo(lw.h, 1e-9));
     });
 
     test('회전한 상자는 회전된 footprint 로 계산한다', () {

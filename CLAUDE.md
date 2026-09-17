@@ -16,7 +16,8 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 - Flutter (package `trimbox`), 웹·Android 공용
 - 3D 렌더링은 `CustomPainter` 위에 직접 만든 코어 (`lib/render3d/`): 원근 오빗 카메라, 법선 컬링 + 램버트 음영, 분리 평면 기반 뒤→앞 위상 정렬(painter's algorithm), 레이-AABB 피킹. 외부 3D 엔진 없음.
 - 월드 좌표: x = 폭(0..w, 테일게이트에서 봤을 때 왼쪽→오른쪽), y = 높이(0 = 바닥), z = 깊이(0 = 뒷좌석 등받이, d = 테일게이트 개구부). 카메라 yaw=0 은 테일게이트 뒤.
-- 유효성 판단은 `lib/utils/collision.dart` 의 `CollisionDetector` 하나가 단일 진실이다. 자동배치·화면·테스트가 모두 이것을 쓴다. 지지/중력 규칙은 `lib/models/support.dart` 의 `SupportRule` 하나.
+- 유효성 판단은 `lib/utils/collision.dart` 의 `CollisionDetector` 하나가 단일 진실이다. 자동배치·화면·테스트가 모두 이것을 쓴다. 사유는 `CollisionKind` (경계·천장·휠하우스·테일게이트·등받이·개구부·겹침), 문장은 `describe()`. 지지/중력 규칙은 `lib/models/support.dart` 의 `SupportRule` 하나.
+- 트렁크 형상은 `TrunkSpace` 의 함수로만 읽는다: `xMinAt/xMaxAt(z, y)` 좌우 경계, `interiorCeilingAt(z)` 실내 천장, `rearDepthAt(y)` 닫힌 테일게이트 한계(문이 닫히는 최대 z), `frontDepthAt(y)` 등받이 한계(최소 z), `aperture` 개구부. 렌더러·충돌·패커·부피가 전부 같은 함수를 쓴다.
 
 ### Key Files
 | File | Purpose |
@@ -29,7 +30,7 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 | `lib/render3d/trunk_painter_3d.dart` | 페인터: 껍데기 Picture 캐시, 바닥 격자, 박스 면/그림자/라벨/순서 배지 |
 | `lib/models/auto_layout.dart` | 자동배치 엔진 (극점 후보 + 눕히기 + 떨어뜨리기 + 검증 게이트 + 재시도) |
 | `lib/models/support.dart` | 적층/중력 규칙 `SupportRule` (지지 면적 50% 이상) |
-| `lib/models/trunk_space.dart` | 트렁크 모델, 형상 함수(ceilingHeightAt/taperAt/topNarrowAt), 프리셋, `usableVolume` |
+| `lib/models/trunk_space.dart` | 트렁크 모델, 형상 함수(xMinAt/xMaxAt, interiorCeilingAt, rearDepthAt, frontDepthAt), `WallProfile`·`Aperture`, 프리셋, `usableVolume` |
 | `lib/models/trim_box.dart` | 박스 모델 (위치, rotY, keepUpright, loadOrder) |
 | `lib/utils/collision.dart` | AABB 충돌: 박스-박스(0.5mm 허용), 경계·테이퍼·C필러·천장, 휠하우스 |
 | `lib/utils/scene_storage.dart` | shared_preferences 저장소: 이름 저장, 자동 저장, 온보딩 플래그 |
@@ -39,19 +40,26 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 ### Vehicle Presets
 1차 메뉴에는 쏘렌토 두 구성 + 커스텀만 노출된다 (`_releasePresets`). 나머지 프리셋(투싼·싼타페·카니발·아이오닉5·아반떼)은 코드와 테스트에 남아 있다.
 
-| Preset | W | D | H | 휠하우스 (w×d×h) | 비고 |
-|--------|---|---|---|---|---|
-| 쏘렌토 5인승 (`sorento`) | 1.08 | 1.10 | 0.78 | 0.08×0.48×0.30 | 추정치. 근거는 `trunk_space.dart` 주석 |
-| 쏘렌토 7인승·3열 접음 (`sorento7`) | 1.08 | 1.18 | 0.77 | 0.08×0.52×0.30 | 추정치 |
+쏘렌토 MQ4 는 줄자 실측 8건과 기아 도면으로 교차검증했다 (`backlog/sorento-mq4-measurements.md`). 5인승과 7인승(3열 접음)은 같은 상자 치수이고 바닥 아래 수납함만 다르다(미모델링).
 
-트렁크 형상: `ceilingHeightAt(z)` 뒤쪽(z=0)으로 갈수록 천장이 2차식으로 내려옴, `topNarrowAt(z)` C필러 상단 좁아짐, `taperAt(z)` 바닥 테이퍼. 충돌은 AABB + 이 함수들로 판정한다.
+| 항목 | 값 | 신뢰도 |
+|---|---|---|
+| 최대 폭 w / 휠하우스 사이 | 1.38 / 1.09 | 높음 |
+| 바닥 깊이 d (2열 최후방) | 1.07 | 높음 (2열 슬라이드 +27cm 미모델링) |
+| 높이 h → 개구부 | 0.82 → 0.79 (`rearCeilingDrop 0.03`) | 중간 |
+| 휠하우스 w×d×h | 0.145 × 0.58 × 0.35 | 폭 높음, 길이·높이 추정 |
+| 개구부 (바닥/상단 폭, 높이, 프레임) | 1.10 / 1.05, 0.79, 0.12 | 바닥 폭 높음, 나머지 추정 |
+| 테일게이트 프로필 (y → 안쪽 inset) | (0,0) (0.42,0.04) (0.46,0.07) (0.79,0.26) | 중간 — 허리선 위 유리 30° |
+| 등받이 프로필 | (0,0) (0.60,0.22) (0.82,0.22) | 낮음 — 20° 가정 |
+
+형상 규칙: 좌우 경계는 개구부 프레임 구간(z ≥ d − 0.12)에서 개구부 폭으로, 천장 60% 위에서 텀블홈(`ceilingNarrow`)만큼 좁아진다. 천장은 테일게이트 쪽으로 낮아진다. 짐 윗면이 높을수록 뒤(테일게이트)와 앞(등받이) 한계가 안쪽으로 들어오며, 박스는 윗면 높이에서의 한계만 검사하면 된다(프로필이 단조). 다른 프리셋은 옛 세단형 규칙(`ceilingDrop`, `taperRatio`, `rearTopNarrow`)을 그대로 쓴다.
 
 ## Development Commands
 
 ```bash
 flutter pub get
 flutter run -d chrome        # 개발 실행
-flutter test                 # 단위/통합 테스트 (164개)
+flutter test                 # 단위/통합 테스트 (176개)
 flutter analyze
 flutter build web            # 웹 빌드 → build/web
 npx playwright test          # 스모크 E2E (build/web 을 서빙, 스크린샷은 e2e/screenshots/)
@@ -67,5 +75,5 @@ WSL 에서 작업할 때는 Windows Flutter 를 `cmd.exe /c "flutter ..."` 로 �
 - 커밋 전 `flutter test` 와 `flutter analyze`. 한국어 커밋 메시지.
 
 ## Status (2026-09-17)
-완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부).
-남은 것: 쏘렌토 MQ4 실측치 확정(현재 추정치), Android 실기기 확인, 공유 이미지 정리, 스텝 뷰/JSON 내보내기 등 2차 기능 정리.
+완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5).
+남은 것: 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), 연질 짐 압축·무게 규칙, 2열 슬라이드 옵션, Android 실기기 확인, 공유 이미지 정리.

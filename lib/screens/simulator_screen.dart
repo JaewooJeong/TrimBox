@@ -49,6 +49,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   final List<TrimBox> _boxes = [];
   String? _selectedBoxId;
   Set<String> _collidingIds = {};
+  Set<String> _tailgateBlockedIds = {};
   int _boxCounter = 0;
   TrunkPreset _selectedPreset = TrunkPreset.sorento;
 
@@ -332,6 +333,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                         camera: camera,
                         selectedBoxId: _selectedBoxId,
                         collidingBoxIds: _collidingIds,
+                        tailgateBlockedIds: _tailgateBlockedIds,
                         draggingBoxId: _isDragging ? _selectedBoxId : null,
                         highlightLoadOrder: _stepViewActive ? _stepViewCurrentStep : null,
                         cache: _sceneCache,
@@ -1333,11 +1335,17 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   void _applySceneJson(String jsonStr, {bool silent = false}) {
     try {
       final scene = JsonIO.importScene(jsonStr);
+      // 저장된 트렁크가 프리셋 차종이면 현재 프리셋 정의를 쓴다 (치수 갱신 반영).
+      final preset = _presetForSpace(scene.space);
+      final presetSpace = preset.toTrunkSpace();
+      final spaceChanged = presetSpace != null &&
+          JsonIO.exportScene(Scene(space: presetSpace, boxes: const [])) !=
+              JsonIO.exportScene(Scene(space: scene.space, boxes: const []));
       setState(() {
-        _space = scene.space;
+        _space = presetSpace ?? scene.space;
         _detector = CollisionDetector(_space);
         _refitCamera();
-        _selectedPreset = _presetForSpace(scene.space);
+        _selectedPreset = preset;
         _boxes..clear()..addAll(scene.boxes);
         _resolveGravity();
         int maxId = 0;
@@ -1356,6 +1364,11 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           _showOnboarding = false;
         }
       });
+      // 트렁크 치수가 바뀌었으면 저장된 자리는 무효일 수 있으니 다시 배치
+      if (spaceChanged && _boxes.isNotEmpty) {
+        _manualEdited = false;
+        _autoPackQuietly();
+      }
       if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1915,6 +1928,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                 utilizationVisual(),
                 const SizedBox(height: 12),
                 _verdictInfoRow('적재 장비', '$total개 모두 트렁크에 들어갑니다'),
+                if (_space.hasTailgateModel) ...[
+                  const SizedBox(height: 8),
+                  _verdictInfoRow('테일게이트', '닫힙니다 (닫힘 한계·개구부 반영)'),
+                ],
                 if (result.placements.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _verdictLoadOrderSummary(result),
@@ -2177,6 +2194,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   void _updateCollisions() {
     _collidingIds = _detector.findAllCollisions(_boxes);
+    _tailgateBlockedIds = _detector.tailgateBlockers(_boxes);
     _scheduleAutosave();
   }
 }

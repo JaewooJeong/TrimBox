@@ -171,4 +171,87 @@ void main() {
       expect(emptyDetector.overlapsRightWheelhouse(box), false);
     });
   });
+
+  group('쏘렌토 실측 형상: 테일게이트·등받이·개구부', () {
+    final sorento = TrunkSpace.sorento();
+    final det = CollisionDetector(sorento);
+
+    TrimBox at({double x = 0.3, double y = 0, double z = 0, double w = 0.4,
+            double d = 0.3, double h = 0.3, bool upright = false}) =>
+        TrimBox(
+            id: 't', label: 't', w: w, d: d, h: h, x: x, y: y, z: z,
+            color: const Color(0xFF00FF00), keepUpright: upright);
+
+    test('짐 윗면 높이의 닫힘 한계까지 붙이면 닫힌다', () {
+      final b = at(z: sorento.rearDepthAt(0.30) - 0.30, d: 0.30, h: 0.30);
+      expect(det.blocksTailgate(b), isFalse);
+      expect(det.violations(b, []), isEmpty);
+      // 바닥선까지 밀어붙이면 하부 트림 기울기(약 3cm)만큼 걸린다
+      final flush = at(z: sorento.d - 0.30, d: 0.30, h: 0.30);
+      expect(det.blocksTailgate(flush), isTrue);
+      expect(det.tailgateOverhang(flush), closeTo(sorento.rearInsetAt(0.30), 1e-9));
+    });
+
+    test('허리선 위로 올라온 짐이 테일게이트 바닥선에 붙으면 문이 안 닫힌다', () {
+      final b = at(z: sorento.d - 0.30, d: 0.30, h: 0.70);
+      expect(det.blocksTailgate(b), isTrue);
+      expect(det.tailgateOverhang(b), closeTo(sorento.rearInsetAt(0.70), 1e-9));
+      expect(det.violations(b, []), contains(CollisionKind.tailgate));
+      expect(det.describe(b, []).join(), contains('테일게이트 닫힘 불가'));
+      // 프로필만큼 앞으로 당기면 닫힌다
+      final ok = at(z: sorento.rearDepthAt(0.70) - 0.30, d: 0.30, h: 0.70);
+      expect(det.blocksTailgate(ok), isFalse);
+    });
+
+    test('tailgateBlockers 는 걸리는 박스만 돌려준다', () {
+      final a = at(z: sorento.d - 0.30, d: 0.30, h: 0.70)..label = 'a';
+      final b = at(z: 0.3, d: 0.30, h: 0.70);
+      final blockers = det.tailgateBlockers([a, b.copyWith(id: 'b')]);
+      expect(blockers, {'t'});
+    });
+
+    test('키 큰 짐을 등받이에 바짝 붙이면 등받이 기울기에 걸린다', () {
+      final b = at(z: 0, h: 0.60);
+      expect(det.hitsSeatBack(b), isTrue);
+      expect(det.violations(b, []), contains(CollisionKind.seatBack));
+      final ok = at(z: sorento.frontInsetAt(0.60), h: 0.60);
+      expect(det.hitsSeatBack(ok), isFalse);
+      // 낮은 짐은 거의 붙일 수 있다
+      final low = at(z: 0.02, h: 0.05);
+      expect(det.hitsSeatBack(low), isFalse);
+    });
+
+    test('개구부: 어떤 방향으로도 못 지나가는 짐만 걸린다', () {
+      final ap = sorento.aperture!;
+      // 120×90×85 — 두 작은 변(85, 90)도 개구부 폭×높이(110×79)를 못 지남
+      expect(det.exceedsAperture(at(w: 1.20, d: 0.90, h: 0.85)), isTrue);
+      // 세워야 하는 쿨러: 높이 0.85 는 개구부 높이 초과 → 못 넣음
+      expect(det.exceedsAperture(at(w: 0.6, d: 0.4, h: 0.85, upright: true)), isTrue);
+      // 같은 치수라도 눕힐 수 있으면 통과
+      expect(det.exceedsAperture(at(w: 0.6, d: 0.4, h: 0.85)), isFalse);
+      // 긴 테이블(120×60×5)은 길이 방향으로 들어간다
+      expect(det.exceedsAperture(at(w: 1.20, d: 0.60, h: 0.05)), isFalse);
+      expect(CollisionDetector.fitsThroughAperture(1.09, 0.5, 0.5, ap), isTrue);
+    });
+
+    test('개구부 프레임 구간에서는 폭이 개구부로 제한된다', () {
+      // 프레임 밖(z 작음)에서는 최대 폭 1.38 까지 놓을 수 있다
+      final wide = at(x: 0.0, z: 0.6, w: 1.36, d: 0.2, h: 0.2);
+      expect(det.isOutOfBounds(wide), isFalse);
+      // 프레임 구간(z ≥ d − 0.12)에서는 1.10 을 넘으면 경계 밖
+      final wideRear = at(x: 0.0, z: sorento.d - 0.2, w: 1.36, d: 0.2, h: 0.2);
+      expect(det.isOutOfBounds(wideRear), isTrue);
+      final fitsRear = at(x: (sorento.w - 1.08) / 2, z: sorento.d - 0.2, w: 1.08, d: 0.2, h: 0.2);
+      expect(det.isOutOfBounds(fitsRear), isFalse);
+    });
+
+    test('천장 초과는 실내 천장 기준, 테일게이트 쪽 제한은 tailgate 로 보고', () {
+      final tall = at(z: 0.3, h: 0.85);
+      expect(det.isOverHeight(tall), isTrue);
+      final rear = at(z: sorento.d - 0.30, d: 0.30, h: 0.60);
+      final v = det.violations(rear, []);
+      expect(v, contains(CollisionKind.tailgate));
+      expect(v, isNot(contains(CollisionKind.ceiling)));
+    });
+  });
 }

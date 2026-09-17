@@ -27,9 +27,9 @@ void main() {
     test('Sorento + 4인 캠핑세트 → 자동배치 → 결과 확인', () {
       // Step 1: 차량 선택 (쏘렌토)
       final trunk = TrunkSpace.sorento();
-      expect(trunk.w, 1.08);
-      expect(trunk.d, 1.10);
-      expect(trunk.h, 0.78);
+      expect(trunk.w, 1.38);
+      expect(trunk.d, 1.07);
+      expect(trunk.h, 0.82);
       expect(trunk.vehicleName, contains('SORENTO'));
 
       // Step 2: 캠핑 장비 선택 (4인 기본세트)
@@ -391,13 +391,21 @@ void main() {
   // E2E-6: 프리셋 치수 정확도 (P0-2 regression guard)
   // ─────────────────────────────────────────────
   group('E2E-6: Vehicle preset dimension accuracy', () {
-    test('쏘렌토 치수 정확 (h=0.78, wh.w=0.08)', () {
+    test('쏘렌토 치수 (실측: 최대 폭 1.38, 휠하우스 사이 1.09, 깊이 1.07, 높이 0.82)', () {
       final s = TrunkSpace.sorento();
-      expect(s.w, 1.08);
-      expect(s.d, 1.10);
-      expect(s.h, 0.78);
-      expect(s.leftWheelhouse.w, 0.08);
-      expect(s.rightWheelhouse.w, 0.08);
+      expect(s.w, 1.38);
+      expect(s.d, 1.07);
+      expect(s.h, 0.82);
+      expect(s.leftWheelhouse.w, 0.145);
+      expect(s.rightWheelhouse.w, 0.145);
+      expect(s.floorWidthBetweenWheelhouses, closeTo(1.09, 1e-9));
+      expect(s.hasTailgateModel, isTrue);
+      expect(s.frontProfile, isNotNull);
+      // 7인승(3열 접음)은 같은 상자 치수
+      final s7 = TrunkSpace.sorento7();
+      expect(s7.w, s.w);
+      expect(s7.d, s.d);
+      expect(s7.h, s.h);
     });
 
     test('싼타페 치수 정확 (w=1.11, wh.w=0.13)', () {
@@ -423,9 +431,21 @@ void main() {
         final trunk = preset.toTrunkSpace();
         if (trunk == null) continue;
 
-        // z=d (입구)에서 천장 높이 = h (드롭 없음)
-        expect(trunk.ceilingHeightAt(trunk.d), closeTo(trunk.h, 0.001),
-            reason: '${preset.name} ceiling at opening should equal h');
+        if (trunk.hasTailgateModel) {
+          // 테일게이트 모델: 개구부에서는 프로필이 천장을 낮춘다
+          expect(trunk.ceilingHeightAt(trunk.d), lessThanOrEqualTo(trunk.h),
+              reason: '${preset.name} ceiling at opening should be <= h');
+          // SUV 루프 라인: 실내 천장은 테일게이트 쪽으로 낮아질 수 있다
+          expect(trunk.interiorCeilingAt(trunk.d),
+              closeTo(trunk.h - trunk.rearCeilingDrop, 0.001),
+              reason: '${preset.name} interior ceiling at opening');
+          expect(trunk.interiorCeilingAt(0), closeTo(trunk.h, 0.001),
+              reason: '${preset.name} interior ceiling at seat back');
+        } else {
+          // z=d (입구)에서 천장 높이 = h (드롭 없음)
+          expect(trunk.ceilingHeightAt(trunk.d), closeTo(trunk.h, 0.001),
+              reason: '${preset.name} ceiling at opening should equal h');
+        }
 
         // z=0 (뒤)에서 천장 높이 <= h
         expect(trunk.ceilingHeightAt(0), lessThanOrEqualTo(trunk.h),
@@ -592,13 +612,9 @@ void main() {
   group('E2E-10: Stacking behavior', () {
     test('자동배치 스태킹: 바닥 위에 쌓기', () {
       final trunk = TrunkSpace.sorento();
-      // 의도적으로 바닥 면적보다 많은 짐
+      // 의도적으로 바닥 면적보다 많은 짐 (바닥 약 1.1 m² 에 2.1 m²)
       final boxes = [
-        _box('big1', 0.50, 0.50, 0.20),
-        _box('big2', 0.50, 0.50, 0.20),
-        _box('big3', 0.50, 0.50, 0.20),
-        _box('big4', 0.50, 0.50, 0.20),
-        _box('big5', 0.50, 0.50, 0.20),
+        for (var i = 1; i <= 8; i++) _box('big$i', 0.50, 0.50, 0.20),
         _box('small_top', 0.30, 0.30, 0.15),
       ];
 

@@ -19,17 +19,75 @@ void main() {
       expect(s.bodyExtX, closeTo(0.18, 0.01));
     });
 
-    test('쏘렌토 치수 검증', () {
+    test('쏘렌토 치수 검증 (실측 기반)', () {
       final s = TrunkSpace.sorento();
-      expect(s.w, 1.08);
-      expect(s.d, 1.10);
-      expect(s.h, 0.78);
-      expect(s.leftWheelhouse.w, 0.08);
-      expect(s.leftWheelhouse.h, 0.30);
+      expect(s.w, 1.38);
+      expect(s.d, 1.07);
+      expect(s.h, 0.82);
+      expect(s.leftWheelhouse.w, 0.145);
+      expect(s.leftWheelhouse.h, 0.35);
+      expect(s.rearCeilingDrop, 0.03);
+      expect(s.aperture!.height, 0.79);
       // body profile
-      expect(s.bodyWidth, 1.44);
-      expect(s.trunkLipHeight, 0.58);
-      expect(s.bodyExtX, closeTo(0.18, 0.01));
+      expect(s.bodyWidth, 1.90);
+      expect(s.trunkLipHeight, 0.78);
+    });
+
+    test('쏘렌토 뒤쪽 경계 프로필: 위로 갈수록 안쪽, 개구부 위는 프레임 두께 이상', () {
+      final s = TrunkSpace.sorento();
+      expect(s.rearInsetAt(0), 0);
+      expect(s.rearDepthAt(0), s.d);
+      var prev = 0.0;
+      for (var y = 0.0; y <= s.h + 1e-9; y += 0.02) {
+        final inset = s.rearInsetAt(y);
+        expect(inset, greaterThanOrEqualTo(prev - 1e-12), reason: 'y=$y');
+        prev = inset;
+      }
+      expect(s.rearInsetAt(0.42), closeTo(0.04, 1e-9));
+      expect(s.rearInsetAt(0.79), closeTo(0.26, 1e-9));
+      expect(s.rearInsetAt(s.h), greaterThanOrEqualTo(s.aperture!.frameDepth));
+      // 역함수: 테일게이트 바닥선에서 26cm 앞이면 개구부 상단 높이까지
+      expect(s.rearCeilingAt(s.d - 0.26), closeTo(0.79, 1e-6));
+      expect(s.ceilingHeightAt(s.d - 0.26), lessThanOrEqualTo(0.79 + 1e-6));
+      // 개구부 상단에 닿는 선 앞쪽은 실내 천장
+      expect(s.ceilingHeightAt(0.3), closeTo(s.interiorCeilingAt(0.3), 1e-9));
+      // 천장은 테일게이트 쪽으로 낮아진다
+      expect(s.interiorCeilingAt(0), s.h);
+      expect(s.interiorCeilingAt(s.d), closeTo(s.h - s.rearCeilingDrop, 1e-9));
+    });
+
+    test('쏘렌토 등받이 프로필: 위로 갈수록 뒤로, 헤드레스트 구간은 수직', () {
+      final s = TrunkSpace.sorento();
+      expect(s.frontInsetAt(0), 0);
+      expect(s.frontInsetAt(0.30), closeTo(0.11, 1e-9));
+      expect(s.frontInsetAt(0.60), closeTo(0.22, 1e-9));
+      expect(s.frontInsetAt(0.80), closeTo(0.22, 1e-9));
+    });
+
+    test('개구부: 프레임 구간에서만 좁아진다', () {
+      final s = TrunkSpace.sorento();
+      final ap = s.aperture!;
+      expect(s.xMinAt(0.5, 0.2), closeTo(0, 1e-9));
+      expect(s.xMinAt(s.d, 0.0), closeTo((s.w - ap.bottomWidth) / 2, 1e-9));
+      expect(s.xMinAt(s.d, ap.height), closeTo((s.w - ap.topWidth) / 2, 1e-9));
+      expect(s.xMaxAt(s.d, 0.0) - s.xMinAt(s.d, 0.0), closeTo(ap.bottomWidth, 1e-9));
+      // 천장 쪽 텀블홈: 프레임 밖에서도 높은 곳은 좁다
+      expect(s.xMinAt(0.5, s.h), closeTo(s.ceilingNarrow, 1e-9));
+    });
+
+    test('실사용 부피는 형상 제약을 뺀 값이고 JSON 왕복 후에도 같다', () {
+      final s = TrunkSpace.sorento();
+      final boxVol = s.w * s.d * s.h;
+      expect(s.usableVolume, lessThan(boxVol * 0.8));
+      expect(s.usableVolume, greaterThan(boxVol * 0.6));
+      final back = TrunkSpace.fromJson(s.toJson());
+      expect(back.rearProfile!.points.length, s.rearProfile!.points.length);
+      expect(back.frontProfile!.points.length, s.frontProfile!.points.length);
+      expect(back.aperture!.bottomWidth, s.aperture!.bottomWidth);
+      expect(back.rearCeilingDrop, s.rearCeilingDrop);
+      expect(back.ceilingNarrow, s.ceilingNarrow);
+      expect(back.officialVolumeLabel, s.officialVolumeLabel);
+      expect(back.usableVolume, closeTo(s.usableVolume, 1e-9));
     });
 
     test('싼타페 치수 검증', () {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
+import '../utils/collision.dart';
 
 /// 박스 리스트 패널 — 각 박스 정보 + 회전/삭제 버튼
 class BoxListPanel extends StatelessWidget {
@@ -47,12 +48,12 @@ class BoxListPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (scrollController != null) {
-      return _buildScrollablePanel();
+      return _buildScrollablePanel(context);
     }
-    return _buildFixedPanel();
+    return _buildFixedPanel(context);
   }
 
-  Widget _buildFixedPanel() {
+  Widget _buildFixedPanel(BuildContext context) {
     return Container(
       color: const Color(0xFF252525),
       child: Column(
@@ -73,13 +74,13 @@ class BoxListPanel extends StatelessWidget {
           // 적재 순서 가이드 버튼
           if (boxes.isNotEmpty && onStepView != null && _hasLoadOrders()) _stepViewButton(),
           // 하단 통계
-          if (boxes.isNotEmpty) _statsBar(),
+          if (boxes.isNotEmpty) _statsBar(context),
         ],
       ),
     );
   }
 
-  Widget _buildScrollablePanel() {
+  Widget _buildScrollablePanel(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
         color: Color(0xFF252525),
@@ -99,7 +100,7 @@ class BoxListPanel extends StatelessWidget {
           else ...[
             if (onAutoLayout != null) _heroAutoLayoutButton(),
             if (onStepView != null && _hasLoadOrders()) _stepViewButton(),
-            _statsBar(),
+            _statsBar(context),
           ],
           _buildActionBar(),
           ...boxes.map((b) => Padding(
@@ -402,7 +403,7 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
-  Widget _statsBar() {
+  Widget _statsBar(BuildContext context) {
     // 면적 점유율
     final boxArea = boxes.fold<double>(
         0.0, (sum, b) => sum + b.effectiveW * b.effectiveD);
@@ -433,18 +434,14 @@ class BoxListPanel extends StatelessWidget {
     }
     final remainH = ((space.h - maxStackTop) * 100).round();
 
-    // 높이 초과 박스 찾기 (위치별 천장 높이 반영)
-    final overHeightBoxes = <String>[];
+    // 배치 불가 사유 (천장·테일게이트·개구부·경계·겹침) — CollisionDetector 가 단일 진실
+    final detector = CollisionDetector(space);
+    final warnings = <String>[];
     for (final b in boxes) {
-      final ceilAtZ1 = space.ceilingHeightAt(b.z);
-      final ceilAtZ2 = space.ceilingHeightAt(b.z + b.effectiveD);
-      final minCeil = ceilAtZ1 < ceilAtZ2 ? ceilAtZ1 : ceilAtZ2;
-      final over = b.y + b.h - minCeil;
-      // CollisionDetector.isOverHeight 와 같은 5mm 허용 오차
-      if (over > 0.005) {
-        final name = b.label.isNotEmpty ? b.label : b.id;
-        overHeightBoxes.add('$name (+${(over * 100).round()}cm)');
-      }
+      final reasons = detector.describe(b, boxes);
+      if (reasons.isEmpty) continue;
+      final name = b.label.isNotEmpty ? b.label : b.id;
+      warnings.add('$name: ${reasons.join(', ')}');
     }
 
     return Container(
@@ -475,31 +472,88 @@ class BoxListPanel extends StatelessWidget {
           const SizedBox(height: 4),
           // 부피 점유율
           _progressRow('부피', volPct, volRatio),
-          // 높이 초과 경고
-          if (overHeightBoxes.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            for (final msg in overHeightBoxes)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Row(
-                  children: [
-                    const Icon(Icons.warning_amber_rounded,
-                        color: Color(0xFFFF4D4D), size: 14),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        '$msg 높이 초과',
-                        style: const TextStyle(
-                          color: Color(0xFFFF6B6B),
-                          fontSize: 11,
-                        ),
-                        overflow: TextOverflow.ellipsis,
+          const SizedBox(height: 6),
+          // 배치 상태 — 항상 한 줄 (레이아웃이 흔들리지 않게). 탭하면 전체 사유.
+          _statusRow(context, warnings),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusRow(BuildContext context, List<String> warnings) {
+    if (warnings.isEmpty) {
+      return const Row(
+        children: [
+          Icon(Icons.check_circle_outline, color: Color(0xFF6BD06B), size: 14),
+          SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              '배치 문제 없음 · 테일게이트 닫힘',
+              style: TextStyle(color: Color(0xFF6BD06B), fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      );
+    }
+    final more = warnings.length > 1 ? ' (+${warnings.length - 1})' : '';
+    return InkWell(
+      onTap: () => _showWarningsDialog(context, warnings),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFFF4D4D), size: 14),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              '${warnings.first}$more',
+              style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 11),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const Icon(Icons.chevron_right, color: Color(0xFFFF6B6B), size: 14),
+        ],
+      ),
+    );
+  }
+
+  void _showWarningsDialog(BuildContext context, List<String> warnings) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: Text('배치 문제 ${warnings.length}개',
+            style: const TextStyle(color: Colors.white, fontSize: 16)),
+        content: SizedBox(
+          width: 360,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final w in warnings)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          color: Color(0xFFFF4D4D), size: 16),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(w,
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 13)),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('확인'),
+          ),
         ],
       ),
     );
