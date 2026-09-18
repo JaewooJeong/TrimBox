@@ -1,7 +1,7 @@
 import { Page } from '@playwright/test';
 import {
   test, expect, shot, startDesktop, addBundle, waitForSnackGone, waitForSnack, waitForDim, waitForStable,
-  diffRatio, isDimmed, countHue, verdictDotHue, bboxOfHue, center, D, RD, DESKTOP,
+  diffRatio, isDimmed, countHue, verdictDotHue, bboxOfHue, center, D, RD, DESKTOP, Region,
 } from './helpers';
 
 /** 자동 배치 대안 다이얼로그(전략 3종)와 적재 순서 가이드(스텝 뷰) */
@@ -15,22 +15,26 @@ const CARDS = [
 ];
 const APPLY: [number, number] = [779, 647];
 const CANCEL: [number, number] = [683, 647];
-const STEP_AREA = { x: 200, y: 870, w: 560, h: 80 };
+// 스텝 컨트롤은 캔버스 왼쪽 위 (12,68)–(328,123) 에 고정 폭으로 놓인다 (왼쪽 아래 캡션·상태 알약을 가리지 않게)
+const STEP_AREA = { x: 0, y: 60, w: 345, h: 72 };
 
 /**
- * 스텝 컨트롤은 라벨 길이에 따라 폭이 달라져 버튼이 단계마다 움직인다.
- * 그래서 초록 테두리 상자를 찾아 그 안의 상대 위치로 누른다.
+ * 스텝 컨트롤의 초록 테두리 상자를 찾아 그 안의 고정 위치를 누른다.
+ * 라벨 폭이 고정이라 ✕(+29.5) ‹(+84.5) ›(+284.5) 는 단계가 바뀌어도 같은 자리다
+ * (test/widgets/simulator_edit_test.dart 가 데스크톱 좌표를 찍어 준다).
  */
 async function stepButtons(page: Page) {
   const s = await shot(page);
   const box = bboxOfHue(s, STEP_AREA, 'green');
   expect(box, '스텝 컨트롤(초록 테두리)이 보여야 한다').not.toBeNull();
+  expect(Math.abs(box!.x - 12), `컨트롤 왼쪽 x=${box!.x}`).toBeLessThanOrEqual(3);
+  expect(Math.abs(box!.y - 68), `컨트롤 위쪽 y=${box!.y}`).toBeLessThanOrEqual(3);
   const y = box!.y + box!.h / 2;
   return {
     box: box!,
-    close: [box!.x + 29, y] as [number, number],
-    prev: [box!.x + 63, y] as [number, number],
-    next: [box!.x + box!.w - 32, y] as [number, number],
+    close: [box!.x + 29.5, y] as [number, number],
+    prev: [box!.x + 84.5, y] as [number, number],
+    next: [box!.x + 284.5, y] as [number, number],
   };
 }
 
@@ -117,22 +121,32 @@ test('자동 배치: 전략 카드 3개 · 선택 이동 · 취소는 그대로 
   expect(diffRatio(applied, closed, RD.canvasCore), '닫으면 전체 배치로 복귀').toBeLessThan(0.005);
 });
 
-// UX 버그: 스텝 컨트롤 폭이 라벨 길이에 따라 달라져 ✕/‹/› 버튼이 단계마다 움직인다.
-// 같은 자리에서 "다음"을 연달아 누르다 보면 "이전"이나 "닫기"가 눌린다 (3단계에서 재현:
-// 1단계의 ‹ 자리(399,912)가 3단계에서는 ✕ 이다). 버튼 위치가 고정되면 fixme 를 푼다.
-test.fixme('BUG: 스텝 뷰의 다음/이전/닫기 버튼 위치가 단계마다 바뀐다', async ({ page }) => {
+// 예전 버그: 스텝 컨트롤 폭이 라벨 길이에 따라 달라져 ✕/‹/› 버튼이 단계마다 움직였다
+// (같은 자리에서 "다음"을 연달아 누르다 "이전"이나 "닫기"가 눌렸다). 지금은 라벨 폭이 고정이다.
+test('스텝 뷰의 다음/이전/닫기 버튼은 단계가 바뀌어도(라벨 길이가 달라도) 제자리에 있다', async ({ page }) => {
   await startDesktop(page);
   expect((await addBundle(page, 'family')).kind).toBe('green');
   await waitForSnackGone(page);
   await page.mouse.click(...D.stepGuide);
+  await page.mouse.move(600, 500);
   await page.waitForTimeout(800);
-  const xs: number[] = [];
-  for (let i = 0; i < 4; i++) {
+  const boxes: Region[] = [];
+  for (let i = 0; i < 5; i++) {
     const b = await stepButtons(page);
-    xs.push(Math.round(b.next[0]));
+    boxes.push(b.box);
     await page.mouse.click(...b.next);
-    await page.waitForTimeout(500);
+    await page.mouse.move(600, 500);
+    await page.waitForTimeout(450);
   }
-  await shot(page, 'autolayout-bug-step-buttons-move');
-  expect(Math.max(...xs) - Math.min(...xs), `"다음" 버튼 x 좌표들: ${xs.join(', ')}`).toBeLessThanOrEqual(2);
+  await shot(page, 'autolayout-08-step-buttons-fixed');
+  const xs = boxes.map((b) => Math.round(b.x));
+  const ws = boxes.map((b) => Math.round(b.w));
+  const ys = boxes.map((b) => Math.round(b.y));
+  expect(Math.max(...xs) - Math.min(...xs), `컨트롤 x 좌표들: ${xs.join(', ')}`).toBeLessThanOrEqual(1);
+  expect(Math.max(...ws) - Math.min(...ws), `컨트롤 폭들: ${ws.join(', ')}`).toBeLessThanOrEqual(1);
+  expect(Math.max(...ys) - Math.min(...ys), `컨트롤 y 좌표들: ${ys.join(', ')}`).toBeLessThanOrEqual(1);
+  // 왼쪽 아래 캡션·테일게이트 상태 알약(y≥906)을 가리지 않는다
+  expect(boxes[0].y + boxes[0].h).toBeLessThan(RD.pill.y - 600);
+  // 5단계까지 갔으니 화면(짐 수)이 1단계와 다르다
+  await page.mouse.click(...(await stepButtons(page)).close);
 });

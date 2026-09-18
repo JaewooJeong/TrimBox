@@ -18,6 +18,8 @@ const _sizes = <String, Size>{
   '폰 390×844': kPhone,
   '안드로이드 폰 360×800': Size(360, 800),
   '낮은 폰 390×600': kPhoneShort,
+  '작은 폰 360×640': Size(360, 640),
+  '폰 가로 844×390': Size(844, 390),
 };
 
 /// pump 중 보고된 FlutterError 를 단계 라벨과 함께 모은다.
@@ -103,7 +105,13 @@ void main() {
           e.stage = '온보딩';
           await pumpApp(tester, size: size);
           expect(find.text('아무 곳이나 탭하여 닫기'), findsOneWidget);
-          // 낮은 화면에서는 안내 문구가 잘려 화면 밖이다 → 카드 위쪽 제목을 누른다
+          if (size.height >= 640) {
+            // 카드 전체(닫기 안내까지)가 캔버스 안에 보인다
+            final hint = tester.getRect(find.text('아무 곳이나 탭하여 닫기'));
+            expect(hint.bottom, lessThanOrEqualTo(canvasRect(tester).bottom),
+                reason: '$hint');
+          }
+          // 가장 낮은 화면(390×600)에서는 카드가 스크롤된다 → 위쪽 제목을 누른다
           await tester.tap(find.text('박스를 추가하여\n시뮬레이션을 시작하세요'));
           await tester.pumpAndSettle();
           expect(find.text('아무 곳이나 탭하여 닫기'), findsNothing);
@@ -112,11 +120,13 @@ void main() {
           expect(find.text('캠핑 장비 선택하기'), findsOneWidget);
           expect(find.byType(DraggableScrollableSheet),
               isPhone ? findsOneWidget : findsNothing);
-          if (size.height >= 800) {
-            // 시트를 올리지 않아도 CTA 가 화면 안에 있다
-            final r = tester.getRect(find.text('캠핑 장비 선택하기'));
-            expect(r.bottom, lessThanOrEqualTo(size.height));
-            expect(r.top, greaterThanOrEqualTo(0));
+          {
+            // 어느 크기에서도 시트를 올리지 않고 CTA 버튼 전체가 화면 안에 있다
+            final r = tester.getRect(find.ancestor(
+                of: find.text('캠핑 장비 선택하기'),
+                matching: find.bySubtype<ButtonStyleButton>()));
+            expect(r.bottom, lessThanOrEqualTo(size.height), reason: '$r');
+            expect(r.top, greaterThanOrEqualTo(kToolbarHeight));
           }
           await openAddDialog(tester);
           expect(find.byType(AddBoxDialog), findsOneWidget);
@@ -148,6 +158,12 @@ void main() {
           await tester.pumpAndSettle();
           expect(find.text('추가 (16개)'), findsOneWidget);
           e.stage = '검색';
+          // 낮은 화면(폰 가로)에서는 머리말이 목록과 함께 스크롤된다 → 맨 위로
+          await tester.drag(
+              find.descendant(
+                  of: find.byType(AddBoxDialog), matching: find.byType(ListView)),
+              const Offset(0, 800));
+          await tester.pumpAndSettle();
           await tester.enterText(
               find.descendant(
                   of: find.byType(AddBoxDialog),
@@ -189,7 +205,12 @@ void main() {
           await tester.pumpAndSettle();
 
           e.stage = '스텝 뷰';
-          await _tapVisible(tester, find.text('적재 순서 가이드'));
+          await _panelToTop(tester);
+          await _tapVisible(
+              tester,
+              find.text('적재 순서 가이드').evaluate().isNotEmpty
+                  ? find.text('적재 순서 가이드')
+                  : find.byTooltip('적재 순서 가이드')); // 압축 패널은 아이콘 버튼
           expect(find.textContaining('STEP 1 / '), findsOneWidget);
           await tester.tap(stepButton(Icons.chevron_right));
           await tester.pumpAndSettle();
@@ -260,7 +281,7 @@ void main() {
           e.stage = '차종 메뉴 → 7인승 (가장 긴 라벨)';
           await tester.tap(presetButton());
           await tester.pumpAndSettle();
-          await tester.tap(find.text(TrunkPreset.sorento7.label));
+          await tester.tap(presetMenuItem(TrunkPreset.sorento7));
           await tester.pumpAndSettle();
 
           e.stage = '커스텀 트렁크 다이얼로그 (휠하우스 펼침)';
@@ -331,6 +352,203 @@ void main() {
       }
     });
   }
+
+  group('10b. 폰 시트 초기 높이', () {
+    testWidgets('390×844 은 기존 28% 그대로 (모바일 E2E 좌표 유지), 작은 폰은 CTA 가 다 보이게 키운다',
+        (tester) async {
+      await _collecting(tester, (e) async {
+        await pumpApp(tester, size: kPhone, prefs: seenPrefs());
+        final body = kPhone.height - kToolbarHeight;
+        expect(tester.getRect(find.byType(BoxListPanel)).height,
+            closeTo(body * 0.28, 0.5));
+      });
+      await _collecting(tester, (e) async {
+        await pumpApp(tester, size: const Size(360, 640), prefs: seenPrefs());
+        final sheet = tester.getRect(find.byType(BoxListPanel));
+        expect(sheet.height, closeTo(220, 1), reason: '584 의 28% = 164 가 아니라 약 220');
+        final cta = tester.getRect(find.ancestor(
+            of: find.text('캠핑 장비 선택하기'),
+            matching: find.bySubtype<ButtonStyleButton>()));
+        expect(cta.bottom, lessThanOrEqualTo(640 - 8), reason: 'CTA 가 잘리지 않는다: $cta');
+        // 캔버스는 시트가 덮지 않는 영역만 쓴다
+        expect(canvasRect(tester).bottom, closeTo(sheet.top, 1));
+        // 끝까지 올리면 85%, 내리면 12%
+        await expandSheet(tester);
+        expect(tester.getRect(find.byType(BoxListPanel)).height,
+            closeTo((640 - kToolbarHeight) * 0.85, 2));
+      });
+    });
+  });
+
+  group('10c. 폰 가로 (844×390): 옆 패널 + 압축 배치', () {
+    const landscape = Size(844, 390);
+
+    testWidgets('목록이 3행 이상 보이고 핵심 동작이 모두 한 화면에 있다', (tester) async {
+      await _collecting(tester, (e) async {
+        await pumpApp(tester, size: landscape, prefs: seenPrefs());
+        expect(find.byType(DraggableScrollableSheet), findsNothing);
+        expect(panelOf(tester).compact, isTrue);
+        expect(tester.getSize(find.byType(BoxListPanel)).width, 300);
+        e.stage = '빈 상태';
+        final cta = tester.getRect(find.ancestor(
+            of: find.text('캠핑 장비 선택하기'),
+            matching: find.bySubtype<ButtonStyleButton>()));
+        expect(cta.bottom, lessThanOrEqualTo(landscape.height));
+
+        e.stage = '세트 추가';
+        await addBundle(tester, '2인 미니멀 캠핑');
+        await flushSnackBars(tester);
+
+        // 목록 뷰포트 안에 온전히 들어온 타일 수
+        final list = tester.getRect(find.descendant(
+            of: find.byType(BoxListPanel), matching: find.byType(ListView)));
+        final visible = tester
+            .widgetList<Card>(find.descendant(
+                of: find.byType(BoxListPanel), matching: find.byType(Card)))
+            .where((c) {
+          final r = tester.getRect(find.byWidget(c));
+          return r.top >= list.top - 0.5 && r.bottom <= list.bottom + 0.5;
+        }).length;
+        expect(visible, greaterThanOrEqualTo(3), reason: '목록 영역 $list');
+
+        // 한 줄 액션바 · 낮은 히어로 버튼 한 줄 · 통계 한 줄 + 상태 줄
+        final add = tester.getRect(find.descendant(
+            of: find.byType(BoxListPanel), matching: find.text('박스 추가')));
+        final save = tester.getRect(find.byTooltip('배치 저장'));
+        expect((add.center.dy - save.center.dy).abs(), lessThan(1), reason: '같은 줄');
+        final quick = tester.getRect(find.ancestor(
+            of: find.text('들어갈까?'), matching: find.bySubtype<ButtonStyleButton>()));
+        final auto = tester.getRect(find.ancestor(
+            of: find.text('자동 배치'), matching: find.bySubtype<ButtonStyleButton>()));
+        expect(quick.height, lessThanOrEqualTo(36));
+        expect((quick.center.dy - auto.center.dy).abs(), lessThan(1));
+        expect(find.textContaining(RegExp(r'^박스 9개 · 부피 \d+% · 남은 높이 \d+cm$')),
+            findsOneWidget);
+        expect(statusOf(tester), isNot(StatusState.problems));
+        for (final tip in ['배치 저장', '불러오기', '실행 취소', '적재 순서 가이드']) {
+          expect(find.byTooltip(tip), findsOneWidget, reason: tip);
+        }
+
+        e.stage = '판정';
+        await tester.tap(find.text('들어갈까?'));
+        await tester.pumpAndSettle();
+        expect(find.text('모두 적재 가능!'), findsOneWidget);
+        await tester.tap(find.text('확인'));
+        await tester.pumpAndSettle();
+
+        e.stage = '스텝 뷰';
+        await tester.tap(find.byTooltip('적재 순서 가이드'));
+        await tester.pumpAndSettle();
+        expect(find.text('STEP 1 / 9'), findsOneWidget);
+        await tester.tap(find.byTooltip('스텝뷰 닫기'));
+        await tester.pumpAndSettle();
+        await flushAutosave(tester);
+      });
+    });
+
+    testWidgets('태블릿·데스크톱은 기존 패널 그대로 (압축 아님)', (tester) async {
+      for (final size in [kTablet, kDesktop, const Size(1024, 600)]) {
+        await pumpAppWithScene(tester, [
+          mkBox('box-001', '가', w: 0.50, d: 0.30, h: 0.30, x: 0.20, z: 0.20),
+        ], size: size);
+        expect(panelOf(tester).compact, isFalse, reason: '$size');
+        expect(find.text('박스: 1개'), findsOneWidget, reason: '$size');
+        expect(tester.getSize(find.byType(BoxListPanel)).width,
+            size.width > 900 ? 320 : 280);
+      }
+    });
+
+    testWidgets('온보딩은 두 단으로 눕혀 카드 전체와 "탭하여 닫기" 가 캔버스 안에 보인다',
+        (tester) async {
+      await _collecting(tester, (e) async {
+        e.stage = '온보딩';
+        await pumpApp(tester, size: landscape);
+        final canvas = canvasRect(tester);
+        final hint = tester.getRect(find.text('아무 곳이나 탭하여 닫기'));
+        expect(hint.bottom, lessThanOrEqualTo(canvas.bottom), reason: '$hint in $canvas');
+        expect(hint.top, greaterThanOrEqualTo(canvas.top));
+        final title = tester.getRect(find.text('박스를 추가하여\n시뮬레이션을 시작하세요'));
+        expect(title.top, greaterThanOrEqualTo(canvas.top));
+        // 제목과 조작법이 옆으로 나란하다
+        expect(tester.getRect(find.text('조작법')).left, greaterThan(title.right));
+        await tester.tap(find.text('아무 곳이나 탭하여 닫기'));
+        await tester.pumpAndSettle();
+        expect(find.text('아무 곳이나 탭하여 닫기'), findsNothing);
+      });
+    });
+  });
+
+  group('10d. 폰에서 판정 다이얼로그 버튼', () {
+    /// 세로로 쌓인 버튼 사이가 8px 이상이고 어느 둘도 겹치지 않는다
+    void expectSeparated(WidgetTester tester, String what) {
+      final buttons = find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.bySubtype<ButtonStyleButton>());
+      final rects = [for (final e in buttons.evaluate()) tester.getRect(find.byWidget(e.widget))]
+        ..sort((a, b) => a.top.compareTo(b.top));
+      expect(rects.length, greaterThanOrEqualTo(2), reason: what);
+      for (var i = 0; i < rects.length; i++) {
+        for (var j = i + 1; j < rects.length; j++) {
+          final a = rects[i], b = rects[j];
+          expect(a.overlaps(b), isFalse, reason: '$what: $a 와 $b 가 겹친다');
+          final sameColumn = a.left < b.right && b.left < a.right;
+          final stacked = b.top >= a.bottom - 0.5;
+          if (sameColumn && stacked) {
+            expect(b.top - a.bottom, greaterThanOrEqualTo(8),
+                reason: '$what: 세로 간격 ${b.top - a.bottom}');
+          }
+        }
+      }
+    }
+
+    for (final size in const [kPhone, Size(360, 800)]) {
+      testWidgets('세 판정 분기와 자동 배치 다이얼로그 — ${size.width.round()}dp',
+          (tester) async {
+        await _collecting(tester, (e) async {
+          await pumpApp(tester, size: size, prefs: seenPrefs());
+          final load = (w: 100, d: (TrunkSpace.sorento().d * 100).round() + 10, h: 25);
+
+          e.stage = '하나도 안 들어감 (2열 제안 포함)';
+          await addCustomBox(tester, label: '긴 짐', w: load.w, d: load.d, h: load.h);
+          await flushSnackBars(tester);
+          await _tapVisible(tester, find.text('들어갈까?'));
+          expect(find.text('적재 불가'), findsOneWidget);
+          expectSeparated(tester, '적재 불가');
+          await tester.tap(find.text('확인'));
+          await tester.pumpAndSettle();
+
+          e.stage = '일부만 들어감';
+          await addCustomBox(tester, label: '작은 박스', w: 30, d: 30, h: 20);
+          await flushSnackBars(tester);
+          await _tapVisible(tester, find.text('들어갈까?'));
+          expect(find.text('1/2개 적재 가능'), findsOneWidget);
+          expectSeparated(tester, '일부 적재');
+          final apply = find.textContaining(RegExp(r'^2열 \+\d+cm 적용$'));
+          expect(apply, findsOneWidget);
+
+          e.stage = '2열 제안 적용 → 모두 적재';
+          await tester.tap(apply);
+          await tester.pumpAndSettle();
+          expect(find.text('모두 적재 가능!'), findsOneWidget);
+          for (final t in ['확인', '순서 가이드', '배치 저장']) {
+            expect(find.text(t), findsOneWidget, reason: t);
+          }
+          expectSeparated(tester, '모두 적재');
+          await tester.tap(find.text('확인'));
+          await tester.pumpAndSettle();
+          await flushSnackBars(tester);
+
+          e.stage = '자동 배치 대안';
+          await _tapVisible(tester, find.text('자동 배치'));
+          expect(find.text('이 배치 적용'), findsOneWidget);
+          expectSeparated(tester, '자동 배치');
+          await tester.tap(find.text('취소'));
+          await tester.pumpAndSettle();
+          await flushAutosave(tester);
+        });
+      });
+    }
+  });
 
   group('10. 레이아웃 — 좁은·낮은 화면 회귀', () {
     testWidgets('폰 폭(390)에서 앱바가 넘치지 않고 2열 컨트롤을 누를 수 있다', (tester) async {

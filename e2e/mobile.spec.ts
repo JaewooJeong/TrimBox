@@ -180,13 +180,15 @@ type Sanity = {
 const SANITY: Sanity[] = [
   {
     name: 's360', title: '작은 폰 360×640', vp: { width: 360, height: 640 },
-    cta: [180, 631], family: [246, 280], add: [295, 588], quick: [69, 524],
-    pill: { x: 4, y: 408, w: 130, h: 28 },
+    // 시트 초기 높이 220px (캔버스 56..420) — CTA 가 잘리지 않는다
+    cta: [180, 590], family: [246, 280], add: [295, 588], quick: [69, 468],
+    pill: { x: 4, y: 351, w: 130, h: 28 },
   },
   {
     name: 'landscape', title: '가로 844×390', vp: { width: 844, height: 390 },
-    cta: [704, 314], family: [412, 275], add: [613, 338], quick: [633, 206],
-    pill: { x: 4, y: 338, w: 130, h: 28 },
+    // 시트 대신 오른쪽 300px 압축 패널 (캔버스 0..544 × 56..390)
+    cta: [694, 194], family: [412, 275], add: [613, 338], quick: [591, 316],
+    pill: { x: 4, y: 319, w: 130, h: 44 },
   },
   {
     name: 'tablet', title: '태블릿 820×1180', vp: { width: 820, height: 1180 },
@@ -242,13 +244,13 @@ for (const c of SANITY) {
   });
 }
 
-test.describe('폰 390×844 — 알려진 UX 문제', () => {
+test.describe('폰 390×844 — 판정 다이얼로그 버튼 간격', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
 
-  // UX 버그: 폰 폭에서는 판정 다이얼로그의 버튼 3개(확인/순서 가이드/배치 저장)가 한 줄에 안 들어가
-  // 세로로 접히는데, "순서 가이드"와 "배치 저장" 사이 간격이 0px 이라 터치 오작동 위험이 있다.
-  // (스크린샷: e2e/screenshots/mobile-04-quickcheck.png, mobile-s360-04-quickcheck.png)
-  test.fixme('BUG: 폰 판정 다이얼로그의 "순서 가이드"·"배치 저장" 버튼이 간격 없이 붙어 있다', async ({ page }) => {
+  // 예전 버그: 폰 폭에서는 판정 다이얼로그의 버튼 3개(확인/순서 가이드/배치 저장)가 한 줄에 안 들어가
+  // 세로로 접히는데, "순서 가이드"와 "배치 저장" 사이 간격이 0px 이라 터치 오작동 위험이 있었다.
+  // 지금은 actionsOverflowButtonSpacing 8px (외곽선 버튼의 경계 상자는 ±1px 오차).
+  test('폰 판정 다이얼로그의 "순서 가이드"·"배치 저장" 버튼은 한 줄이거나 8px 간격으로 떨어져 있다', async ({ page }) => {
     await startPhone(page);
     expect((await addFamily(page)).kind).toBe('green');
     await waitForSnackGone(page, 9000, RM.snack);
@@ -264,16 +266,16 @@ test.describe('폰 390×844 — 알려진 UX 문제', () => {
     expect(blue).not.toBeNull();
     const sameRow = Math.abs(green!.y - blue!.y) < 10;
     const gap = blue!.y - (green!.y + green!.h);
-    expect(sameRow || gap >= 8, `버튼 세로 간격 ${gap.toFixed(1)}px (8px 이상이거나 한 줄이어야 한다)`).toBe(true);
+    expect(sameRow || gap >= 6, `버튼 세로 간격 ${gap.toFixed(1)}px (약 8px 이상이거나 한 줄이어야 한다)`).toBe(true);
   });
 });
 
-test.describe('가로 844×390 — 알려진 UX 문제', () => {
+test.describe('가로 844×390 — 옆 패널 압축 배치', () => {
   test.use({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
 
-  // UX 버그: 가로 폰(높이 390)에서는 패널의 액션바·버튼·통계가 높이를 다 써서 짐 목록이 0줄이 된다.
-  // 목록에서 짐을 고르거나 회전/삭제할 방법이 없다. (스크린샷: e2e/screenshots/mobile-landscape-03-idle.png)
-  test.fixme('BUG: 가로 폰에서 패널의 짐 목록이 한 줄도 보이지 않는다', async ({ page }) => {
+  // 예전 버그: 가로 폰(높이 390)에서는 시트 패널의 액션바·버튼·통계가 높이를 다 써서 짐 목록이 0줄이었다.
+  // 지금은 오른쪽 300px 압축 패널(한 줄 액션바 · 36px 히어로 줄 · 통계 한 줄)이라 목록이 3행 이상 보인다.
+  test('가로 폰에서 패널의 짐 목록이 3행 이상 보이고 삭제 버튼을 누를 수 있다', async ({ page }) => {
     const c = SANITY[1];
     await waitForApp(page);
     await page.touchscreen.tap(250, 150);
@@ -286,9 +288,17 @@ test.describe('가로 844×390 — 알려진 UX 문제', () => {
     const snackR: Region = { x: 211, y: 360, w: 253, h: 18 };
     expect((await waitForSnack(page, 12000, snackR)).kind).toBe('green');
     await waitForSnackGone(page, 9000, snackR);
-    const idle = await shot(page, 'mobile-bug-landscape-list');
-    // 목록 타일의 빨간 삭제 아이콘 수 = 보이는 타일 수
-    const tiles = countRuns(idle, { x: 788, y: 60, w: 22, h: 120 }, 'red');
-    expect(tiles, '가로 화면에서도 짐 목록이 최소 1줄은 보여야 한다').toBeGreaterThanOrEqual(1);
+    const idle = await shot(page, 'mobile-landscape-list');
+    // 목록(y 104..294)의 빨간 삭제 아이콘 수 = 보이는 타일 수 (아이콘 열 x≈786..822, 50px 간격)
+    const listCol = { x: 793, y: 104, w: 22, h: 190 };
+    const tiles = countRuns(idle, listCol, 'red');
+    expect(tiles, '가로 화면에서도 짐 목록이 3행 이상 보여야 한다').toBeGreaterThanOrEqual(3);
+    // 첫 타일의 삭제 버튼을 누르면 타일이 하나 줄고, 판정은 여전히 초록
+    await page.touchscreen.tap(804, 129);
+    await page.waitForTimeout(800);
+    const after = await shot(page, 'mobile-landscape-list-deleted');
+    expect(countRuns(after, listCol, 'red'), '삭제 뒤에도 목록이 3행 이상').toBeGreaterThanOrEqual(3);
+    expect(diffRatio(idle, after, { x: 60, y: 100, w: 440, h: 200 }), '캔버스에서 짐이 하나 빠졌다').toBeGreaterThan(0.002);
+    expect(textHue(after, c.pill), '테일게이트 알약 초록').toBe('green');
   });
 });

@@ -109,9 +109,7 @@ void main() {
     await tester.pumpAndSettle();
     _expectInside(
         tester,
-        find.ancestor(
-            of: find.text(TrunkPreset.sorento7.label),
-            matching: find.byType(PopupMenuItem<TrunkPreset>)),
+        presetMenuItem(TrunkPreset.sorento7),
         _d.presetSorento7,
         '메뉴: 쏘렌토 7인승');
     await tester.tapAt(_d.presetSorento7);
@@ -119,7 +117,9 @@ void main() {
     expect(spaceOf(tester).vehicleName, TrunkSpace.sorento7().vehicleName);
     await flushSnackBars(tester);
     await flushAutosave(tester);
-  });
+    // 실제 데스크톱 브라우저처럼 데스크톱 플랫폼(조밀한 VisualDensity)에서도 확인한다
+  }, variant: const TargetPlatformVariant(
+      {TargetPlatform.android, TargetPlatform.windows}));
 
   testWidgets('모바일 390×844: 스모크 좌표가 의도한 위젯 안에 있다', (tester) async {
     await pumpApp(tester, size: kPhone);

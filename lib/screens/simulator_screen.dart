@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -167,6 +168,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
   /// 온보딩 표시 여부와 마지막 작업 상태 복원
   Future<void> _restoreSession() async {
+    // 웹 localStorage 에 JSON 이 아닌 우리 값이 있으면 지우고 읽는다 (플러그인이 조용히
+    // 건너뛰어 "자동 저장 없음" 으로 보이는 쓰레기 값이 남지 않게)
+    await storage.ensureReadable();
     var seen = false;
     try {
       seen = await storage.hasSeenOnboarding();
@@ -294,6 +298,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1C),
+      // 이 화면에는 입력란이 없다 (입력은 전부 다이얼로그 안). 키보드가 올라올 때 본문을
+      // 줄이면 폰 가로에서 패널이 34px 로 눌려 넘치고, 캔버스도 쓸데없이 다시 맞춰진다.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: _buildAppBarTitle(context),
         backgroundColor: const Color(0xFF1C1C1C),
@@ -310,7 +317,18 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       body: LayoutBuilder(
         builder: (context, constraints) {
           final w = constraints.maxWidth;
-          if (w > 900) {
+          final screen = MediaQuery.sizeOf(context);
+          // 폰 가로처럼 낮고 넓은 화면: 시트 대신 옆 패널, 패널은 압축 배치
+          // (일반 패널은 액션바·히어로 버튼·통계가 높이를 다 써서 목록이 0행이 된다)
+          final shortWide = screen.width > screen.height && screen.height < 500;
+          if (shortWide) {
+            return Row(
+              children: [
+                Expanded(child: _buildCanvas()),
+                SizedBox(width: 300, child: _buildPanel(compact: true)),
+              ],
+            );
+          } else if (w > 900) {
             return Row(
               children: [
                 Expanded(flex: 3, child: _buildCanvas()),
@@ -325,15 +343,19 @@ class _SimulatorScreenState extends State<SimulatorScreen>
               ],
             );
           } else {
+            // 시트 초기 높이: 빈 상태 CTA 가 온전히 보이는 약 220px.
+            // 390×844 에서는 기존 28% 그대로, 작은 폰(360×640)에서는 비율을 키운다.
+            final sheetInitial =
+                (_sheetInitialPx / constraints.maxHeight).clamp(0.28, 0.5);
             return Stack(
               children: [
                 // 시트 초기 높이만큼 비워 트렁크가 가려지지 않게 한다
                 Positioned.fill(
-                  bottom: constraints.maxHeight * 0.28,
+                  bottom: constraints.maxHeight * sheetInitial,
                   child: _buildCanvas(),
                 ),
                 DraggableScrollableSheet(
-                  initialChildSize: 0.28,
+                  initialChildSize: sheetInitial,
                   minChildSize: 0.12,
                   maxChildSize: 0.85,
                   builder: (ctx, scrollCtrl) => _buildDraggablePanel(scrollCtrl),
@@ -345,6 +367,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       ),
     );
   }
+
+  /// 폰 시트의 초기 높이 목표 (손잡이 + 빈 상태 안내 + CTA)
+  static const double _sheetInitialPx = 220;
 
   // ──── 앱바: 차종 · 2열 슬라이드 ────
 
@@ -380,6 +405,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       initialValue: _selectedPreset,
       color: const Color(0xFF333333),
       tooltip: '차종 선택',
+      // 기본 최대 폭(280)에서는 둘째 줄 설명이 잘린다
+      constraints: const BoxConstraints(minWidth: 280, maxWidth: 340),
       onSelected: _onPresetChanged,
       itemBuilder: (_) => _buildVehicleMenuItems(),
       child: Container(
@@ -518,13 +545,27 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                 child: _buildUtilizationOverlay(),
               ),
             // Step view controls
+            // 왼쪽 아래는 캔버스 캡션·테일게이트 상태 표시 자리라서 위쪽에 둔다.
+            // 넓으면 왼쪽 위(오른쪽 위 적재율 카드와 나란히), 좁으면 카드 아래 가운데.
             if (_stepViewActive)
-              Positioned(
-                bottom: 16,
-                left: 0,
-                right: 0,
-                child: _buildStepViewControls(),
-              ),
+              if (canvasSize.width >= _stepControlWidth + 180)
+                Positioned(
+                  top: 12,
+                  left: 12,
+                  child: _buildStepViewControls(),
+                )
+              else
+                Positioned(
+                  top: 96,
+                  left: 8,
+                  right: 8,
+                  child: Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: _buildStepViewControls(),
+                    ),
+                  ),
+                ),
             // Onboarding
             if (_showOnboarding && _boxes.isEmpty)
               _buildOnboardingOverlay(canvasSize),
@@ -636,6 +677,11 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     });
   }
 
+  /// 스텝 뷰 컨트롤의 고정 폭: ✕(36) + 구분선(17) + ‹(40) + 라벨(160) + ›(40) + 여백·테두리(23)
+  static const double _stepControlWidth = 316;
+
+  /// 스텝 뷰 컨트롤. 라벨 폭을 고정해 단계가 바뀌어도 ‹ › ✕ 가 제자리에 있다
+  /// (라벨 길이에 따라 버튼이 움직이면 같은 자리를 연달아 누르다 ✕ 를 누르게 된다).
   Widget _buildStepViewControls() {
     final maxStep = _maxLoadOrder;
     final currentBox = _boxes.where((b) => b.loadOrder == _stepViewCurrentStep).firstOrNull;
@@ -643,84 +689,212 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         ? (currentBox.label.isNotEmpty ? currentBox.label : currentBox.id)
         : '';
 
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xEE1C1C1C),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+    Widget navButton(IconData icon, String tooltip, VoidCallback? onPressed) {
+      return SizedBox(
+        width: 40,
+        height: 40,
+        child: IconButton(
+          icon: Icon(icon, color: Colors.white, size: 28),
+          disabledColor: const Color(0xFF555555),
+          tooltip: tooltip,
+          onPressed: onPressed,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Close button
-            IconButton(
+      );
+    }
+
+    return Container(
+      width: _stepControlWidth,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xEE1C1C1C),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          // 닫기는 이전/다음과 떨어뜨려 구분선 너머에 둔다
+          SizedBox(
+            width: 36,
+            height: 40,
+            child: IconButton(
               icon: const Icon(Icons.close, color: Colors.white70, size: 20),
               tooltip: '스텝뷰 닫기',
               onPressed: _exitStepView,
-              visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              constraints: const BoxConstraints.tightFor(width: 36, height: 40),
             ),
-            const SizedBox(width: 8),
-            // Previous
-            IconButton(
-              icon: const Icon(Icons.chevron_left, color: Colors.white, size: 28),
-              tooltip: '이전 단계',
-              onPressed: _stepViewCurrentStep > 1
-                  ? () => setState(() => _stepViewCurrentStep--)
-                  : null,
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-            const SizedBox(width: 8),
-            // Step info
-            Column(
+          ),
+          const SizedBox(width: 8),
+          Container(width: 1, height: 28, color: const Color(0x5500E676)),
+          const SizedBox(width: 8),
+          navButton(
+            Icons.chevron_left,
+            '이전 단계',
+            _stepViewCurrentStep > 1
+                ? () => setState(() => _stepViewCurrentStep--)
+                : null,
+          ),
+          SizedBox(
+            width: 160,
+            child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   'STEP $_stepViewCurrentStep / $maxStep',
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.fade,
                   style: const TextStyle(
                     color: Color(0xFF00E676),
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.2,
+                    fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
-                if (boxName.isNotEmpty)
-                  Text(
-                    boxName,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                Text(
+                  boxName.isEmpty ? ' ' : boxName,
+                  maxLines: 1,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
               ],
             ),
-            const SizedBox(width: 8),
-            // Next
-            IconButton(
-              icon: const Icon(Icons.chevron_right, color: Colors.white, size: 28),
-              tooltip: '다음 단계',
-              onPressed: _stepViewCurrentStep < maxStep
-                  ? () => setState(() => _stepViewCurrentStep++)
-                  : null,
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-          ],
-        ),
+          ),
+          navButton(
+            Icons.chevron_right,
+            '다음 단계',
+            _stepViewCurrentStep < maxStep
+                ? () => setState(() => _stepViewCurrentStep++)
+                : null,
+          ),
+        ],
       ),
     );
   }
 
+  /// 터치로 쓰는 기기인가: 모바일 OS 이거나 (웹 포함) 화면 짧은 변이 600 미만.
+  /// 실제로 터치 입력이 들어온 적이 있으면 그것도 따른다.
+  bool _isTouchFormFactor(BuildContext context) {
+    final platform = defaultTargetPlatform;
+    return _lastPointerIsTouch ||
+        platform == TargetPlatform.android ||
+        platform == TargetPlatform.iOS ||
+        MediaQuery.sizeOf(context).shortestSide < 600;
+  }
+
   Widget _buildOnboardingOverlay(Size canvasSize) {
-    final isNarrow = canvasSize.width < 600;
-    final isTouch = _lastPointerIsTouch;
+    final screen = MediaQuery.sizeOf(context);
+    final shortWide = screen.width > screen.height && screen.height < 500;
+    // 패널이 아래(폰 세로의 시트)에 있는가, 오른쪽에 있는가
+    final panelBelow = !shortWide && canvasSize.width < 600;
+    final isTouch = _isTouchFormFactor(context);
+    // 낮은 캔버스: 여백·아이콘을 줄이고, 폭이 되면(폰 가로) 두 단으로 눕혀
+    // 카드 전체와 닫기 안내가 보이게 한다
+    final dense = canvasSize.height < 450;
+    final compact = dense && canvasSize.width >= 480;
+
+    final controls = Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('조작법', style: TextStyle(color: Color(0xFF4DA3FF), fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          if (isTouch) ...[
+            _controlRow('한 손가락 드래그', '회전'),
+            _controlRow('두 손가락', '확대·이동'),
+            _controlRow('짐을 끌어서', '옮기기'),
+            _controlRow('목록의 버튼', '회전·삭제·실행 취소'),
+          ] else ...[
+            _controlRow('박스 드래그', '박스 이동'),
+            _controlRow('빈 곳 드래그', '카메라 회전'),
+            _controlRow('마우스 휠', '줌 인/아웃'),
+            _controlRow('우클릭 드래그', '패닝'),
+            _controlRow('R', '박스 회전'),
+            _controlRow('?', '단축키 도움말'),
+          ],
+        ],
+      ),
+    );
+    final hint = Text('아무 곳이나 탭하여 닫기', style: TextStyle(color: Colors.grey[600], fontSize: 11));
+    final arrow = Icon(panelBelow ? Icons.arrow_downward : Icons.arrow_forward, color: const Color(0xFF4DA3FF), size: 28);
+
+    final Widget card = compact
+        ? Container(
+            constraints: const BoxConstraints(maxWidth: 520),
+            margin: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A2A2A),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFF4DA3FF), width: 0.5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.inventory_2_outlined, color: Color(0xFF4DA3FF), size: 36),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '박스를 추가하여\n시뮬레이션을 시작하세요',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    arrow,
+                  ],
+                ),
+                const SizedBox(width: 16),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [controls, const SizedBox(height: 8), hint],
+                  ),
+                ),
+              ],
+            ),
+          )
+        : Container(
+              constraints: const BoxConstraints(maxWidth: 320),
+              margin: EdgeInsets.all(dense ? 8 : 24),
+              padding: EdgeInsets.all(dense ? 14 : 24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A2A2A),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF4DA3FF), width: 0.5),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!dense) ...[
+                    const Icon(Icons.inventory_2_outlined, color: Color(0xFF4DA3FF), size: 48),
+                    const SizedBox(height: 16),
+                  ],
+                  const Text(
+                    '박스를 추가하여\n시뮬레이션을 시작하세요',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  arrow,
+                  SizedBox(height: dense ? 8 : 16),
+                  controls,
+                  const SizedBox(height: 12),
+                  hint,
+                ],
+              ),
+            );
 
     return Positioned.fill(
       child: GestureDetector(
@@ -731,63 +905,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         child: Container(
           color: const Color(0x88000000),
           child: Center(
-            // 캔버스가 카드보다 낮으면 (낮은 폰, 폰 가로) 넘치지 않고 스크롤된다
-            child: SingleChildScrollView(
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 320),
-              margin: const EdgeInsets.all(24),
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2A2A2A),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF4DA3FF), width: 0.5),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.inventory_2_outlined, color: Color(0xFF4DA3FF), size: 48),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '박스를 추가하여\n시뮬레이션을 시작하세요',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 8),
-                  Icon(isNarrow ? Icons.arrow_downward : Icons.arrow_forward, color: const Color(0xFF4DA3FF), size: 28),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1E1E),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('조작법', style: TextStyle(color: Color(0xFF4DA3FF), fontSize: 12, fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 8),
-                        if (isTouch) ...[
-                          _controlRow('박스 드래그', '박스 이동'),
-                          _controlRow('빈 곳 드래그', '카메라 회전'),
-                          _controlRow('핀치', '줌 인/아웃'),
-                          _controlRow('두 손가락 드래그', '패닝'),
-                        ] else ...[
-                          _controlRow('박스 드래그', '박스 이동'),
-                          _controlRow('빈 곳 드래그', '카메라 회전'),
-                          _controlRow('마우스 휠', '줌 인/아웃'),
-                          _controlRow('우클릭 드래그', '패닝'),
-                          _controlRow('R', '박스 회전'),
-                          _controlRow('?', '단축키 도움말'),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text('아무 곳이나 탭하여 닫기', style: TextStyle(color: Colors.grey[600], fontSize: 11)),
-                ],
-              ),
-            ),
-            ),
+            // 그래도 캔버스가 카드보다 낮으면 넘치지 않고 스크롤된다
+            child: SingleChildScrollView(child: card),
           ),
         ),
       ),
@@ -807,8 +926,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   }
 
 
-  Widget _buildPanel() {
+  Widget _buildPanel({bool compact = false}) {
     return BoxListPanel(
+      compact: compact,
       boxes: _boxes,
       space: _space,
       selectedBoxId: _selectedBoxId,
@@ -1304,17 +1424,51 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       lastCat = cat;
 
       final vol = p.volumeLiters;
+      final (name, detail) = _presetMenuText(p);
       items.add(PopupMenuItem<TrunkPreset>(
         value: p,
+        // 두 줄(약 34px)이어도 항목 높이는 기본 48px 그대로 — 메뉴 항목 위치가 바뀌지 않는다
         child: Row(
           children: [
-            Expanded(child: Text(p.label, style: const TextStyle(color: Colors.white, fontSize: 13))),
-            if (vol != null) Text('${vol}L', style: const TextStyle(color: Color(0xFF888888), fontSize: 11)),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  Text(detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0xFF999999), fontSize: 11)),
+                ],
+              ),
+            ),
+            if (vol != null) ...[
+              const SizedBox(width: 12),
+              Text('${vol}L', style: const TextStyle(color: Color(0xFF888888), fontSize: 11)),
+            ],
           ],
         ),
       ));
     }
     return items;
+  }
+
+  /// 차종 메뉴 한 행의 (이름, 설명). 5인승과 7인승은 바닥 치수·부피가 같아서
+  /// 숫자만으로는 구분이 안 된다 → 무엇이 다른지를 둘째 줄에 적는다.
+  (String, String) _presetMenuText(TrunkPreset p) {
+    final parts = p.label.split(' (');
+    final name = parts.first;
+    final dims = parts.length > 1 ? parts[1].replaceAll(')', '') : '';
+    return switch (p) {
+      TrunkPreset.sorento => (name, '$dims · 2열 뒤 적재 공간'),
+      TrunkPreset.sorento7 => (name, '5인승과 같은 공간 · 바닥 아래 수납함만 다름'),
+      TrunkPreset.custom => (name, '가로·세로·높이 직접 입력'),
+      _ => (name, dims),
+    };
   }
 
   Future<void> _onPresetChanged(TrunkPreset preset) async {
@@ -1353,6 +1507,16 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   }
 
   Future<void> _saveScene() async {
+    if (_boxes.isEmpty) {
+      // "… 0개 적재" 를 저장하게 두지 않는다
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(
+          content: Text('저장할 짐이 없습니다. 먼저 장비를 추가하세요.'),
+          duration: Duration(seconds: 3),
+        ));
+      return;
+    }
     final defaultName = '$_currentVehicleName - ${_boxes.length}개 적재';
     final name = await showDialog<String>(
       context: context,
@@ -2098,6 +2262,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
             backgroundColor: const Color(0xFF2A2A2A),
             // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
             scrollable: true,
+            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
+            actionsOverflowButtonSpacing: 8,
             title: Row(
               children: [
                 Container(
@@ -2169,6 +2335,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
             backgroundColor: const Color(0xFF2A2A2A),
             // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
             scrollable: true,
+            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
+            actionsOverflowButtonSpacing: 8,
             title: Row(
               children: [
                 Container(
@@ -2244,6 +2412,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
             backgroundColor: const Color(0xFF2A2A2A),
             // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
             scrollable: true,
+            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
+            actionsOverflowButtonSpacing: 8,
             title: Row(
               children: [
                 Container(
@@ -2552,6 +2722,7 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
     return AlertDialog(
       backgroundColor: const Color(0xFF2A2A2A),
       scrollable: true,
+      actionsOverflowButtonSpacing: 8,
       title: Row(
         children: [
           const Icon(Icons.auto_fix_high, color: Color(0xFF4DA3FF), size: 22),

@@ -50,12 +50,16 @@ Future<void> loadRealFonts() async {
   Future<bool> loadFamily(List<String> paths) async {
     final files = paths.map(File.new).where((f) => f.existsSync()).toList();
     if (files.isEmpty) return false;
-    final loader = FontLoader('Roboto');
-    for (final f in files) {
-      final bytes = f.readAsBytesSync();
-      loader.addFont(Future.value(ByteData.view(bytes.buffer)));
+    // 'Roboto' = Android·웹 기본, 'Segoe UI' = Windows 플랫폼 타이포그래피의 패밀리
+    // (TargetPlatformVariant 로 데스크톱을 흉내 낼 때도 같은 글꼴로 재도록)
+    for (final family in ['Roboto', 'Segoe UI']) {
+      final loader = FontLoader(family);
+      for (final f in files) {
+        final bytes = f.readAsBytesSync();
+        loader.addFont(Future.value(ByteData.view(bytes.buffer)));
+      }
+      await loader.load();
     }
-    await loader.load();
     return true;
   }
 
@@ -343,11 +347,15 @@ Finder seatSlideControl() => find.byTooltip('2열 시트 슬라이드');
 /// 달라지므로 글자가 아니라 툴팁으로 찾는다.
 Finder presetButton() => find.byTooltip('차종 선택');
 
-/// 차종 메뉴를 열고 항목을 고른다 (메뉴 항목 라벨은 프리셋 라벨 그대로)
-Future<void> choosePreset(WidgetTester tester, String menuLabel) async {
+/// 열린 차종 메뉴의 항목 (행은 "차종명 / 설명" 두 줄이라 글자가 아니라 값으로 찾는다)
+Finder presetMenuItem(TrunkPreset preset) => find.byWidgetPredicate(
+    (w) => w is PopupMenuItem<TrunkPreset> && w.value == preset);
+
+/// 차종 메뉴를 열고 항목을 고른다
+Future<void> choosePreset(WidgetTester tester, TrunkPreset preset) async {
   await tester.tap(presetButton());
   await tester.pumpAndSettle();
-  await tester.tap(find.text(menuLabel).last);
+  await tester.tap(presetMenuItem(preset));
   await tester.pumpAndSettle();
 }
 

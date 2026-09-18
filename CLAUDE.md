@@ -38,9 +38,16 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 | `lib/models/trunk_space.dart` | 트렁크 모델, 형상 함수(xMinAt/xMaxAt, interiorCeilingAt, rearDepthAt, frontDepthAt), `WallProfile`·`Aperture`, 프리셋, `usableVolume` |
 | `lib/models/trim_box.dart` | 박스 모델 (위치, rotY, keepUpright, soft/compressibility/squash, weightKg, accessPriority, loadOrder). 기하는 `effectiveW/D/H`·`top` 을 쓴다 |
 | `lib/utils/collision.dart` | AABB 충돌: 박스-박스(0.5mm 허용), 경계·테이퍼·C필러·천장, 휠하우스 |
-| `lib/utils/scene_storage.dart` | shared_preferences 저장소: 이름 저장, 자동 저장, 온보딩 플래그 |
+| `lib/utils/scene_storage.dart` | shared_preferences 저장소: 이름 저장, 자동 저장, 온보딩 플래그, `ensureReadable` (깨진 값 복구 뒤 읽기) |
+| `lib/utils/prefs_repair.dart` | 웹 localStorage 에 JSON 이 아닌 TrimBox 값이 있으면 시작 시 지운다 (shared_preferences_web 은 그런 값을 조용히 건너뛰어 쓰레기가 남음). 조건부 import, 비웹은 no-op |
 | `lib/widgets/add_box_dialog.dart` | 장비 선택 다이얼로그 (프리셋 198개 — 2026-09-17 교차검증 `backlog/gear-db-audit.md`, 번들 3종, 검색, 수량) |
-| `lib/widgets/box_list_panel.dart` | 박스 목록·판정 버튼·통계 패널 (모바일 시트 겸용) |
+| `lib/widgets/box_list_panel.dart` | 박스 목록·판정 버튼·통계 패널 (모바일 시트 겸용, 폰 가로는 `compact` 압축 배치) |
+
+### Screen Layout
+- 폭 > 900: 캔버스 3 : 패널 1 옆 패널. 폰 세로: `DraggableScrollableSheet` (초기 높이 목표 220px = 손잡이+빈 상태 안내+CTA, 본문 높이의 28~50%로 클램프 → 390×844 는 28% 그대로). 폰 가로(가로가 더 길고 높이 < 500): 오른쪽 300px 압축 패널(한 줄 액션바 · 36px 히어로 줄 · 통계 한 줄, 목록 3행 이상).
+- 스텝 뷰 컨트롤은 캔버스 왼쪽 위 고정 폭 316px (라벨 160px 고정이라 ✕ ‹ › 가 단계마다 움직이지 않음). 캔버스 왼쪽 아래는 캡션·테일게이트 상태 알약 자리다. 알약은 걸림(빨강) → 트렁크 밖 미적재 짐(주황 "미적재 N개") → 초록 순.
+- 온보딩 조작법은 터치 폼팩터(Android/iOS 또는 짧은 변 < 600 또는 터치 입력 있음)면 제스처 안내, 아니면 마우스·단축키 안내. 캔버스 높이 < 450 이면 압축 카드(폭이 되면 두 단).
+- 판정·자동배치·조언 다이얼로그는 `scrollable` + `actionsOverflowButtonSpacing: 8`. 화면에 입력란이 없으므로 `resizeToAvoidBottomInset: false`.
 
 ### Vehicle Presets
 1차 메뉴에는 쏘렌토 두 구성 + 커스텀만 노출된다 (`_releasePresets`). 나머지 프리셋(투싼·싼타페·카니발·아이오닉5·아반떼)은 코드와 테스트에 남아 있다.
@@ -80,7 +87,7 @@ flutter run -d chrome        # 개발 실행
 flutter test                 # 단위·위젯·검증 테스트 (680여 개, 약 3분)
 flutter analyze
 flutter build web            # 웹 빌드 → build/web
-npx playwright test          # 브라우저 E2E 36개, 약 12분 (build/web 을 서빙, 스크린샷은 e2e/screenshots/). 빠른 확인은 npx playwright test e2e/smoke.spec.ts
+npx playwright test          # 브라우저 E2E 32개, 약 12분 (build/web 을 서빙, 스크린샷은 e2e/screenshots/). 빠른 확인은 npx playwright test e2e/smoke.spec.ts
 flutter build apk --debug    # Android (JDK 17 필요: flutter config --jdk-dir <JDK17>)
 ```
 
@@ -89,9 +96,9 @@ WSL 에서 작업할 때는 Windows Flutter 를 `cmd.exe /c "flutter ..."` 로 �
 ## Conventions
 - 새 규칙을 추가할 때 화면·엔진·테스트에 각각 복사하지 말 것. `CollisionDetector` / `SupportRule` 에만 넣는다.
 - 자동배치 결과는 반드시 물리 검증(충돌 0, 부양 0)을 통과해야 한다. `test/models/auto_layout_test.dart` 의 `expectPhysicallyValid` 를 재사용한다.
-- 웹 E2E 는 고정 뷰포트 좌표 클릭 + 스크린샷 픽셀 단언이다(`e2e/helpers.ts`: 스낵바·상태 알약·패널 상태 행의 색, 영역 diff, 콘솔 에러 시 실패). 레이아웃을 바꾸면 `e2e/helpers.ts` 와 `e2e/smoke.spec.ts` 의 좌표를 갱신한다. 데스크톱 좌표가 여전히 맞는지는 `test/widgets/simulator_smoke_coords_test.dart` 가 먼저 알려 준다. `SemanticsBinding.ensureSemantics()` 를 웹에서 켜면 포인터 입력이 먹지 않으므로 쓰지 않는다.
+- 웹 E2E 는 고정 뷰포트 좌표 클릭 + 스크린샷 픽셀 단언이다(`e2e/helpers.ts`: 스낵바·상태 알약·패널 상태 행의 색, 영역 diff, 콘솔 에러 시 실패). 레이아웃을 바꾸면 `e2e/helpers.ts`(데스크톱 `D`/`RD`), `e2e/smoke.spec.ts`, `e2e/mobile.spec.ts`(폰 `M`/`RM`, 크기별 `SANITY`) 의 좌표를 갱신한다. 새 좌표는 위젯 테스트에서 `tester.getRect(...)` 를 `debugPrint` 로 찍어 얻는다(`simulator_edit_test.dart` 의 STEP-VIEW-COORDS 처럼; 상태 알약은 페인터가 그리므로 캔버스 아래에서 41~71px 위, x 4~134 영역). 데스크톱 좌표가 여전히 맞는지는 `test/widgets/simulator_smoke_coords_test.dart` 가 먼저 알려 준다. `SemanticsBinding.ensureSemantics()` 를 웹에서 켜면 포인터 입력이 먹지 않으므로 쓰지 않는다.
 - 커밋 전 `flutter test` 와 `flutter analyze`. 한국어 커밋 메시지.
 
-## Status (2026-09-17)
-완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5), 장비 DB 교차검증 + 연질·무게·접근성 규칙 + 2열 슬라이드(W6), 보이는 현실감(고정물·짐 모양 메시) + 실제 적재 사례 검증·모델 보정 + 테스트 대확장(W7).
+## Status (2026-09-18)
+완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5), 장비 DB 교차검증 + 연질·무게·접근성 규칙 + 2열 슬라이드(W6), 보이는 현실감(고정물·짐 모양 메시) + 실제 적재 사례 검증·모델 보정 + 테스트 대확장(W7), 브라우저 E2E 32개가 찾은 UI 9건 수정 — 스텝 컨트롤 고정, 폰 가로 압축 패널, 작은 폰 시트 높이, 낮은 화면 온보딩, 터치 조작법, 미적재 주황 알약, 차종 메뉴 설명 줄, 빈 배치 저장 차단, 웹 저장소 복구(W8).
 남은 것: 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), Android 실기기 확인, 공유 이미지 정리, 장비 치수 미확인 항목(gear-db-audit 5절).

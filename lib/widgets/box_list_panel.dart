@@ -31,6 +31,10 @@ class BoxListPanel extends StatelessWidget {
   final ScrollController? scrollController;
   final bool showDragHandle;
 
+  /// 낮고 넓은 화면(폰 가로)용 압축 배치: 액션바 한 줄, 낮은 히어로 버튼 한 줄,
+  /// 통계 한 줄 + 상태 줄 — 목록에 최소 3행이 남도록.
+  final bool compact;
+
   const BoxListPanel({
     super.key,
     required this.boxes,
@@ -52,6 +56,7 @@ class BoxListPanel extends StatelessWidget {
     this.onRedo,
     this.scrollController,
     this.showDragHandle = false,
+    this.compact = false,
   });
 
   @override
@@ -59,8 +64,196 @@ class BoxListPanel extends StatelessWidget {
     if (scrollController != null) {
       return _buildScrollablePanel(context);
     }
+    if (compact) return _buildCompactPanel(context);
     return _buildFixedPanel(context);
   }
+
+  // ──── 압축 배치 (폰 가로) ────
+
+  Widget _buildCompactPanel(BuildContext context) {
+    return Container(
+      color: const Color(0xFF252525),
+      child: Column(
+        children: [
+          _buildCompactActionBar(),
+          Expanded(
+            child: boxes.isEmpty
+                ? SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: _buildEmptyState(showIcon: false),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    itemCount: boxes.length,
+                    itemBuilder: (_, i) => _boxTile(boxes[i]),
+                  ),
+          ),
+          if (boxes.isNotEmpty && onAutoLayout != null) _compactHeroRow(),
+          if (boxes.isNotEmpty) _compactStats(context),
+        ],
+      ),
+    );
+  }
+
+  /// 한 줄 액션바 (넘치면 가로 스크롤). 자동 배치는 아래 히어로 줄에 있으므로 뺀다.
+  Widget _buildCompactActionBar() {
+    Widget small(IconData icon, String tooltip, VoidCallback? onTap) {
+      return Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: IconButton(
+          tooltip: tooltip,
+          onPressed: onTap,
+          icon: Icon(icon,
+              color: onTap == null ? const Color(0xFF555555) : Colors.grey,
+              size: 20),
+          style: IconButton.styleFrom(
+            backgroundColor: const Color(0xFF333333),
+            padding: const EdgeInsets.all(8),
+            minimumSize: const Size(36, 36),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 48,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Row(
+          children: [
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4DA3FF),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                minimumSize: const Size(0, 36),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              onPressed: onAddBox,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('박스 추가', style: TextStyle(fontSize: 13)),
+            ),
+            small(Icons.save, '배치 저장', onSave),
+            small(Icons.folder_open, '불러오기', onLoad),
+            if (onUndo != null || onRedo != null) ...[
+              small(Icons.undo, '실행 취소', onUndo),
+              small(Icons.redo, '다시 실행', onRedo),
+            ],
+            if (onScreenshot != null)
+              small(Icons.photo_camera, '스크린샷', onScreenshot),
+            if (onShareCard != null) small(Icons.share, '공유 카드', onShareCard),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 낮은(36px) 히어로 버튼 한 줄: 들어갈까? · 자동 배치 · (순서 가이드)
+  Widget _compactHeroRow() {
+    final shape =
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(8));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+      child: SizedBox(
+        height: 36,
+        child: Row(
+          children: [
+            if (onQuickCheck != null) ...[
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF6BD06B),
+                  side: const BorderSide(color: Color(0xFF6BD06B), width: 1.5),
+                  shape: shape,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                onPressed: onQuickCheck,
+                child: const Text('들어갈까?',
+                    style:
+                        TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                  foregroundColor: Colors.white,
+                  shape: shape,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                onPressed: onAutoLayout,
+                icon: const Icon(Icons.auto_fix_high, size: 18),
+                label: const Text('자동 배치',
+                    style:
+                        TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
+            ),
+            if (onStepView != null && _hasLoadOrders()) ...[
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: '적재 순서 가이드',
+                onPressed: onStepView,
+                icon: const Icon(Icons.format_list_numbered,
+                    color: Color(0xFF00E676), size: 20),
+                style: IconButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF00E676)),
+                  shape: shape,
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(36, 36),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 통계 한 줄 + 상태 줄
+  Widget _compactStats(BuildContext context) {
+    final stats = LoadStats.of(boxes, space);
+    final volPct = stats.volumePercent.clamp(0, 100).round();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFF444444))),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '박스 ${boxes.length}개 · 부피 $volPct% · 남은 높이 ${stats.remainingHeightCm}cm',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          _statusRow(context, _placementWarnings(), _adviceMessages()),
+        ],
+      ),
+    );
+  }
+
+  /// 배치 불가 사유 (천장·테일게이트·개구부·경계·겹침) — CollisionDetector 가 단일 진실
+  List<String> _placementWarnings() {
+    final detector = CollisionDetector(space);
+    final warnings = <String>[];
+    for (final b in boxes) {
+      final reasons = detector.describe(b, boxes);
+      if (reasons.isEmpty) continue;
+      final name = b.label.isNotEmpty ? b.label : b.id;
+      warnings.add('$name: ${reasons.join(', ')}');
+    }
+    return warnings;
+  }
+
+  List<String> _adviceMessages() =>
+      PackingAdvisor.advise(boxes, space).map((a) => a.message).toList();
 
   Widget _buildFixedPanel(BuildContext context) {
     return Container(
@@ -174,14 +367,16 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState({bool showIcon = true}) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.inventory_2_outlined,
-              color: Colors.grey[700], size: 48),
-          const SizedBox(height: 16),
+          if (showIcon) ...[
+            Icon(Icons.inventory_2_outlined,
+                color: Colors.grey[700], size: 48),
+            const SizedBox(height: 16),
+          ],
           const Text(
             '캠핑 장비를 선택하고\n트렁크에 들어가는지 확인하세요',
             textAlign: TextAlign.center,
@@ -315,6 +510,10 @@ class BoxListPanel extends StatelessWidget {
 
     return Card(
       color: isSelected ? const Color(0xFF333344) : const Color(0xFF2E2E2E),
+      // 압축 배치: 행 사이·안쪽 여백을 줄여 낮은 화면에서 한 행이라도 더 보이게
+      margin: compact
+          ? const EdgeInsets.symmetric(horizontal: 2, vertical: 2)
+          : null,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
         side: BorderSide(
@@ -330,7 +529,8 @@ class BoxListPanel extends StatelessWidget {
         onTap: () => onSelect(box.id),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: EdgeInsets.symmetric(
+              horizontal: compact ? 10 : 12, vertical: compact ? 3 : 8),
           child: Row(
             children: [
               // Load order badge or color indicator
@@ -448,15 +648,7 @@ class BoxListPanel extends StatelessWidget {
     final totalLiters = stats.usedLiters;
     final remainH = stats.remainingHeightCm;
 
-    // 배치 불가 사유 (천장·테일게이트·개구부·경계·겹침) — CollisionDetector 가 단일 진실
-    final detector = CollisionDetector(space);
-    final warnings = <String>[];
-    for (final b in boxes) {
-      final reasons = detector.describe(b, boxes);
-      if (reasons.isEmpty) continue;
-      final name = b.label.isNotEmpty ? b.label : b.id;
-      warnings.add('$name: ${reasons.join(', ')}');
-    }
+    final warnings = _placementWarnings();
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -488,8 +680,7 @@ class BoxListPanel extends StatelessWidget {
           _progressRow('부피', volPct, volRatio),
           const SizedBox(height: 6),
           // 배치 상태 — 항상 한 줄 (레이아웃이 흔들리지 않게). 탭하면 전체 사유.
-          _statusRow(context, warnings,
-              PackingAdvisor.advise(boxes, space).map((a) => a.message).toList()),
+          _statusRow(context, warnings, _adviceMessages()),
         ],
       ),
     );

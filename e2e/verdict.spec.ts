@@ -65,10 +65,10 @@ for (const [bundle, title, hasGuide] of [
     await page.mouse.move(600, 500);
     const step = await waitForStable(page);
     await shot(page, 'verdict-minimal-05-step-from-dialog');
-    const stepBox = bboxOfHue(step, { x: 200, y: 870, w: 560, h: 80 }, 'green');
+    const stepBox = bboxOfHue(step, { x: 0, y: 60, w: 345, h: 72 }, 'green'); // 캔버스 왼쪽 위
     expect(stepBox, '스텝 컨트롤(초록 테두리)이 보인다').not.toBeNull();
     expect(diffRatio(idle, step, RD.canvasCore), '1단계는 첫 짐만 보인다').toBeGreaterThan(0.02);
-    await page.mouse.click(stepBox!.x + 29, stepBox!.y + stepBox!.h / 2); // ✕
+    await page.mouse.click(stepBox!.x + 29.5, stepBox!.y + stepBox!.h / 2); // ✕
     await page.mouse.move(600, 880);
     const out = await waitForStable(page);
     expect(diffRatio(idle, out, RD.canvasCore), '스텝 뷰를 닫으면 전체 배치로 복귀').toBeLessThan(0.01);

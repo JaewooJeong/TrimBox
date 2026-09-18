@@ -3,6 +3,7 @@
 // 웹 E2E(캔버스·좌표 클릭)와 달리 실제 위젯을 찾아 누르고 문구·상태를 검증한다.
 // 픽셀 좌표에 의존하지 않는다.
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:trimbox/main.dart';
@@ -59,8 +60,6 @@ void main() {
       await pumpApp(tester);
       expect(find.text('박스를 추가하여\n시뮬레이션을 시작하세요'), findsOneWidget);
       expect(find.text('아무 곳이나 탭하여 닫기'), findsOneWidget);
-      // 마우스 환경 기본 조작법
-      expect(find.text('마우스 휠'), findsOneWidget);
 
       await tester.tap(find.text('아무 곳이나 탭하여 닫기'));
       await tester.pumpAndSettle();
@@ -74,6 +73,38 @@ void main() {
       expect(find.text('아무 곳이나 탭하여 닫기'), findsNothing);
       expect(find.text('캠핑 장비 선택하기'), findsOneWidget);
     });
+
+    const mouseOnly = ['마우스 휠', '우클릭 드래그', 'R', '?'];
+    const touchOnly = ['한 손가락 드래그', '두 손가락', '짐을 끌어서', '목록의 버튼'];
+
+    testWidgets('데스크톱(마우스·키보드)에서는 마우스·단축키 조작법을 보여준다', (tester) async {
+      await pumpApp(tester, size: kDesktop);
+      for (final t in mouseOnly) {
+        expect(find.text(t), findsOneWidget, reason: t);
+      }
+      for (final t in touchOnly) {
+        expect(find.text(t), findsNothing, reason: t);
+      }
+    }, variant: TargetPlatformVariant.desktop());
+
+    testWidgets('터치 기기(Android·iOS)에서는 터치 제스처를 보여준다 — 마우스·키 안내 없음',
+        (tester) async {
+      await pumpApp(tester, size: kPhone);
+      for (final t in touchOnly) {
+        expect(find.text(t), findsOneWidget, reason: t);
+      }
+      expect(find.text('회전·삭제·실행 취소'), findsOneWidget);
+      expect(find.text('확대·이동'), findsOneWidget);
+      for (final t in mouseOnly) {
+        expect(find.text(t), findsNothing, reason: t);
+      }
+    }, variant: TargetPlatformVariant.mobile());
+
+    testWidgets('데스크톱 OS 라도 폰 크기 화면(모바일 웹 에뮬레이션 등)이면 터치 안내', (tester) async {
+      await pumpApp(tester, size: kPhone);
+      expect(find.text('한 손가락 드래그'), findsOneWidget);
+      expect(find.text('마우스 휠'), findsNothing);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
     testWidgets('빈 상태 CTA 가 장비 선택 다이얼로그를 연다', (tester) async {
       await pumpApp(tester);
@@ -722,7 +753,7 @@ void main() {
       await pumpApp(tester, prefs: seenPrefs());
       await tester.tap(presetButton());
       await tester.pumpAndSettle();
-      await tester.tap(find.text(TrunkPreset.sorento7.label));
+      await tester.tap(presetMenuItem(TrunkPreset.sorento7));
       await tester.pumpAndSettle();
       expect(seatSlideControl(), findsOneWidget);
 
@@ -754,6 +785,31 @@ void main() {
       expect(items,
           [TrunkPreset.sorento, TrunkPreset.sorento7, TrunkPreset.custom]);
       expect(find.text('SUV'), findsOneWidget);
+      // 행은 두 줄: 차종명 + 설명. 5인승·7인승은 치수·부피가 같아서 차이를 글로 적는다
+      Finder inItem(TrunkPreset p, Finder f) =>
+          find.descendant(of: presetMenuItem(p), matching: f);
+      expect(inItem(TrunkPreset.sorento, find.text('쏘렌토 5인승')), findsOneWidget);
+      expect(inItem(TrunkPreset.sorento, find.textContaining('바닥 ')), findsOneWidget);
+      expect(inItem(TrunkPreset.sorento7, find.text('쏘렌토 7인승·3열 접음')),
+          findsOneWidget);
+      expect(
+          inItem(TrunkPreset.sorento7,
+              find.text('5인승과 같은 공간 · 바닥 아래 수납함만 다름')),
+          findsOneWidget);
+      // 차종명·설명이 부피 숫자와 붙지 않는다 (간격 12px 이상), 설명은 잘리지 않는다
+      for (final p in [TrunkPreset.sorento, TrunkPreset.sorento7]) {
+        final vol = tester.getRect(inItem(p, find.textContaining(RegExp(r'^\d+L$'))));
+        for (final e in inItem(p, find.byType(Text)).evaluate()) {
+          final t = e.widget as Text;
+          if (RegExp(r'^\d+L$').hasMatch(t.data ?? '')) continue;
+          final para = e.renderObject as RenderParagraph;
+          expect(tester.getRect(find.byWidget(t)).right, lessThanOrEqualTo(vol.left - 12),
+              reason: t.data);
+          expect(para.didExceedMaxLines, isFalse, reason: '${t.data} 가 잘렸다');
+        }
+        // 항목 높이는 그대로 48 — 메뉴 항목 위치가 바뀌지 않는다
+        expect(tester.getSize(presetMenuItem(p)).height, 48);
+      }
       for (final hidden in ['투싼', '싼타페', '카니발', '아이오닉5', '아반떼']) {
         expect(find.textContaining(hidden), findsNothing);
       }
@@ -769,7 +825,7 @@ void main() {
 
       await tester.tap(presetButton());
       await tester.pumpAndSettle();
-      await tester.tap(find.text(TrunkPreset.sorento7.label));
+      await tester.tap(presetMenuItem(TrunkPreset.sorento7));
       await tester.pumpAndSettle();
 
       expect(find.text(TrunkPreset.sorento7.label), findsOneWidget);
@@ -793,7 +849,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(presetButton());
       await tester.pumpAndSettle();
-      await tester.tap(find.text(TrunkPreset.sorento7.label));
+      await tester.tap(presetMenuItem(TrunkPreset.sorento7));
       await tester.pumpAndSettle();
       expect(spaceOf(tester).seatSlide, closeTo(0.13, 1e-9));
       expect(spaceOf(tester).d,

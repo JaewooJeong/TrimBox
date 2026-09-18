@@ -546,6 +546,74 @@ void main() {
       await flushAutosave(tester);
     });
 
+    for (final entry in const {
+      '데스크톱 1280×960': kDesktop,
+      '폰 390×844': kPhone,
+      '폰 가로 844×390': Size(844, 390),
+    }.entries) {
+      testWidgets('스텝 뷰 컨트롤은 단계가 바뀌어도 버튼이 제자리에 있다 — ${entry.key}',
+          (tester) async {
+        await pumpApp(tester, size: entry.value, prefs: seenPrefs());
+        await addBundle(tester, '2인 미니멀 캠핑'); // 라벨 길이가 제각각
+        await flushSnackBars(tester);
+        if (find.text('적재 순서 가이드').evaluate().isNotEmpty) {
+          await tester.ensureVisible(find.text('적재 순서 가이드'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('적재 순서 가이드'));
+        } else {
+          await tester.tap(find.byTooltip('적재 순서 가이드')); // 압축 패널
+        }
+        await tester.pumpAndSettle();
+
+        Rect rectOf(Finder f) => tester.getRect(f);
+        final close = find.byTooltip('스텝뷰 닫기');
+        final prev = find.byTooltip('이전 단계');
+        final next = find.byTooltip('다음 단계');
+        final first = (rectOf(close), rectOf(prev), rectOf(next));
+        final names = <String>{};
+        for (var n = 1; n <= 9; n++) {
+          expect(find.text('STEP $n / 9'), findsOneWidget);
+          expect((rectOf(close), rectOf(prev), rectOf(next)), first,
+              reason: 'STEP $n 에서 버튼이 움직였다');
+          names.add(boxesOf(tester).firstWhere((b) => b.loadOrder == n).label);
+          if (n < 9) {
+            await tester.tap(next);
+            await tester.pumpAndSettle();
+          }
+        }
+        expect(names.length, greaterThan(3), reason: '서로 다른 길이의 이름을 거쳤다');
+
+        // ✕ 는 ‹ › 와 떨어져 있다 (구분선 포함 16px 이상)
+        expect(first.$2.left - first.$1.right, greaterThanOrEqualTo(16));
+        // 버튼 크기
+        expect(first.$2.size, const Size(40, 40));
+        expect(first.$3.size, const Size(40, 40));
+
+        // 왼쪽 아래 캔버스 캡션·상태 표시(아래 72px)와 오른쪽 위 적재율 카드를 가리지 않는다
+        final canvas = canvasRect(tester);
+        final control = rectOf(find
+            .ancestor(of: close, matching: find.byType(Container))
+            .first);
+        expect(control.bottom, lessThan(canvas.bottom - 72));
+        expect(canvas.contains(control.topLeft), isTrue);
+        expect(canvas.contains(control.bottomRight), isTrue);
+        final card = rectOf(find
+            .ancestor(of: find.text('적재율 '), matching: find.byType(Container))
+            .first);
+        expect(control.overlaps(card), isFalse, reason: '$control vs $card');
+
+        if (entry.value == kDesktop) {
+          // e2e 좌표 갱신용 (1280×960)
+          final label = rectOf(find.text('STEP 9 / 9'));
+          debugPrint('STEP-VIEW-COORDS close=${first.$1.center} '
+              'prev=${first.$2.center} next=${first.$3.center} '
+              'labelRegion=${Rect.fromLTRB(first.$2.right, control.top, first.$3.left, control.bottom)} '
+              'stepText=$label control=$control');
+        }
+        await flushAutosave(tester);
+      });
+    }
+
     testWidgets('스텝 뷰는 Ctrl+Z 로도 빠져나온다', (tester) async {
       await pumpApp(tester, prefs: seenPrefs());
       await addBundle(tester, '솔로 백패킹');

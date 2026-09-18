@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
+import '../utils/load_stats.dart';
 import 'camera.dart';
 import 'fixtures.dart';
 import 'gear_shapes.dart';
@@ -50,6 +51,9 @@ class SceneCache {
     shell = null;
   }
 }
+
+/// 캔버스 상태 표시의 종류 (색을 정한다)
+enum CaptionStatusKind { ok, unloaded, blocked }
 
 /// 원근 카메라 + painter's algorithm 기반 트렁크 3D 페인터.
 ///
@@ -1032,6 +1036,30 @@ class TrunkPainter3D extends CustomPainter {
 
   // ── 캡션 ──
 
+  /// 캔버스 왼쪽 아래 상태 표시의 문구와 종류.
+  ///
+  /// 우선순위: 테일게이트에 걸린 짐(빨강) → 트렁크 밖에 세워 둔 못 넣은 짐(주황) → 초록.
+  /// 못 넣은 짐이 있는데 초록 "닫힘 OK" 만 보이면 "다 실렸다" 로 읽힌다. 밖에 세워 둔
+  /// 짐의 기준은 통계([LoadStats])와 같다.
+  static (String, CaptionStatusKind) captionStatus(
+    TrunkSpace space,
+    List<TrimBox> boxes,
+    Set<String> tailgateBlockedIds,
+  ) {
+    final blocked = tailgateBlockedIds.length;
+    if (blocked > 0) {
+      return ('테일게이트 안 닫힘 · $blocked개 걸림', CaptionStatusKind.blocked);
+    }
+    final parked = boxes.where((b) => LoadStats.isParked(b, space)).length;
+    if (parked > 0) {
+      return parked == boxes.length
+          ? ('미적재 $parked개 · 실은 짐 없음', CaptionStatusKind.unloaded)
+          : ('미적재 $parked개 · 실은 짐은 테일게이트 닫힘 OK',
+              CaptionStatusKind.unloaded);
+    }
+    return ('테일게이트 닫힘 OK', CaptionStatusKind.ok);
+  }
+
   void _paintCaption(Canvas canvas, Size size) {
     final name = space.vehicleName ?? '커스텀';
     final wIn = (space.floorWidthBetweenWheelhouses * 100).round();
@@ -1059,11 +1087,12 @@ class TrunkPainter3D extends CustomPainter {
     tp.paint(canvas, Offset(12, y));
 
     if (space.hasTailgateModel && boxes.isNotEmpty) {
-      final blocked = tailgateBlockedIds.length;
-      final status = blocked == 0
-          ? '테일게이트 닫힘 OK'
-          : '테일게이트 안 닫힘 · $blocked개 걸림';
-      final color = blocked == 0 ? const Color(0xFF6BD06B) : _danger;
+      final (status, kind) = captionStatus(space, boxes, tailgateBlockedIds);
+      final color = switch (kind) {
+        CaptionStatusKind.ok => const Color(0xFF6BD06B),
+        CaptionStatusKind.unloaded => const Color(0xFFFFC46B),
+        CaptionStatusKind.blocked => _danger,
+      };
       final sp = TextPainter(
         text: TextSpan(
           text: status,

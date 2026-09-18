@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'prefs_repair.dart';
+
 /// 씬 저장소 — 모든 플랫폼 공통 (웹은 localStorage, Android/iOS 는 SharedPreferences).
 ///
 /// 키 구조
@@ -94,6 +96,22 @@ Future<void> deleteSceneFromStorage(String key) async {
 Future<void> saveAutosave(String jsonStr) async {
   final prefs = await SharedPreferences.getInstance();
   await prefs.setString(_autosaveKey, jsonStr);
+}
+
+/// 저장소를 읽을 수 있게 한다. 반환값: 읽을 수 있는 상태인가.
+///
+/// 웹의 localStorage 에 JSON 이 아닌 TrimBox 값(예: `{{{`)이 있으면 먼저 지운다.
+/// shared_preferences_web 2.4.x 는 그런 값을 예외 없이 **조용히 건너뛰어** `getString` 이
+/// null 이 되므로, 앱은 자동 저장이 없다고 보고 깨진 값을 다음 자동 저장까지 방치하게 된다
+/// (옛 버전은 `getInstance()` 자체가 실패했다). 그래서 예외 여부와 무관하게 항상 먼저 지운다.
+Future<bool> ensureReadable() async {
+  removeUnreadablePrefs();
+  try {
+    await SharedPreferences.getInstance();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// 손상된 자동 저장을 버린다

@@ -156,6 +156,18 @@ void main() {
       await flushAutosave(tester);
     });
 
+    testWidgets('짐이 없으면 저장 다이얼로그 대신 안내 스낵바 ("0개 적재" 를 저장하지 않는다)',
+        (tester) async {
+      await pumpApp(tester, prefs: seenPrefs());
+      await tester.tap(find.byTooltip('배치 저장'));
+      await tester.pumpAndSettle();
+      expect(find.text('배치 이름'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(snackTexts(tester).join(), contains('저장할 짐이 없습니다'));
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getKeys().where((k) => k.startsWith('trimbox_scene_')), isEmpty);
+    });
+
     testWidgets('빈 이름·취소는 저장하지 않는다', (tester) async {
       await pumpApp(tester, prefs: seenPrefs());
       await addCustomBox(tester, label: '박스', w: 40, d: 30, h: 30);
@@ -350,8 +362,10 @@ void main() {
       // 메뉴를 열어도 예외 없음, 여전히 3개만
       await tester.tap(presetButton());
       await tester.pumpAndSettle();
-      expect(find.text(TrunkPreset.sorento.label), findsOneWidget);
-      expect(find.text('커스텀'), findsOneWidget);
+      expect(presetMenuItem(TrunkPreset.sorento), findsOneWidget);
+      expect(presetMenuItem(TrunkPreset.sorento7), findsOneWidget);
+      expect(presetMenuItem(TrunkPreset.custom), findsOneWidget);
+      expect(presetMenuItem(TrunkPreset.tucson), findsNothing);
     });
 
     testWidgets('변경 직후(자동 저장 대기 800ms 안)에 앱이 내려가도 마지막 변경이 저장된다',

@@ -108,8 +108,9 @@ const CORRUPT: [string, string][] = [
   ['형이 다른 값(숫자)', '12345'],
   ['스키마가 다른 JSON', JSON.stringify(JSON.stringify({ space: 'x', boxes: 7 }))],
   ['필드가 빠진 박스', JSON.stringify(JSON.stringify({ space: { w: 1, d: 1, h: 1 }, boxes: [{ id: 'a' }, null, 3] }))],
-  // 마지막: shared_preferences 가 디코드조차 못 하는 값. 이 값은 시작할 때 지워지지 않고
-  // 다음 자동 저장이 덮어쓸 때 고쳐진다 (아래 "자동 저장이 다시 쓰인다" 단언이 그 확인이다).
+  // 마지막: shared_preferences 가 디코드조차 못 하는 값. 플러그인은 이 값을 조용히 건너뛰어
+  // "자동 저장 없음" 으로 보이므로, 앱이 시작할 때 localStorage 에서 직접 지워야 한다
+  // (lib/utils/prefs_repair_web.dart). 아래에서 시작 직후 지워졌는지 단언한다.
   ['JSON 이 아닌 원시 값', '{{{not-json'],
 ];
 
@@ -128,7 +129,7 @@ test('손상된 자동 저장 값 5종에도 에러·빨간 SnackBar 없이 빈 
     expect(snackKind(after), `${label}: 에러 SnackBar 가 없어야 한다`).toBeNull();
     expect(countTiles(after), `${label}: 손상된 저장본은 버리고 빈 트렁크로 시작`).toBe(0);
     const left = await page.evaluate((k) => localStorage.getItem(k), key!);
-    if (left === value) console.log(`[persistence] "${label}" 값은 시작 시 지워지지 않았다 (다음 자동 저장에서 덮어씀)`);
+    expect(left, `${label}: 손상된 값은 시작할 때 지워진다 (남은 값: ${left})`).not.toBe(value);
   }
 
   // 앱이 살아 있는지: 번들을 다시 추가할 수 있고 자동 저장도 다시 된다

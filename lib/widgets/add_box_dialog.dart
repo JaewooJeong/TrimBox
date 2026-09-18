@@ -768,6 +768,9 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
   /// 머리말(~200px) + 하단 버튼(~60px) 을 빼고도 목록이 120px 이상 남는 경계.
   static const double _compactHeight = 400;
 
+  /// 이 높이보다 낮으면 하단 버튼 줄(60px)과 목록 최소 높이도 확보되지 않는다.
+  static const double _tinyHeight = 200;
+
   @override
   Widget build(BuildContext context) {
     final isCustom = _selectedCategory == _PresetCategory.custom;
@@ -785,6 +788,28 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
           builder: (context, constraints) {
             final compact = constraints.maxHeight < _compactHeight;
             final header = _buildHeader(isCustom, selectedCount);
+            if (constraints.maxHeight < _tinyHeight) {
+              // 폰 가로 + 키보드처럼 하단 버튼 줄조차 다 안 들어가는 높이:
+              // 다이얼로그 전체를 스크롤시키고 목록은 고정 높이 안에서 따로 스크롤한다
+              return SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ...header,
+                    const Divider(color: Color(0xFF444444), height: 1),
+                    if (isCustom)
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: _buildCustomFields(),
+                      )
+                    else
+                      SizedBox(height: 160, child: _buildPresetList()),
+                    const Divider(color: Color(0xFF444444), height: 1),
+                    _buildBottomBar(isCustom, selectedCount),
+                  ],
+                ),
+              );
+            }
             final scrolling = compact ? header : const <Widget>[];
             return Column(
               mainAxisSize: MainAxisSize.min,
