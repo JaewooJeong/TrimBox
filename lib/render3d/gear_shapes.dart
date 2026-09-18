@@ -8,15 +8,32 @@ import 'vec3.dart';
 /// 짐의 모양별 메시. **모든 꼭짓점과 장식선은 박스의 AABB 안에 있다** —
 /// 충돌·지지 판정은 AABB 그대로이므로 그림이 물리보다 커 보이면 안 된다.
 /// 모든 모양은 볼록 다면체라서 법선 컬링만으로 면 순서 문제가 없다.
-Mesh gearMesh(TrimBox b) => gearMeshFor(b.shape, Aabb.fromBox(b));
+Mesh gearMesh(TrimBox b) {
+  final rotated = b.rotY == 90 || b.rotY == 270;
+  return gearMeshFor(
+    b.shape,
+    Aabb.fromBox(b),
+    squashY: b.squash,
+    squashX: rotated ? b.squashD : b.squashW,
+    squashZ: rotated ? b.squashW : b.squashD,
+  );
+}
 
 /// 테스트·도구용: 독립된 면 목록
 List<Face> gearFaces(TrimBox b) => gearMesh(b).toFaces();
 
-Mesh gearMeshFor(GearShape shape, Aabb a) => switch (shape) {
+/// [squashX]/[squashY]/[squashZ]: 월드 축별로 눌린 비율 (천 가방의 주름 표시에만 쓴다).
+Mesh gearMeshFor(
+  GearShape shape,
+  Aabb a, {
+  double squashX = 0,
+  double squashY = 0,
+  double squashZ = 0,
+}) =>
+    switch (shape) {
       GearShape.box => _box(a),
       GearShape.cylinder => _cylinder(a),
-      GearShape.softBag => _softBag(a),
+      GearShape.softBag => _softBag(a, [squashX, squashY, squashZ]),
       GearShape.cooler => _cooler(a),
       GearShape.crate => _crate(a),
       GearShape.flat => _flat(a),
@@ -182,7 +199,34 @@ Mesh _cylinder(Aabb a) {
 
 // ── 천 가방 (침낭·더플백·배낭·소프트 쿨러): 모서리를 깎은 상자 ──
 
-Mesh _softBag(Aabb a) {
+/// 눌린 천의 주름: 눌린 축에 수직인 짧고 살짝 비뚠 선 2~3개. [quad] 위의 점만 쓴다.
+/// [acrossU]: true 면 주름이 u 방향으로 달린다 (v 가 눌린 축).
+List<DecoLine> _creases(List<Vec3> quad, bool acrossU, double amount) {
+  // (눌린 축 위치, 시작, 끝, 기울기)
+  const marks = [
+    [0.30, 0.10, 0.64, 0.035],
+    [0.55, 0.30, 0.92, -0.030],
+    [0.76, 0.14, 0.78, 0.025],
+  ];
+  final count = amount >= 0.2 ? 3 : 2;
+  return [
+    for (var i = 0; i < count; i++)
+      DecoLine([
+        for (final t in const [0.0, 0.45, 1.0])
+          () {
+            final along = marks[i][1] + (marks[i][2] - marks[i][1]) * t;
+            // 가운데가 살짝 처진 꺾은선
+            final level =
+                marks[i][0] + marks[i][3] * (t == 0.45 ? 1.0 : (t == 0 ? 0 : 0.4));
+            return acrossU
+                ? quadPoint(quad, along, level)
+                : quadPoint(quad, level, along);
+          }(),
+      ], tone: -0.30, width: 1.0),
+  ];
+}
+
+Mesh _softBag(Aabb a, [List<double> squash = const [0, 0, 0]]) {
   final minDim = math.min(a.w, math.min(a.h, a.d));
   final c = minDim * 0.16;
   final m = MeshBuilder(a.center);
@@ -213,7 +257,7 @@ Mesh _softBag(Aabb a) {
       ? [start + len * 0.3, start + len * 0.7]
       : [start + len * 0.5];
   List<DecoLine> strap(List<Vec3> p, Vec3 n) {
-    if (n[long].abs() > 0.5 || n.y < -0.5) return const [];
+    if (n[long].abs() > 0.5 || n.y < -0.5) return <DecoLine>[];
     return _slices(p, long, straps, tone: _dark, width: 1.6);
   }
 
@@ -234,7 +278,23 @@ Mesh _softBag(Aabb a) {
         s[a2] = pr[1];
         quad.add(at(s, k));
       }
-      m.face(quad, smooth: true, deco: strap);
+      // 이 면의 (u, v) = (축 a1, 축 a2). 눌린 축이 면 안에 있으면 그 축에 수직인 주름.
+      final face = k, uAxis = a1, vAxis = a2;
+      m.face(quad, smooth: true, deco: (p, n) {
+        final lines = strap(p, n);
+        if (face == 1 && !sign) return lines; // 바닥면
+        for (var ax = 0; ax < 3; ax++) {
+          if (squash[ax] <= 0.02 || ax == face) continue;
+          // 높이로 눌렸으면 옆면에, 옆으로 눌렸으면 윗면에 (눈에 잘 띄는 면 하나씩만)
+          if (ax == 1 ? face == 1 : face != 1) continue;
+          if (ax == vAxis) {
+            lines.addAll(_creases(p, true, squash[ax]));
+          } else if (ax == uAxis) {
+            lines.addAll(_creases(p, false, squash[ax]));
+          }
+        }
+        return lines;
+      });
     }
   }
   // 모서리 모따기 12개: 축 e 를 따라가는 모서리, 나머지 두 축의 부호 (sa, sb)
@@ -379,4 +439,52 @@ Mesh _hardCase(Aabb a) {
   });
   m.face(lo);
   return m.build();
+}
+
+// ── 바닥에 닿는 모양 (접촉 그림자) ──
+
+/// 짐이 놓인 면에 드리우는 그림자의 외곽 (y = AABB 밑면). 모양의 바닥 윤곽을 [pad] 만큼
+/// 키운 것으로, AABB 밑면을 [pad] 만큼 키운 사각형을 벗어나지 않는다.
+List<Vec3> gearFootprint(GearShape shape, Aabb a, {double pad = 0.015}) {
+  final y = a.y1;
+  final cx = (a.x1 + a.x2) / 2, cz = (a.z1 + a.z2) / 2;
+  final hx = a.w / 2 + pad, hz = a.d / 2 + pad;
+
+  List<Vec3> chamfered(double c) => [
+        Vec3(cx - hx + c, y, cz - hz), Vec3(cx + hx - c, y, cz - hz), //
+        Vec3(cx + hx, y, cz - hz + c), Vec3(cx + hx, y, cz + hz - c),
+        Vec3(cx + hx - c, y, cz + hz), Vec3(cx - hx + c, y, cz + hz),
+        Vec3(cx - hx, y, cz + hz - c), Vec3(cx - hx, y, cz - hz + c),
+      ];
+  List<Vec3> rect(double sx, double sz) => [
+        Vec3(cx - hx * sx, y, cz - hz * sz), Vec3(cx + hx * sx, y, cz - hz * sz), //
+        Vec3(cx + hx * sx, y, cz + hz * sz), Vec3(cx - hx * sx, y, cz + hz * sz),
+      ];
+
+  switch (shape) {
+    case GearShape.cylinder:
+      final axis = cylinderAxis(a);
+      if (axis == 1) {
+        // 세운 통: 타원
+        return [
+          for (var i = 0; i < cylinderSides; i++)
+            Vec3(cx + hx * math.cos(2 * math.pi * i / cylinderSides), y,
+                cz + hz * math.sin(2 * math.pi * i / cylinderSides)),
+        ];
+      }
+      // 눕힌 원통: 바닥에 닿는 띠는 폭의 일부뿐
+      return axis == 0 ? rect(1, 0.72) : rect(0.72, 1);
+    case GearShape.softBag:
+      return chamfered(math.min(a.w, math.min(a.h, a.d)) * 0.16 + pad);
+    case GearShape.hardCase:
+      return chamfered(math.min(a.w, a.d) * 0.13);
+    case GearShape.cooler:
+    case GearShape.crate:
+      // 아래로 좁아지는 몸통
+      final inset = math.min(a.w, a.d) * 0.03;
+      return rect(1 - inset / hx, 1 - inset / hz);
+    case GearShape.box:
+    case GearShape.flat:
+      return rect(1, 1);
+  }
 }

@@ -2,6 +2,7 @@
 // 픽셀 비교는 하지 않는다 (예외 없이 그려지는지만 검사). 글자는 테스트 폰트(Ahem)라
 // 네모로 나온다.
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -137,6 +138,29 @@ void main() {
     final s7 = TrunkSpace.sorento7();
     final boxes = packedBundle(s7, '2인 미니멀 캠핑');
     await _shoot(tester, '06_sorento7', s7, boxes, yaw: 0.3);
+  });
+
+  testWidgets('8 순환 가림 (휠하우스 위에 걸친 짐 + 앞에 세운 판)', (tester) async {
+    TrimBox at(String label, int i, double x, double y, double z) =>
+        gearBox(label, i)
+          ..x = x
+          ..y = y
+          ..z = z
+          ..loadOrder = i + 1;
+    final boxes = [
+      at('스노우피크 쉘프컨테이너 50', 0, 0.15, 0, 0.15), // 63×41×27
+      at('캠핑 더플백 60L', 1, 0.03, 0.30, 0.15), // 60×35×30, 휠하우스 위로 걸침
+      at('접이식 테이블 (2인/60cm)', 2, 0.15, 0, 0.58)
+        ..w = 0.60
+        ..d = 0.05
+        ..h = 0.45, // 세워 실음
+    ];
+    boxes[0].y = 0;
+    boxes[1].y = math.max(boxes[0].top, sorento.leftWheelhouse.h);
+    await _shoot(tester, '08_cyclic_occlusion', sorento, boxes,
+        yaw: -0.99, pitch: 0.40, selected: boxes[1].id);
+    await _shoot(tester, '08_cyclic_occlusion_step', sorento, boxes,
+        yaw: -0.99, pitch: 0.40, step: 3);
   });
 
   testWidgets('7 구형 프리셋 (투싼, 테일게이트 모델 없음)', (tester) async {

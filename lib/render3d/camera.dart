@@ -109,13 +109,52 @@ class OrbitCamera {
         pan: pan ?? this.pan,
       );
 
-  /// 각도·거리 제한을 적용한 사본
-  OrbitCamera clamped({required double minDistance, required double maxDistance}) =>
-      copyWith(
-        yaw: yaw.clamp(-maxYawAbs, maxYawAbs),
-        pitch: pitch.clamp(minPitch, maxPitch),
-        distance: distance.clamp(minDistance, maxDistance),
-      );
+  /// 각도·거리 제한을 적용한 사본.
+  ///
+  /// [keepOutside] 를 주면 카메라가 그 트렁크 상자 안으로 들어가지 않게 최소 거리를
+  /// 올린다. 가로로 긴 캔버스(844×300 등)는 맞춤 거리가 짧아서, 최대로 확대하면
+  /// (맞춤 거리 × 0.45) 카메라가 트렁크 안에 들어가 면이 near plane 에 잘린다.
+  OrbitCamera clamped({
+    required double minDistance,
+    required double maxDistance,
+    TrunkSpace? keepOutside,
+  }) {
+    final y = _finiteOr(yaw, 0).clamp(-maxYawAbs, maxYawAbs).toDouble();
+    final p = _finiteOr(pitch, minPitch).clamp(minPitch, maxPitch).toDouble();
+    var dist = _finiteOr(distance, maxDistance)
+        .clamp(minDistance, math.max(minDistance, maxDistance))
+        .toDouble();
+    if (keepOutside != null) {
+      final out = copyWith(yaw: y, pitch: p)._exitDistance(keepOutside);
+      dist = math.max(dist, out + outsideMargin);
+    }
+    return copyWith(yaw: y, pitch: p, distance: dist);
+  }
+
+  /// [clamped] 의 keepOutside 여유 (m)
+  static const double outsideMargin = 0.10;
+
+  static double _finiteOr(double v, double fallback) => v.isFinite ? v : fallback;
+
+  /// 타깃에서 카메라 방향으로 나아가 트렁크 상자 [0,w]×[0,h]×[0,d] 를 벗어나는 거리.
+  /// 타깃이 상자 밖이면 0.
+  double _exitDistance(TrunkSpace s) {
+    final dir = Vec3(
+      math.sin(yaw) * math.cos(pitch),
+      math.sin(pitch),
+      math.cos(yaw) * math.cos(pitch),
+    );
+    final lo = [0.0, 0.0, 0.0], hi = [s.w, s.h, s.d];
+    var t = double.infinity;
+    for (var axis = 0; axis < 3; axis++) {
+      final o = target[axis], d = dir[axis];
+      if (o < lo[axis] || o > hi[axis]) return 0;
+      if (d.abs() < 1e-12) continue;
+      final exit = d > 0 ? (hi[axis] - o) / d : (lo[axis] - o) / d;
+      if (exit < t) t = exit;
+    }
+    return t.isFinite ? t : 0;
+  }
 
   /// 트렁크 전체가 화면의 [margin] 비율 안에 들어오는 거리로 맞춘 카메라.
   /// 원근 투영은 거리에 정확히 비례하지 않으므로 몇 번 반복해 수렴시킨다.
@@ -140,22 +179,31 @@ class OrbitCamera {
     );
     if (size.width <= 0 || size.height <= 0) return cam;
 
-    for (var i = 0; i < 5; i++) {
+    // 화면 여백 기준으로 가장 많이 벗어난 꼭짓점의 비율 (1 = 딱 맞음, 2 = 카메라 뒤)
+    double overflow(OrbitCamera c) {
       double maxNorm = 0;
-      final c = cam._center(size);
+      final ctr = c._center(size);
       for (final p in corners) {
-        final pp = cam.project(p, size);
-        if (pp == null) {
-          maxNorm = 2;
-          break;
-        }
-        final nx = (pp.screen.dx - c.dx).abs() / (size.width / 2 * margin);
-        final ny = (pp.screen.dy - c.dy).abs() / (size.height / 2 * margin);
+        final pp = c.project(p, size);
+        if (pp == null) return 2;
+        final nx = (pp.screen.dx - ctr.dx).abs() / (size.width / 2 * margin);
+        final ny = (pp.screen.dy - ctr.dy).abs() / (size.height / 2 * margin);
         maxNorm = math.max(maxNorm, math.max(nx, ny));
       }
-      if (maxNorm <= 0) break;
-      cam = cam.copyWith(distance: cam.distance * maxNorm);
-      if ((maxNorm - 1).abs() < 0.01) break;
+      return maxNorm;
+    }
+
+    // 고정점 반복. 가까운 꼭짓점은 거리에 비례하지 않게 움직이므로(원근) 가로로 긴
+    // 캔버스·극단 각도에서는 몇 번 더 돌아야 수렴한다.
+    for (var i = 0; i < 24; i++) {
+      final m = overflow(cam);
+      if (m <= 0) break;
+      cam = cam.copyWith(distance: cam.distance * m);
+      if ((m - 1).abs() < 0.002) break;
+    }
+    // 보증: 아직 넘치면 들어올 때까지 물러난다
+    for (var i = 0; i < 60 && overflow(cam) > 1.0; i++) {
+      cam = cam.copyWith(distance: cam.distance * 1.03);
     }
     return cam;
   }

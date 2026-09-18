@@ -13,7 +13,6 @@ import '../models/trunk_space.dart';
 import '../models/scene.dart';
 import '../models/support.dart';
 import '../render3d/camera.dart';
-import '../render3d/geometry.dart';
 import '../render3d/picking.dart';
 import '../render3d/trunk_painter_3d.dart';
 import '../render3d/vec3.dart';
@@ -270,6 +269,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     _camera = cam.clamped(
       minDistance: _fitDistance * _minZoomFactor,
       maxDistance: _fitDistance * _maxZoomFactor,
+      keepOutside: _space,
     );
   }
 
@@ -1112,21 +1112,14 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     final cam = _camera;
     if (cam == null || _lastCanvasSize == Size.zero) return null;
     final ray = cam.ray(localPos, _lastCanvasSize);
-    TrimBox? best;
-    var bestT = double.infinity;
-    for (final box in _boxes) {
-      if (_stepViewActive &&
-          box.loadOrder != null &&
-          box.loadOrder! > _stepViewCurrentStep) {
-        continue; // 스텝 뷰에서 숨겨진 박스
-      }
-      final t = rayAabbHit(ray, Aabb.fromBox(box));
-      if (t != null && t < bestT) {
-        bestT = t;
-        best = box;
-      }
-    }
-    return best;
+    // AABB 로 넉넉히 집되(터치), 여러 개가 걸리면 실제로 그려진 모양에 맞은 쪽을 고른다.
+    // 스텝 뷰에서 숨겨진 박스는 제외.
+    return pickBox(
+      ray,
+      _boxes.where((b) => !(_stepViewActive &&
+          b.loadOrder != null &&
+          b.loadOrder! > _stepViewCurrentStep)),
+    );
   }
 
   // ──── 박스 CRUD ────

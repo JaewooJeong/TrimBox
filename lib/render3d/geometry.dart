@@ -105,7 +105,11 @@ class ShellFace {
   final Face face;
   final ShellPart part;
 
-  const ShellFace(this.face, this.part);
+  /// 등받이 프로필 평면 뒤(실내 쪽)의 장식 면 — 짐칸의 경계가 아니다.
+  /// 헤드레스트 구간의 실제 적재 한계는 `seatLimitFace` 다.
+  final bool behindSeatPlane;
+
+  const ShellFace(this.face, this.part, {this.behindSeatPlane = false});
 }
 
 /// 세 점으로 정의된 다각형의 법선 (오른손 좌표계, 반시계 순서 기준)
@@ -159,12 +163,12 @@ List<ShellFace> buildTrunkShell(
   double xkr(double z) => s.xMaxAt(z, knee(z));
   final hasKnee = s.rearTopNarrow + s.ceilingNarrow > 0.001;
 
-  ShellFace make(List<Vec3> pts, ShellPart part) {
+  ShellFace make(List<Vec3> pts, ShellPart part, {bool behind = false}) {
     var normal = newellPolygonNormal(pts);
     // 내부를 향하도록 보정
     final c = Face(pts, normal).centroid;
     if (normal.dot(interior - c) < 0) normal = -normal;
-    return ShellFace(Face(pts, normal), part);
+    return ShellFace(Face(pts, normal), part, behindSeatPlane: behind);
   }
 
   final faces = <ShellFace>[];
@@ -235,19 +239,34 @@ List<ShellFace> buildTrunkShell(
       Vec3(xr(zStart), 0, zStart),
       Vec3(xl(zStart), 0, zStart),
     ], ShellPart.floor));
-    // 벽: 바닥 zStart → (꺾임) → 천장 zStart → 프로필을 따라 내려와 바닥 0
-    faces.add(make([
-      Vec3(xl(zStart), 0, zStart),
-      if (hasKnee) Vec3(xkl(zStart), knee(zStart), zStart),
-      Vec3(xtl(zStart), ceil(zStart), zStart),
-      for (final p in front.reversed) Vec3(s.xMinAt(p.z, p.y), p.y, p.z),
-    ], ShellPart.leftWall));
-    faces.add(make([
-      Vec3(xr(zStart), 0, zStart),
-      if (hasKnee) Vec3(xkr(zStart), knee(zStart), zStart),
-      Vec3(xtr(zStart), ceil(zStart), zStart),
-      for (final p in front.reversed) Vec3(s.xMaxAt(p.z, p.y), p.y, p.z),
-    ], ShellPart.rightWall));
+    // 벽: zStart 단면과 등받이 프로필 사이. 꺾임이 있으면 아래(수직)·위(기욺)로 나눈다 —
+    // 한 장의 비평면 다각형으로 그리면 면이 물리 벽보다 안쪽으로 들어온다.
+    final yk = _kneeOnProfile(s, s.frontInsetAt);
+    for (final left in [true, false]) {
+      double wx(double z, double y) => left ? s.xMinAt(z, y) : s.xMaxAt(z, y);
+      final part = left ? ShellPart.leftWall : ShellPart.rightWall;
+      Vec3 at(Vec3 p) => Vec3(wx(p.z, p.y), p.y, p.z);
+      if (hasKnee && yk != null) {
+        faces.add(make([
+          Vec3(wx(zStart, 0), 0, zStart),
+          Vec3(wx(zStart, knee(zStart)), knee(zStart), zStart),
+          for (final p in front.reversed)
+            if (p.y <= yk + 1e-9) at(p),
+        ], part));
+        faces.add(make([
+          Vec3(wx(zStart, knee(zStart)), knee(zStart), zStart),
+          Vec3(wx(zStart, ceil(zStart)), ceil(zStart), zStart),
+          for (final p in front.reversed)
+            if (p.y >= yk - 1e-9) at(p),
+        ], part));
+      } else {
+        faces.add(make([
+          Vec3(wx(zStart, 0), 0, zStart),
+          Vec3(wx(zStart, ceil(zStart)), ceil(zStart), zStart),
+          for (final p in front.reversed) at(p),
+        ], part));
+      }
+    }
   }
   final recessed = headrestZoneY != null && headrestRecess > 1e-6;
   for (var i = 0; i + 1 < front.length; i++) {
@@ -269,19 +288,19 @@ List<ShellFace> buildTrunkShell(
     // 안쪽 벽(어두운 실내), 등받이 윗면, 양옆, 천장
     faces.add(make([
       Vec3(l0, y0, zr), Vec3(r0, y0, zr), Vec3(r1, y1, zr), Vec3(l1, y1, zr), //
-    ], ShellPart.seatRecess));
+    ], ShellPart.seatRecess, behind: true));
     faces.add(make([
       Vec3(l0, y0, zr), Vec3(r0, y0, zr), Vec3(r0, y0, zp), Vec3(l0, y0, zp), //
-    ], ShellPart.seatBack));
+    ], ShellPart.seatBack, behind: true));
     faces.add(make([
       Vec3(l0, y0, zr), Vec3(l0, y0, zp), Vec3(l1, y1, zp), Vec3(l1, y1, zr), //
-    ], ShellPart.leftWall));
+    ], ShellPart.leftWall, behind: true));
     faces.add(make([
       Vec3(r0, y0, zr), Vec3(r0, y0, zp), Vec3(r1, y1, zp), Vec3(r1, y1, zr), //
-    ], ShellPart.rightWall));
+    ], ShellPart.rightWall, behind: true));
     faces.add(make([
       Vec3(l1, y1, zr), Vec3(r1, y1, zr), Vec3(r1, y1, zp), Vec3(l1, y1, zp), //
-    ], ShellPart.ceiling));
+    ], ShellPart.ceiling, behind: true));
   }
 
   // 뒤쪽 마감: 바닥은 테일게이트 바닥선(z = d)까지, 벽은 프로필을 따라
@@ -293,20 +312,39 @@ List<ShellFace> buildTrunkShell(
       Vec3(xl(zWallMax), 0, s.d),
     ], ShellPart.floor));
     final prof = rearProfilePolyline(s);
-    double zw(double z) => math.min(z, zWallMax);
-    // 왼쪽 벽: 바닥 zEnd → 바닥 d → 프로필 위로 → 천장 zEnd → (꺾임)
-    faces.add(make([
-      Vec3(xl(zEnd), 0, zEnd),
-      for (final p in prof) Vec3(s.xMinAt(zw(p.z), p.y), p.y, p.z),
-      Vec3(xtl(zEnd), ceil(zEnd), zEnd),
-      if (hasKnee) Vec3(xkl(zEnd), knee(zEnd), zEnd),
-    ], ShellPart.leftWall));
-    faces.add(make([
-      Vec3(xr(zEnd), 0, zEnd),
-      for (final p in prof) Vec3(s.xMaxAt(zw(p.z), p.y), p.y, p.z),
-      Vec3(xtr(zEnd), ceil(zEnd), zEnd),
-      if (hasKnee) Vec3(xkr(zEnd), knee(zEnd), zEnd),
-    ], ShellPart.rightWall));
+    final yk = _kneeOnProfile(s, s.rearDepthAt);
+    for (final left in [true, false]) {
+      // 프레임 구간에서도 벽은 벽 평면에 둔다 (좁아짐은 기둥이 그린다). 천장 위로는 안 올라간다.
+      double wx(double z, double y) => left
+          ? s.xMinAt(math.min(z, zWallMax), y)
+          : s.xMaxAt(math.min(z, zWallMax), y);
+      final part = left ? ShellPart.leftWall : ShellPart.rightWall;
+      Vec3 at(Vec3 p) {
+        final y = math.min(p.y, ceil(p.z));
+        return Vec3(wx(p.z, y), y, p.z);
+      }
+
+      if (hasKnee && yk != null) {
+        faces.add(make([
+          Vec3(wx(zEnd, 0), 0, zEnd),
+          for (final p in prof)
+            if (p.y <= yk + 1e-9) at(p),
+          Vec3(wx(zEnd, knee(zEnd)), knee(zEnd), zEnd),
+        ], part));
+        faces.add(make([
+          Vec3(wx(zEnd, knee(zEnd)), knee(zEnd), zEnd),
+          for (final p in prof)
+            if (p.y >= yk - 1e-9) at(p),
+          Vec3(wx(zEnd, ceil(zEnd)), ceil(zEnd), zEnd),
+        ], part));
+      } else {
+        faces.add(make([
+          Vec3(wx(zEnd, 0), 0, zEnd),
+          for (final p in prof) at(p),
+          Vec3(wx(zEnd, ceil(zEnd)), ceil(zEnd), zEnd),
+        ], part));
+      }
+    }
   }
   return faces;
 }
@@ -323,21 +361,39 @@ Vec3 newellPolygonNormal(List<Vec3> p) {
   return Vec3(nx, ny, nz).normalized;
 }
 
+/// 벽이 안쪽으로 꺾이는 높이(천장 높이의 60%)가 프로필 위에서 어디인지.
+/// 꺾임 높이는 z 에 따라(천장 높이에 따라) 달라지므로 고정점 반복으로 구한다.
+/// 벽이 꺾이지 않는 차는 null.
+double? _kneeOnProfile(TrunkSpace s, double Function(double y) zAt) {
+  if (s.rearTopNarrow + s.ceilingNarrow <= 0.001) return null;
+  var y = s.h * 0.6;
+  for (var i = 0; i < 4; i++) {
+    y = s.interiorCeilingAt(zAt(y)) * 0.6;
+  }
+  return y;
+}
+
 /// 2열 등받이 프로필을 (z, y) 점열로 — 바닥 (0, 0) 에서 천장까지 y 오름차순.
-List<Vec3> frontProfilePolyline(TrunkSpace s) {
-  final ys = <double>{0.0, s.interiorCeilingAt(s.frontInsetAt(s.h))};
+/// [withKnee]: 옆벽이 꺾이는 높이에도 점을 둔다 (벽·등받이 면이 `xMinAt` 을 따르도록).
+List<Vec3> frontProfilePolyline(TrunkSpace s, {bool withKnee = true}) {
+  final top = s.interiorCeilingAt(s.frontInsetAt(s.h));
+  final ys = <double>{0.0, top};
   final fp = s.frontProfile;
   if (fp != null) {
     for (final p in fp.points) {
       if (p.y > 0 && p.y < s.h) ys.add(p.y);
     }
   }
+  if (withKnee) {
+    final k = _kneeOnProfile(s, s.frontInsetAt);
+    if (k != null && k > 0 && k < top) ys.add(k);
+  }
   final sorted = ys.toList()..sort();
   return [for (final y in sorted) Vec3(0, y, s.frontInsetAt(y))];
 }
 
 /// 뒤쪽 경계 프로필을 (z, y) 점열로 — 바닥 (d, 0) 에서 천장까지 y 오름차순.
-/// 개구부 상단에서 헤더로 꺾이는 점을 포함한다.
+/// 개구부 상단에서 헤더로 꺾이는 점과 옆벽이 꺾이는 높이의 점을 포함한다.
 List<Vec3> rearProfilePolyline(TrunkSpace s) {
   final ys = <double>{0.0, s.h};
   final rp = s.rearProfile;
@@ -351,6 +407,8 @@ List<Vec3> rearProfilePolyline(TrunkSpace s) {
     ys.add(ap.height - 1e-6);
     ys.add(ap.height);
   }
+  final k = _kneeOnProfile(s, s.rearDepthAt);
+  if (k != null && k > 0 && k < s.h) ys.add(k);
   final sorted = ys.toList()..sort();
   return [for (final y in sorted) Vec3(0, y, s.rearDepthAt(y))];
 }

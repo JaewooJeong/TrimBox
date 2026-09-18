@@ -6,11 +6,12 @@ import 'package:flutter/material.dart';
 import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import 'camera.dart';
-import 'depth_sort.dart';
 import 'fixtures.dart';
 import 'gear_shapes.dart';
 import 'geometry.dart';
+import 'label_layout.dart';
 import 'mesh.dart';
+import 'scene.dart';
 import 'vec3.dart';
 
 /// 정적 트렁크 껍데기 렌더링을 카메라·크기·트렁크가 같을 때 재사용하기 위한 캐시.
@@ -48,36 +49,6 @@ class SceneCache {
     shell?.dispose();
     shell = null;
   }
-}
-
-/// 박스와 같이 뒤→앞 정렬해야 하는 고정물 전부 (휠하우스 아치, 프레임, 차체 윤곽)
-List<FixtureObject> buildSceneFixtures(TrunkSpace space) {
-  final out = <FixtureObject>[];
-  for (final left in [true, false]) {
-    final mesh = wheelhouseMesh(space, left: left);
-    if (mesh == null) continue;
-    out.add(FixtureObject(
-      left ? Aabb.leftWheelhouse(space) : Aabb.rightWheelhouse(space),
-      mesh,
-      wheelhouseColor,
-    ));
-  }
-  out.addAll(frameFixtures(space));
-  out.addAll(bodyFixtures(space));
-  return out;
-}
-
-class _SceneObject {
-  final Aabb aabb;
-  final Color color;
-  final TrimBox? box;
-  final Mesh mesh;
-  final double alpha;
-  final bool outline;
-  final int fadeSide;
-
-  const _SceneObject(this.aabb, this.color, this.box, this.mesh,
-      {this.alpha = 1.0, this.outline = true, this.fadeSide = 0});
 }
 
 /// 원근 카메라 + painter's algorithm 기반 트렁크 3D 페인터.
@@ -205,12 +176,9 @@ class TrunkPainter3D extends CustomPainter {
   void _drawShell(Canvas canvas, Size size) {
     final camPos = camera.position;
     final seat = seatLayout(space);
-    final faces = buildTrunkShell(
-      space,
-      stations: 10,
-      headrestZoneY: (seat?.hasHeadrests ?? false) ? seat!.topY : null,
-      headrestRecess: seat?.recess ?? 0,
-    ).where((f) => f.face.facesCamera(camPos)).toList()
+    final faces = drawnShell(space, stations: 10)
+        .where((f) => f.face.facesCamera(camPos))
+        .toList()
       ..sort((a, b) => (b.face.centroid - camPos)
           .length
           .compareTo((a.face.centroid - camPos).length));
@@ -238,6 +206,7 @@ class TrunkPainter3D extends CustomPainter {
     _drawFloorDetails(canvas, size);
     _drawWallDetails(canvas, size, camPos);
     if (seatVisible && seat != null) _drawSeat(canvas, size, seat, camPos);
+    _drawSeatLimitOutline(canvas, size, camPos);
     _drawTailgateLimitLines(canvas, size);
     if (space.aperture == null) _drawOpeningOutline(canvas, size);
   }
@@ -324,11 +293,10 @@ class TrunkPainter3D extends CustomPainter {
     canvas.clipPath(outline);
 
     // 2열을 앞으로 당기면 등받이와 바닥 사이에 빈틈이 생긴다 (짐을 받칠 바닥이 없다)
-    final gapZ = s.floorStartZ.clamp(0.0, s.d).toDouble();
-    if (gapZ > 0.005) {
-      _fillPoly(canvas, size, [
-        Vec3(0, y, 0), Vec3(s.w, y, 0), Vec3(s.w, y, gapZ), Vec3(0, y, gapZ), //
-      ], Paint()..color = _recessColor);
+    final gapStrip = seatGapStrip(s, y: y);
+    final gapZ = gapStrip == null ? 0.0 : gapStrip[2].z;
+    if (gapStrip != null) {
+      _fillPoly(canvas, size, gapStrip, Paint()..color = _recessColor);
     }
 
     // 카고 매트 (휠하우스 사이, 모서리를 딴 직사각형)
@@ -533,7 +501,8 @@ class TrunkPainter3D extends CustomPainter {
   /// 헤드레스트와 기둥. 전부 등받이 프로필 평면 위 또는 그 뒤(실내 쪽)에 있다.
   void _drawSeat(Canvas canvas, Size size, SeatLayout seat, Vec3 camPos) {
     final s = space;
-    final prof = frontProfilePolyline(s);
+    // 쿠션은 등받이 프로필의 꺾이는 점에서만 나눈다 (벽 꺾임 높이는 쿠션과 무관)
+    final prof = frontProfilePolyline(s, withKnee: false);
     const gapX = 0.009, bottom = 0.02, topGap = 0.012;
     final fill = Paint();
     final edge = Paint()
@@ -608,32 +577,19 @@ class TrunkPainter3D extends CustomPainter {
   /// 닫힌 테일게이트 안쪽 면이 양쪽 벽과 만나는 선 (= 이 선 뒤로는 못 놓음).
   /// 프레임 구간 안쪽은 프레임 면이 가리므로 프레임 앞까지만 그린다.
   void _drawTailgateLimitLines(Canvas canvas, Size size) {
-    if (!space.hasTailgateModel) return;
-    final prof = rearProfilePolyline(space);
-    if (prof.length < 2) return;
     final paint = Paint()
       ..color = _limitLine.withValues(alpha: 0.75)
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
-    for (final side in [0, 1]) {
-      final pts = <Vec3>[];
-      for (final p in prof) {
-        final x = side == 0
-            ? space.xMinAt(p.z, p.y) + 0.004
-            : space.xMaxAt(p.z, p.y) - 0.004;
-        pts.add(Vec3(x, p.y, p.z));
-      }
-      final proj = _projectPoints(pts, size);
+    for (final line in tailgateLimitPolylines(space)) {
+      final proj = _projectPoints(line, size);
       if (proj == null) continue;
       _drawDashedPolyline(canvas, proj, paint);
     }
     // 바닥에도: 테일게이트 바닥선에서 천장 한계까지 안쪽으로 얼마나 들어오는지
-    final zTop = prof.last.z;
-    if (space.d - zTop > 0.01) {
-      final floor = _projectPoints([
-        Vec3(space.xMinAt(zTop, 0), 0.002, zTop),
-        Vec3(space.xMaxAt(zTop, 0), 0.002, zTop),
-      ], size);
+    final floorLine = tailgateLimitFloorLine(space);
+    if (floorLine != null) {
+      final floor = _projectPoints(floorLine, size);
       if (floor != null) {
         _drawDashedPolyline(canvas, floor,
             Paint()
@@ -642,6 +598,25 @@ class TrunkPainter3D extends CustomPainter {
               ..style = PaintingStyle.stroke);
       }
     }
+  }
+
+  /// 헤드레스트 구간의 적재 한계면 외곽 (헤드레스트 사이로 짐을 밀어 넣을 수 없다는 표시).
+  /// 파인 공간은 그림일 뿐이고 짐은 이 평면까지만 간다.
+  void _drawSeatLimitOutline(Canvas canvas, Size size, Vec3 camPos) {
+    final face = seatLimitFace(space);
+    if (face == null || !face.facesCamera(camPos)) return;
+    final p = _projectPoints(face.pts, size);
+    if (p == null) return;
+    // 아래 변은 등받이 윗선과 겹치므로 양옆과 천장 쪽만
+    _drawDashedPolyline(
+        canvas,
+        [p[0], p[3], p[2], p[1]],
+        Paint()
+          ..color = _limitLine.withValues(alpha: 0.45)
+          ..strokeWidth = 1.2
+          ..style = PaintingStyle.stroke,
+        dash: 4,
+        gap: 4);
   }
 
   void _drawDashedPolyline(Canvas canvas, List<Offset> pts, Paint paint,
@@ -691,22 +666,16 @@ class TrunkPainter3D extends CustomPainter {
   // ── 물체 (고정물 + 박스) ──
 
   void _paintObjects(Canvas canvas, Size size) {
-    final objects = <_SceneObject>[];
-    final fixtures = cache?.fixturesFor(space) ?? buildSceneFixtures(space);
-    for (final f in fixtures) {
-      objects.add(_SceneObject(f.aabb, f.color, null, f.mesh,
-          alpha: f.alpha, outline: f.outline, fadeSide: f.fadeSide));
-    }
-    for (final b in boxes) {
-      if (!_isVisibleInStepView(b)) continue;
-      objects.add(_SceneObject(Aabb.fromBox(b), b.color, b, gearMesh(b)));
-    }
-    if (objects.isEmpty) return;
-
     final camPos = camera.position;
-    final order = sortBackToFront(objects.map((o) => o.aabb).toList(), camPos);
-    for (final idx in order) {
-      _drawObject(canvas, size, objects[idx], camPos);
+    final ordered = sceneDrawOrder(
+      space,
+      boxes.where(_isVisibleInStepView),
+      camera,
+      fixtures: cache?.fixturesFor(space),
+    );
+    final placedLabels = <Rect>[];
+    for (final obj in ordered) {
+      _drawObject(canvas, size, obj, camPos, placedLabels);
     }
   }
 
@@ -740,7 +709,8 @@ class TrunkPainter3D extends CustomPainter {
       ? Color.lerp(base, Colors.white, 0.30)!
       : Color.lerp(base, Colors.black, 0.55)!;
 
-  void _drawObject(Canvas canvas, Size size, _SceneObject obj, Vec3 camPos) {
+  void _drawObject(Canvas canvas, Size size, SceneObject obj, Vec3 camPos,
+      List<Rect> placedLabels) {
     final box = obj.box;
     if (box == null) {
       var fade = _sideFade(obj.fadeSide, camPos);
@@ -765,16 +735,21 @@ class TrunkPainter3D extends CustomPainter {
     if (isColliding) base = Color.lerp(base, _danger, 0.45)!;
     final edgeColor = _edgeColorFor(base).withValues(alpha: 0.9 * opacity);
 
-    _drawContactShadow(canvas, size, obj.aabb, opacity);
+    if (obj.isFirstPart) {
+      _drawContactShadow(canvas, size, obj.fullAabb, box.shape, opacity);
+    }
     _drawMesh(canvas, size, obj.mesh, base, camPos,
         opacity: opacity,
         edgeColor: edgeColor,
         silhouette: isSelected ? _accent.withValues(alpha: opacity) : edgeColor,
         silhouetteWidth: isSelected ? 2.5 : 1.1);
 
+    // 순환을 풀려고 자른 물체는 마지막 조각을 그린 뒤에 와이어·라벨을 얹는다
+    if (!obj.isLastPart) return;
+
     // 실제 판정 경계(AABB). 충돌 중이면 빨간 와이어로 물리 경계를 보여준다.
     final visible = [
-      for (final f in aabbFaces(obj.aabb))
+      for (final f in aabbFaces(obj.fullAabb))
         if (f.facesCamera(camPos)) f
     ];
     List<Offset>? largest;
@@ -795,7 +770,7 @@ class TrunkPainter3D extends CustomPainter {
     }
 
     if (showLabels && largest != null && largestArea > 700) {
-      _drawLabel(canvas, box, largest, opacity);
+      _drawLabel(canvas, box, largest, opacity, placedLabels);
     }
   }
 
@@ -832,6 +807,8 @@ class TrunkPainter3D extends CustomPainter {
       final f = mesh.faces[fi];
       if (f.normal.dot(camPos - verts[f.idx[0]]) <= 0) continue;
       front[fi] = true;
+      // 절단면은 앞 조각이 덮는다. 반투명이면 비쳐 보이므로 그리지 않는다.
+      if (f.isCap && opacity < 0.99) continue;
 
       final path = Path();
       var ok = true;
@@ -877,11 +854,23 @@ class TrunkPainter3D extends CustomPainter {
     for (var n = 0; n < drawn.length; n++) {
       final f = mesh.faces[drawn[n]];
       if (hardEdges && !f.smooth && edgeColor != null) {
-        canvas.drawPath(
-            paths[n],
-            stroke
-              ..strokeWidth = 1.0
-              ..color = edgeColor);
+        stroke
+          ..strokeWidth = 1.0
+          ..color = edgeColor;
+        if (f.cutEdges.isEmpty) {
+          canvas.drawPath(paths[n], stroke);
+        } else {
+          // 절단선은 실제 모서리가 아니다
+          final edges = Path();
+          for (var k = 0; k < f.idx.length; k++) {
+            if (f.cutEdges.contains(k)) continue;
+            final a = proj[f.idx[k]]!, b = proj[f.idx[(k + 1) % f.idx.length]]!;
+            edges
+              ..moveTo(a.dx, a.dy)
+              ..lineTo(b.dx, b.dy);
+          }
+          canvas.drawPath(edges, stroke);
+        }
       }
       for (final line in f.lines) {
         final lp = _projectPoints(line.pts, size);
@@ -916,8 +905,9 @@ class TrunkPainter3D extends CustomPainter {
     }
     final sil = Path();
     var any = false;
+    final cutKeys = mesh.cutEdgeKeys;
     count.forEach((key, n) {
-      if (n != 1) return;
+      if (n != 1 || cutKeys.contains(key)) return;
       final pa = proj[key ~/ nv], pb = proj[key % nv];
       if (pa == null || pb == null) return;
       sil
@@ -935,15 +925,11 @@ class TrunkPainter3D extends CustomPainter {
     }
   }
 
+  /// 접촉 그림자: 모양의 바닥 윤곽 (세운 통은 타원, 천 가방은 모서리를 딴 사각형)
   void _drawContactShadow(
-      Canvas canvas, Size size, Aabb a, double opacity) {
-    const pad = 0.015;
-    final y = a.y1 + 0.002;
+      Canvas canvas, Size size, Aabb a, GearShape shape, double opacity) {
     final pts = _projectPoints([
-      Vec3(a.x1 - pad, y, a.z1 - pad),
-      Vec3(a.x2 + pad, y, a.z1 - pad),
-      Vec3(a.x2 + pad, y, a.z2 + pad),
-      Vec3(a.x1 - pad, y, a.z2 + pad),
+      for (final p in gearFootprint(shape, a)) Vec3(p.x, p.y + 0.002, p.z),
     ], size);
     if (pts == null) return;
     canvas.drawPath(
@@ -955,13 +941,18 @@ class TrunkPainter3D extends CustomPainter {
   }
 
   /// 가장 크게 보이는 AABB 면 가운데에 [순서 배지][라벨]. 라벨이 안 들어가면 배지만.
-  void _drawLabel(
-      Canvas canvas, TrimBox box, List<Offset> facePts, double opacity) {
+  /// 먼저 놓인 이웃의 배지·라벨([placed])과 겹치면 면 안에서 위아래로 비켜 놓고,
+  /// 그래도 겹치면 배지만 남긴다.
+  void _drawLabel(Canvas canvas, TrimBox box, List<Offset> facePts,
+      double opacity, List<Rect> placed) {
     var minX = double.infinity, maxX = -double.infinity;
+    var minY = double.infinity, maxY = -double.infinity;
     var cx = 0.0, cy = 0.0;
     for (final p in facePts) {
       minX = math.min(minX, p.dx);
       maxX = math.max(maxX, p.dx);
+      minY = math.min(minY, p.dy);
+      maxY = math.max(maxY, p.dy);
       cx += p.dx;
       cy += p.dy;
     }
@@ -993,16 +984,22 @@ class TrunkPainter3D extends CustomPainter {
       )..layout(maxWidth: room);
     }
 
-    final pillW = tp == null ? 0.0 : tp.width + 12;
-    final total = badgeW + pillW;
-    if (total <= 0) return;
-    var left = cx - total / 2;
-    if (total <= faceW - 4) {
-      left = left.clamp(minX + 2, maxX - total - 2).toDouble();
-    }
+    final found = placeLabelGroup(
+      face: Rect.fromLTRB(minX, minY, maxX, maxY),
+      centre: Offset(cx, cy),
+      badgeWidth: badgeW,
+      pillWidth: tp == null ? null : tp.width + 12,
+      placed: placed,
+    );
+    if (found == null) return;
+    final spot = found.rect;
+    final withPill = found.withPill;
+    placed.add(spot);
 
+    var left = spot.left;
+    final midY = spot.center.dy;
     if (order != null) {
-      final c = Offset(left + badgeR, cy);
+      final c = Offset(left + badgeR, midY);
       canvas.drawCircle(
           c, badgeR + 1, Paint()..color = Colors.black.withValues(alpha: 0.45 * opacity));
       canvas.drawCircle(
@@ -1022,13 +1019,14 @@ class TrunkPainter3D extends CustomPainter {
       left += badgeW;
     }
 
-    if (tp != null) {
-      final pill = Rect.fromLTWH(left, cy - tp.height / 2 - 3, pillW, tp.height + 6);
+    if (withPill && tp != null) {
+      final pill =
+          Rect.fromLTWH(left, midY - tp.height / 2 - 3, tp.width + 12, tp.height + 6);
       canvas.drawRRect(
         RRect.fromRectAndRadius(pill, const Radius.circular(6)),
         Paint()..color = Colors.black.withValues(alpha: 0.6 * opacity),
       );
-      tp.paint(canvas, Offset(left + 6, cy - tp.height / 2));
+      tp.paint(canvas, Offset(left + 6, midY - tp.height / 2));
     }
   }
 

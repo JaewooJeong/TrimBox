@@ -25,7 +25,7 @@ class Scene {
       };
 
   factory Scene.fromJson(Map<String, dynamic> json) => Scene(
-        version: json['version'] as String? ?? '1.0.0',
+        version: json['version']?.toString() ?? '1.0.0', // 숫자로 저장된 옛 파일도 허용
         space: TrunkSpace.fromJson(json['space'] as Map<String, dynamic>),
         gridUnit: (json['grid'] as num?)?.toDouble() ?? 0.10,
         boxes: (json['boxes'] as List<dynamic>?)
