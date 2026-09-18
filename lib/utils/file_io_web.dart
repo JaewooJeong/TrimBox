@@ -4,6 +4,9 @@ import 'dart:html' as html;
 // ignore: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:js_util' as js_util;
 
+/// 이 플랫폼에서 파일 내보내기·가져오기·이미지 저장을 쓸 수 있는가.
+const bool fileActionsSupported = true;
+
 /// JSON 문자열을 파일로 다운로드
 void downloadJson(String content, String filename) {
   final blob = html.Blob([content], 'application/json');

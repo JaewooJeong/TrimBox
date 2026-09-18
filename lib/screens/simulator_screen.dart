@@ -20,6 +20,8 @@ import '../render3d/vec3.dart';
 import '../utils/collision.dart';
 import '../utils/file_io.dart' as file_io;
 import '../utils/json_io.dart';
+import '../utils/load_stats.dart';
+import '../utils/scene_migration.dart';
 import '../utils/scene_storage.dart' as storage;
 import '../widgets/add_box_dialog.dart';
 import '../widgets/box_list_panel.dart';
@@ -45,7 +47,8 @@ class SimulatorScreen extends StatefulWidget {
   State<SimulatorScreen> createState() => _SimulatorScreenState();
 }
 
-class _SimulatorScreenState extends State<SimulatorScreen> {
+class _SimulatorScreenState extends State<SimulatorScreen>
+    with WidgetsBindingObserver {
   late TrunkSpace _space;
   final List<TrimBox> _boxes = [];
   String? _selectedBoxId;
@@ -71,8 +74,9 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       _selectedPreset == TrunkPreset.sorento ||
       _selectedPreset == TrunkPreset.sorento7;
 
-  // 온보딩
-  bool _showOnboarding = true;
+  // 온보딩. 저장소에서 "본 적 없음" 을 확인한 뒤에만 켠다 — true 로 시작하면 재방문자도
+  // 첫 프레임에 온보딩이 한 번 깜빡인다.
+  bool _showOnboarding = false;
   bool _hasEverAddedBox = false;
 
   /// 사용자가 손으로 옮기거나 돌린 적이 있으면 true.
@@ -127,7 +131,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   Size _lastCanvasSize = Size.zero;
 
   late CollisionDetector _detector;
-  final FocusNode _canvasFocusNode = FocusNode();
+  final FocusNode _canvasFocusNode = FocusNode(debugLabel: 'trunk-canvas');
   final GlobalKey _canvasKey = GlobalKey();
 
   @override
@@ -138,7 +142,14 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     // 웹에서 한글 폴백 폰트가 늦게 로드되면 캔버스 라벨이 □ 로 남는다.
     // 폰트 변경 알림을 받으면 다시 그린다.
     PaintingBinding.instance.systemFonts.addListener(_onSystemFontsChanged);
+    WidgetsBinding.instance.addObserver(this);
     _restoreSession();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 앱이 뒤로 가거나 탭이 닫히기 직전: 대기 중인 자동 저장을 바로 쓴다
+    if (state != AppLifecycleState.resumed) _flushAutosave();
   }
 
   void _onSystemFontsChanged() {
@@ -148,7 +159,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   @override
   void dispose() {
     PaintingBinding.instance.systemFonts.removeListener(_onSystemFontsChanged);
-    _autosaveTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _flushAutosave();
     _canvasFocusNode.dispose();
     _sceneCache.dispose();
     super.dispose();
@@ -156,26 +168,53 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   /// 온보딩 표시 여부와 마지막 작업 상태 복원
   Future<void> _restoreSession() async {
+    var seen = false;
     try {
-      final seen = await storage.hasSeenOnboarding();
-      final auto = await storage.loadAutosave();
-      if (!mounted) return;
-      if (seen) setState(() => _showOnboarding = false);
-      if (auto != null && _boxes.isEmpty) _applySceneJson(auto, silent: true);
+      seen = await storage.hasSeenOnboarding();
     } catch (_) {
-      // 저장소를 못 쓰는 환경에서는 조용히 넘어간다
+      // 저장소를 못 쓰는 환경에서는 처음 온 사용자로 본다
     }
+    String? auto;
+    try {
+      auto = await storage.loadAutosave();
+    } catch (_) {
+      // 키 타입이 다른 등 읽을 수 없는 자동 저장은 버린다
+      _dropAutosave();
+    }
+    if (!mounted) return;
+    if (auto != null && _boxes.isEmpty) {
+      // 조용한 복원: 실패해도 알리지 않고, 손상된 저장본은 지운다
+      if (!_applySceneJson(auto, silent: true)) _dropAutosave();
+    }
+    if (!seen && _boxes.isEmpty && !_hasEverAddedBox) {
+      setState(() => _showOnboarding = true);
+    }
+  }
+
+  void _dropAutosave() {
+    storage.clearAutosave().catchError((_) {});
   }
 
   /// 마지막 작업 상태를 잠시 뒤 저장 (연속 조작 중 과도한 저장 방지)
   void _scheduleAutosave() {
     _autosaveTimer?.cancel();
-    _autosaveTimer = Timer(const Duration(milliseconds: 800), () {
-      try {
-        storage.saveAutosave(
-            JsonIO.exportScene(Scene(space: _space, boxes: _boxes)));
-      } catch (_) {}
-    });
+    _autosaveTimer =
+        Timer(const Duration(milliseconds: 800), _writeAutosave);
+  }
+
+  /// 대기 중인 자동 저장이 있으면 기다리지 않고 바로 쓴다 (종료·백그라운드 전환 시).
+  void _flushAutosave() {
+    if (_autosaveTimer?.isActive != true) return;
+    _autosaveTimer!.cancel();
+    _writeAutosave();
+  }
+
+  void _writeAutosave() {
+    try {
+      storage
+          .saveAutosave(JsonIO.exportScene(Scene(space: _space, boxes: _boxes)))
+          .catchError((_) {});
+    } catch (_) {}
   }
 
   /// 2열 슬라이드 변경: 트렁크를 다시 만들고, 손으로 옮긴 적이 없으면 다시 배치
@@ -256,78 +295,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1C),
       appBar: AppBar(
-        title: Row(
-          children: [
-            const Text('TrimBox'),
-            const SizedBox(width: 16),
-            PopupMenuButton<TrunkPreset>(
-              initialValue: _selectedPreset,
-              color: const Color(0xFF333333),
-              onSelected: _onPresetChanged,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xFF555555)),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      _selectedPreset == TrunkPreset.custom
-                          ? '커스텀 (${(_space.w * 100).round()}×${(_space.d * 100).round()}cm)'
-                          : _selectedPreset.label,
-                      style: const TextStyle(color: Colors.white, fontSize: 14),
-                    ),
-                    const SizedBox(width: 4),
-                    const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
-                  ],
-                ),
-              ),
-              itemBuilder: (_) => _buildVehicleMenuItems(),
-            ),
-            if (_hasSeatSlide) ...[
-              const SizedBox(width: 8),
-              PopupMenuButton<double>(
-                initialValue: _seatSlide,
-                color: const Color(0xFF333333),
-                tooltip: '2열 시트 슬라이드',
-                onSelected: _onSeatSlideChanged,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFF555555)),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.airline_seat_recline_normal,
-                          color: Colors.white70, size: 16),
-                      const SizedBox(width: 4),
-                      Text(
-                        _seatSlideOptions
-                            .firstWhere((o) => (o.$1 - _seatSlide).abs() < 1e-6,
-                                orElse: () => (_seatSlide, '2열 +${(_seatSlide * 100).round()}cm'))
-                            .$2,
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                      ),
-                      const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
-                    ],
-                  ),
-                ),
-                itemBuilder: (_) => [
-                  for (final o in _seatSlideOptions)
-                    PopupMenuItem<double>(
-                      value: o.$1,
-                      child: Text(o.$2,
-                          style: const TextStyle(color: Colors.white, fontSize: 13)),
-                    ),
-                ],
-              ),
-            ],
-          ],
-        ),
+        title: _buildAppBarTitle(context),
         backgroundColor: const Color(0xFF1C1C1C),
         foregroundColor: Colors.white,
         elevation: 0,
@@ -378,6 +346,118 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     );
   }
 
+  // ──── 앱바: 차종 · 2열 슬라이드 ────
+
+  /// 차종 버튼 라벨. 넓은 화면은 프리셋 라벨 그대로 두되 2열을 당겼으면 바닥 깊이 숫자를
+  /// 현재 값으로 바꾼다. 좁은 화면(폰)은 "(바닥 …)" 을 떼고 차종명만 — 치수는 메뉴에 있다.
+  String _presetButtonLabel({required bool short}) {
+    if (_selectedPreset == TrunkPreset.custom) {
+      return '커스텀 (${(_space.w * 100).round()}×${(_space.d * 100).round()}cm)';
+    }
+    final label = _selectedPreset.label;
+    if (short) return label.split(' (').first;
+    if (_seatSlide.abs() < 1e-6) return label;
+    return label.replaceFirst(
+        RegExp(r'×\d+cm\)'), '×${(_space.d * 100).round()}cm)');
+  }
+
+  String _seatSlideLabel({required bool short}) {
+    final option = _seatSlideOptions
+        .where((o) => (o.$1 - _seatSlide).abs() < 1e-6)
+        .firstOrNull;
+    final cm = (_seatSlide * 100).round();
+    if (short) return cm == 0 ? '2열 최후방' : '2열 +${cm}cm';
+    return option?.$2 ?? '2열 +${cm}cm';
+  }
+
+  /// 폭 600 미만(폰)에서는 제목을 빼고 짧은 라벨을 써서 360dp 에도 두 컨트롤이 들어가게
+  /// 한다. 600 이상은 기존 배치 그대로 (웹 E2E 가 고정 좌표를 누른다).
+  Widget _buildAppBarTitle(BuildContext context) {
+    final narrow = MediaQuery.sizeOf(context).width < 600;
+    final hPad = narrow ? 8.0 : 10.0;
+
+    final presetMenu = PopupMenuButton<TrunkPreset>(
+      initialValue: _selectedPreset,
+      color: const Color(0xFF333333),
+      tooltip: '차종 선택',
+      onSelected: _onPresetChanged,
+      itemBuilder: (_) => _buildVehicleMenuItems(),
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0xFF555555)),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                _presetButtonLabel(short: narrow),
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
+          ],
+        ),
+      ),
+    );
+
+    final seatMenu = PopupMenuButton<double>(
+      initialValue: _seatSlide,
+      color: const Color(0xFF333333),
+      tooltip: '2열 시트 슬라이드',
+      onSelected: _onSeatSlideChanged,
+      itemBuilder: (_) => [
+        for (final o in _seatSlideOptions)
+          PopupMenuItem<double>(
+            value: o.$1,
+            child: Text(o.$2,
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ),
+      ],
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: hPad, vertical: 6),
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0xFF555555)),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.airline_seat_recline_normal,
+                color: Colors.white70, size: 16),
+            const SizedBox(width: 4),
+            Text(
+              _seatSlideLabel(short: narrow),
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+            const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 20),
+          ],
+        ),
+      ),
+    );
+
+    return Row(
+      children: [
+        if (!narrow) ...[
+          const Text('TrimBox'),
+          const SizedBox(width: 16),
+        ],
+        // 좁은 화면: 차종 버튼이 남는 폭만 쓰고 넘치면 말줄임
+        if (narrow) Flexible(child: presetMenu) else presetMenu,
+        if (_hasSeatSlide) ...[
+          const SizedBox(width: 8),
+          seatMenu,
+        ],
+      ],
+    );
+  }
+
   Widget _buildCanvas() {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -391,7 +471,9 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               onPointerDown: _onPointerDown,
               onPointerMove: _onPointerMove,
               onPointerUp: _onPointerUp,
-              child: KeyboardListener(
+              // Focus 로 받아 처리한 키는 소비한다. KeyboardListener 는 소비하지 못해
+              // Android·데스크톱에서 화살표가 포커스 이동으로 새어 나갔다.
+              child: Focus(
                 focusNode: _canvasFocusNode,
                 autofocus: true,
                 onKeyEvent: _onKeyEvent,
@@ -454,17 +536,12 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   // ──── 적재율 계산 ────
 
+  /// 통계는 LoadStats 하나로 (패널과 같은 기준: 트렁크 밖에 세워 둔 짐 제외)
+  LoadStats get _stats => LoadStats.of(_boxes, _space);
+
   double _totalTrunkVolume() => _space.usableVolume;
 
-  double _usedVolume() {
-    return _boxes.fold<double>(0.0, (sum, b) => sum + b.w * b.d * b.h);
-  }
-
-  double _utilizationPercent() {
-    final total = _totalTrunkVolume();
-    if (total <= 0) return 0;
-    return (_usedVolume() / total * 100).clamp(0, 999);
-  }
+  double _utilizationPercent() => _stats.volumePercent;
 
   Color _utilizationColor(double pct) {
     if (pct < 70) return const Color(0xFF4CAF50);
@@ -487,11 +564,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   }
 
   Widget _buildUtilizationOverlay() {
-    final pct = _utilizationPercent();
+    final stats = _stats;
+    final pct = stats.volumePercent;
     final color = _utilizationColor(pct);
-    final totalLiters = (_totalTrunkVolume() * 1000).round();
-    final usedLiters = (_usedVolume() * 1000).round();
-    final remainingLiters = (totalLiters - usedLiters).clamp(0, 999999);
+    final remainingLiters = stats.remainingLiters;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -591,6 +667,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             // Previous
             IconButton(
               icon: const Icon(Icons.chevron_left, color: Colors.white, size: 28),
+              tooltip: '이전 단계',
               onPressed: _stepViewCurrentStep > 1
                   ? () => setState(() => _stepViewCurrentStep--)
                   : null,
@@ -627,6 +704,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
             // Next
             IconButton(
               icon: const Icon(Icons.chevron_right, color: Colors.white, size: 28),
+              tooltip: '다음 단계',
               onPressed: _stepViewCurrentStep < maxStep
                   ? () => setState(() => _stepViewCurrentStep++)
                   : null,
@@ -653,6 +731,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         child: Container(
           color: const Color(0x88000000),
           child: Center(
+            // 캔버스가 카드보다 낮으면 (낮은 폰, 폰 가로) 넘치지 않고 스크롤된다
+            child: SingleChildScrollView(
             child: Container(
               constraints: const BoxConstraints(maxWidth: 320),
               margin: const EdgeInsets.all(24),
@@ -707,6 +787,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                 ],
               ),
             ),
+            ),
           ),
         ),
       ),
@@ -738,11 +819,16 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       onAddBox: _showAddDialog,
       onSave: _saveScene,
       onLoad: _loadScene,
-      onScreenshot: _takeScreenshot,
+      // 이미지 저장은 파일 I/O 가 되는 플랫폼(1차 배포: 웹)에서만 보인다
+      onScreenshot: file_io.fileActionsSupported ? _takeScreenshot : null,
       onAutoLayout: _boxes.isNotEmpty ? _showAutoLayoutDialog : null,
       onQuickCheck: _boxes.isNotEmpty ? _showQuickFitCheck : null,
       onStepView: _boxes.isNotEmpty ? _enterStepView : null,
-      onShareCard: _boxes.isNotEmpty ? _generateShareCard : null,
+      onShareCard: file_io.fileActionsSupported && _boxes.isNotEmpty
+          ? _generateShareCard
+          : null,
+      onUndo: _undoStack.isNotEmpty ? _undo : null,
+      onRedo: _redoStack.isNotEmpty ? _redo : null,
     );
   }
 
@@ -758,11 +844,16 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       onAddBox: _showAddDialog,
       onSave: _saveScene,
       onLoad: _loadScene,
-      onScreenshot: _takeScreenshot,
+      // 이미지 저장은 파일 I/O 가 되는 플랫폼(1차 배포: 웹)에서만 보인다
+      onScreenshot: file_io.fileActionsSupported ? _takeScreenshot : null,
       onAutoLayout: _boxes.isNotEmpty ? _showAutoLayoutDialog : null,
       onQuickCheck: _boxes.isNotEmpty ? _showQuickFitCheck : null,
       onStepView: _boxes.isNotEmpty ? _enterStepView : null,
-      onShareCard: _boxes.isNotEmpty ? _generateShareCard : null,
+      onShareCard: file_io.fileActionsSupported && _boxes.isNotEmpty
+          ? _generateShareCard
+          : null,
+      onUndo: _undoStack.isNotEmpty ? _undo : null,
+      onRedo: _redoStack.isNotEmpty ? _redo : null,
       scrollController: scrollCtrl,
       showDragHandle: true,
     );
@@ -919,83 +1010,99 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     }
   }
 
-  void _onKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
+  /// 캔버스 키 입력. 처리한 키는 [KeyEventResult.handled] 로 소비한다 — 그렇지 않으면
+  /// Android·데스크톱의 기본 단축키(화살표 = 포커스 이동)가 캔버스에서 포커스를 빼앗는다.
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final isRepeat = event is KeyRepeatEvent;
+    final isArrow = key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    final isCameraTurn =
+        key == LogicalKeyboardKey.keyQ || key == LogicalKeyboardKey.keyE;
+    // 누르고 있을 때 반복되는 것은 이동(화살표)과 카메라 회전(Q/E)뿐
+    if (isRepeat && !isArrow && !isCameraTurn) return KeyEventResult.ignored;
 
-    final isCtrl = HardwareKeyboard.instance.isControlPressed;
+    final isCtrl = HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
     final isShift = HardwareKeyboard.instance.isShiftPressed;
 
-    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    if (isCtrl && key == LogicalKeyboardKey.keyZ) {
       if (isShift) { _redo(); } else { _undo(); }
-      return;
+      return KeyEventResult.handled;
     }
-    if (isCtrl && event.logicalKey == LogicalKeyboardKey.keyY) {
+    if (isCtrl && key == LogicalKeyboardKey.keyY) {
       _redo();
-      return;
+      return KeyEventResult.handled;
     }
+    if (isCtrl) return KeyEventResult.ignored; // 브라우저·시스템 단축키는 건드리지 않는다
 
     if (event.character == '?') {
       _showKeyboardShortcuts();
-      return;
+      return KeyEventResult.handled;
     }
 
-    if (event.logicalKey == LogicalKeyboardKey.digit0 ||
-        event.logicalKey == LogicalKeyboardKey.numpad0) {
+    if (key == LogicalKeyboardKey.digit0 || key == LogicalKeyboardKey.numpad0) {
       _resetCamera();
-      return;
+      return KeyEventResult.handled;
     }
-    if (event.logicalKey == LogicalKeyboardKey.keyQ ||
-        event.logicalKey == LogicalKeyboardKey.keyE) {
+    if (isCameraTurn) {
       final cam = _camera;
       if (cam != null) {
-        final dir = event.logicalKey == LogicalKeyboardKey.keyQ ? 1.0 : -1.0;
+        final dir = key == LogicalKeyboardKey.keyQ ? 1.0 : -1.0;
         setState(() => _setCamera(
             cam.copyWith(yaw: cam.yaw + dir * 10 * math.pi / 180)));
       }
-      return;
+      return KeyEventResult.handled;
     }
 
-    if (_selectedBoxId == null) return;
-    final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
-    if (boxIndex == -1) return;
-    final box = _boxes[boxIndex];
-    final unit = _space.gridUnit;
+    final isRotate = key == LogicalKeyboardKey.keyR;
+    final isDelete = key == LogicalKeyboardKey.delete ||
+        key == LogicalKeyboardKey.backspace;
+    // 박스를 다루는 키가 아니면 아무것도 바꾸지 않는다 (undo·"손으로 편집함" 표시 포함)
+    if (!isArrow && !isRotate && !isDelete) return KeyEventResult.ignored;
 
-    _pushUndo();
+    final boxIndex = _boxes.indexWhere((b) => b.id == _selectedBoxId);
+    if (boxIndex == -1) return KeyEventResult.ignored; // 선택 없음 → 기본 동작에 맡긴다
+    final box = _boxes[boxIndex];
+
+    if (isDelete) {
+      _deleteBox(box.id);
+      return KeyEventResult.handled;
+    }
+
+    final before = _boxes.map((b) => b.copyWith()).toList();
+    final unit = _space.gridUnit;
+    final x0 = box.x, z0 = box.z, rot0 = box.rotY;
+    if (key == LogicalKeyboardKey.arrowLeft) box.x -= unit;
+    if (key == LogicalKeyboardKey.arrowRight) box.x += unit;
+    if (key == LogicalKeyboardKey.arrowUp) box.z -= unit;
+    if (key == LogicalKeyboardKey.arrowDown) box.z += unit;
+    if (isRotate) box.rotate90();
+    box.snapToGrid(_space.gridUnit);
+    box.clampTo(_space.w, _space.d);
+
+    final changed = (box.x - x0).abs() > 1e-9 ||
+        (box.z - z0).abs() > 1e-9 ||
+        box.rotY != rot0;
+    if (!changed) {
+      // 벽에 막힌 이동: 되돌릴 것이 없으니 undo 항목도, 편집 표시도 남기지 않는다
+      box
+        ..x = x0
+        ..z = z0;
+      return KeyEventResult.handled;
+    }
+
+    // 키를 누르고 있는 동안의 연속 이동은 undo 한 번으로 묶는다
+    if (!isRepeat) _pushUndoSnapshot(before);
     setState(() {
       _manualEdited = true;
-      switch (event.logicalKey) {
-        case LogicalKeyboardKey.arrowLeft:
-          box.x -= unit;
-          break;
-        case LogicalKeyboardKey.arrowRight:
-          box.x += unit;
-          break;
-        case LogicalKeyboardKey.arrowUp:
-          box.z -= unit;
-          break;
-        case LogicalKeyboardKey.arrowDown:
-          box.z += unit;
-          break;
-        case LogicalKeyboardKey.keyR:
-          box.rotate90();
-          break;
-        case LogicalKeyboardKey.delete:
-        case LogicalKeyboardKey.backspace:
-          _boxes.removeWhere((b) => b.id == _selectedBoxId);
-          _selectedBoxId = null;
-          _resolveGravity();
-          _updateCollisions();
-          return;
-        default:
-          if (_undoStack.isNotEmpty) _undoStack.removeLast();
-          return;
-      }
-      box.snapToGrid(_space.gridUnit);
-      box.clampTo(_space.w, _space.d);
       _resolveGravity();
       _updateCollisions();
     });
+    return KeyEventResult.handled;
   }
 
   // ──── 히트 테스트 (레이캐스트) ────
@@ -1047,8 +1154,25 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       _boxes.removeWhere((b) => b.id == id);
       if (_selectedBoxId == id) _selectedBoxId = null;
       _resolveGravity();
+      _compactLoadOrders();
       _updateCollisions();
     });
+  }
+
+  /// 짐이 빠진 뒤 적재 순서를 1..n 으로 다시 매기고 스텝 뷰를 맞춘다.
+  /// (그대로 두면 스텝 뷰에 짐 없는 빈 단계나 "STEP 1 / 0" 이 남는다.)
+  void _compactLoadOrders() {
+    final ordered = _boxes.where((b) => b.loadOrder != null).toList()
+      ..sort((a, b) => a.loadOrder!.compareTo(b.loadOrder!));
+    for (var i = 0; i < ordered.length; i++) {
+      ordered[i].loadOrder = i + 1;
+    }
+    if (!_stepViewActive) return;
+    if (ordered.isEmpty) {
+      _stepViewActive = false;
+    } else if (_stepViewCurrentStep > ordered.length) {
+      _stepViewCurrentStep = ordered.length;
+    }
   }
 
   Future<void> _showAddDialog() async {
@@ -1087,6 +1211,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           compressibility: (item['compress'] as num?)?.toDouble() ?? 0,
           weightKg: (item['weight'] as num?)?.toDouble() ?? 0,
           accessPriority: item['access'] == true,
+          shape: gearShapeFromName(item['shape']),
         );
 
         _placeNewBox(newBox);
@@ -1223,6 +1348,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       _resolveGravity();
       _updateCollisions();
     });
+    // 2열 슬라이드와 같은 규칙: 손으로 옮긴 적이 없으면 새 트렁크에 맞춰 다시 배치
+    if (!_manualEdited && _boxes.isNotEmpty) _autoPackQuietly();
   }
 
   // ──── 저장/불러오기 ────
@@ -1262,14 +1389,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               onPressed: () => Navigator.pop(ctx),
               child: const Text('취소', style: TextStyle(color: Colors.grey)),
             ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                _saveSceneToFile();
-              },
-              child: const Text('파일로 내보내기',
-                  style: TextStyle(color: Colors.white70)),
-            ),
+            if (file_io.fileActionsSupported)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _saveSceneToFile();
+                },
+                child: const Text('파일로 내보내기',
+                    style: TextStyle(color: Colors.white70)),
+              ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4DA3FF),
@@ -1379,8 +1507,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
   Future<void> _loadScene() async {
     final result = await showDialog<String>(
       context: context,
-      builder: (ctx) =>
-          _SavedScenesDialog(onLoadFile: () => _loadSceneFromFile(ctx)),
+      builder: (ctx) => _SavedScenesDialog(
+          onLoadFile: file_io.fileActionsSupported
+              ? () => _loadSceneFromFile(ctx)
+              : null),
     );
 
     if (result == null || result.isEmpty) return;
@@ -1413,9 +1543,13 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
     }
   }
 
-  void _applySceneJson(String jsonStr, {bool silent = false}) {
+  /// 씬 JSON 을 화면에 적용한다. 성공하면 true.
+  /// [silent]: 시작할 때의 자동 복원 — 성공·실패 모두 알리지 않는다.
+  bool _applySceneJson(String jsonStr, {bool silent = false}) {
     try {
       final scene = JsonIO.importScene(jsonStr);
+      // 구버전 저장본: 장비 DB 와 같은 짐에 무게·연질·모양을 채운다 (다시 배치하기 전에)
+      backfillGearPhysics(scene, jsonStr);
       // 저장된 트렁크가 프리셋 차종이면 현재 프리셋 정의를 쓴다 (치수 갱신 반영).
       final preset = _presetForSpace(scene.space);
       final presetSpace =
@@ -1459,22 +1593,15 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               backgroundColor: const Color(0xFF6BD06B)),
         );
       }
-    } on FormatException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('잘못된 파일 형식: $e'),
-              backgroundColor: const Color(0xFFFF4D4D)),
-        );
-      }
+      return true;
     } catch (e) {
-      if (mounted) {
+      if (mounted && !silent) {
+        final msg = e is FormatException ? '잘못된 파일 형식: $e' : '불러오기 실패: $e';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('불러오기 실패: $e'),
-              backgroundColor: const Color(0xFFFF4D4D)),
+          SnackBar(content: Text(msg), backgroundColor: const Color(0xFFFF4D4D)),
         );
       }
+      return false;
     }
   }
 
@@ -1512,11 +1639,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       canvas.drawRect(Rect.fromLTWH(0, imgH - barHeight, imgW, barHeight), Paint()..color = const Color(0x66000000));
 
       final presetName = _selectedPreset == TrunkPreset.custom ? '커스텀' : _selectedPreset.label.split(' (').first;
-      final totalBoxVol = _boxes.fold<double>(0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
-      final lhVol = _space.leftWheelhouse.w * _space.leftWheelhouse.d * _space.leftWheelhouse.h;
-      final rhVol = _space.rightWheelhouse.w * _space.rightWheelhouse.d * _space.rightWheelhouse.h;
-      final totalSpaceVol = _space.w * _space.d * _space.h - lhVol - rhVol;
-      final volPct = totalSpaceVol > 0 ? ((totalBoxVol / totalSpaceVol) * 100).round() : 0;
+      // 화면 오버레이·패널과 같은 수치
+      final volPct = _utilizationPercent().round();
 
       final leftText = '$presetName | ${_boxes.length}개 | 점유율 $volPct%';
       const rightText = 'TrimBox';
@@ -1595,9 +1719,9 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           ? '커스텀'
           : _selectedPreset.label.split(' (').first;
       final volPct = _utilizationPercent().round();
-      final totalLiters = (_totalTrunkVolume() * 1000).round();
-      final usedLiters = (_usedVolume() * 1000).round();
-      final remainLiters = totalLiters - usedLiters;
+      final totalLiters = _stats.totalLiters;
+      final usedLiters = _stats.usedLiters;
+      final remainLiters = _stats.remainingLiters;
 
       final r = pixelRatio;
 
@@ -1718,8 +1842,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
         ? '커스텀'
         : _selectedPreset.label.split(' (').first;
     final volPct = _utilizationPercent().round();
-    final totalLiters = (_totalTrunkVolume() * 1000).round();
-    final usedLiters = (_usedVolume() * 1000).round();
+    final totalLiters = _stats.totalLiters;
+    final usedLiters = _stats.usedLiters;
 
     final sb = StringBuffer();
     sb.writeln('$presetName 트렁크 적재 시뮬레이션');
@@ -1849,7 +1973,10 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       snackMsg = '$msg\n적재 불가: $unfitLabels';
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
+    // 지난 판정이 5초씩 줄 서서 나오지 않게, 남은 스낵바를 치우고 최신 판정만 보여준다
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
       SnackBar(
         content: Text(snackMsg),
         backgroundColor:
@@ -1935,6 +2062,22 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           );
         }
 
+        // 2열을 당기면 다 들어갈 때의 적용 버튼 (일부만/하나도 안 들어간 판정 공용)
+        Widget slideSuggestionButton() {
+          final s = slideSuggestion!;
+          return OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFF00E676),
+              side: const BorderSide(color: Color(0xFF00E676)),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _applySeatSlideSuggestion(s);
+            },
+            child: Text('2열 +${(s.slide * 100).round()}cm 적용'),
+          );
+        }
+
         Widget computeTimeBadge() {
           if (computeTimeMs == null) return const SizedBox.shrink();
           final timeStr = computeTimeMs < 1000
@@ -1960,6 +2103,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           // NO boxes fit
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A2A),
+            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
+            scrollable: true,
             title: Row(
               children: [
                 Container(
@@ -1993,15 +2138,18 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                     color: const Color(0xFF2A1E1E),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.lightbulb_outline,
+                      const Icon(Icons.lightbulb_outline,
                           color: Color(0xFFFFD700), size: 18),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          '장비 크기를 확인하거나\n더 큰 차량을 선택하세요.',
-                          style: TextStyle(
+                          slideSuggestion != null
+                              ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
+                                  '$total개 모두 들어갑니다.'
+                              : '장비 크기를 확인하거나\n더 큰 차량을 선택하세요.',
+                          style: const TextStyle(
                               color: Colors.white70, fontSize: 12, height: 1.4),
                         ),
                       ),
@@ -2012,6 +2160,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
               ],
             ),
             actions: [
+              if (slideSuggestion != null) slideSuggestionButton(),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF4DA3FF),
@@ -2025,6 +2174,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
           // ALL boxes fit
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A2A),
+            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
+            scrollable: true,
             title: Row(
               children: [
                 Container(
@@ -2098,6 +2249,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
           return AlertDialog(
             backgroundColor: const Color(0xFF2A2A2A),
+            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
+            scrollable: true,
             title: Row(
               children: [
                 Container(
@@ -2176,18 +2329,7 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('확인', style: TextStyle(color: Colors.grey)),
               ),
-              if (slideSuggestion != null)
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF00E676),
-                    side: const BorderSide(color: Color(0xFF00E676)),
-                  ),
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _applySeatSlideSuggestion(slideSuggestion);
-                  },
-                  child: Text('2열 +${(slideSuggestion.slide * 100).round()}cm 적용'),
-                ),
+              if (slideSuggestion != null) slideSuggestionButton(),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF4DA3FF),
@@ -2313,8 +2455,12 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
 
   // ──── Undo/Redo ────
 
-  void _pushUndo() {
-    _undoStack.add(_boxes.map((b) => b.copyWith()).toList());
+  void _pushUndo() =>
+      _pushUndoSnapshot(_boxes.map((b) => b.copyWith()).toList());
+
+  /// 변경 전에 떠 둔 상태를 undo 에 넣는다 (실제로 바뀐 것을 확인한 뒤 호출)
+  void _pushUndoSnapshot(List<TrimBox> snapshot) {
+    _undoStack.add(snapshot);
     if (_undoStack.length > _maxUndoSteps) _undoStack.removeAt(0);
     _redoStack.clear();
   }
@@ -2412,6 +2558,7 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
 
     return AlertDialog(
       backgroundColor: const Color(0xFF2A2A2A),
+      scrollable: true,
       title: Row(
         children: [
           const Icon(Icons.auto_fix_high, color: Color(0xFF4DA3FF), size: 22),
@@ -2505,14 +2652,20 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
                             Expanded(
                               child: Row(
                                 children: [
-                                  Text(
-                                    result.strategy.label,
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 14,
-                                      fontWeight: isSelected
-                                          ? FontWeight.bold
-                                          : FontWeight.normal,
+                                  // 좁은 폰(360dp)에서 "추천" 배지와 함께 넘치지 않게
+                                  Flexible(
+                                    child: Text(
+                                      result.strategy.label,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: isSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                      ),
                                     ),
                                   ),
                                   if (isBest) ...[
@@ -2635,7 +2788,8 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
 // ──── 저장된 배치 목록 다이얼로그 ────
 
 class _SavedScenesDialog extends StatefulWidget {
-  final VoidCallback onLoadFile;
+  /// 파일에서 불러오기 (지원하지 않는 플랫폼에서는 null → 버튼 숨김)
+  final VoidCallback? onLoadFile;
 
   const _SavedScenesDialog({required this.onLoadFile});
 
@@ -2745,13 +2899,14 @@ class _SavedScenesDialogState extends State<_SavedScenesDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('취소', style: TextStyle(color: Colors.grey)),
         ),
-        TextButton(
-          onPressed: widget.onLoadFile,
-          child: const Text(
-            '파일에서 불러오기',
-            style: TextStyle(color: Colors.white70),
+        if (widget.onLoadFile != null)
+          TextButton(
+            onPressed: widget.onLoadFile,
+            child: const Text(
+              '파일에서 불러오기',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
-        ),
       ],
     );
   }

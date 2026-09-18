@@ -155,11 +155,18 @@ class AutoLayoutEngine {
   /// 이 무게(kg) 이상이면 자동배치는 바닥에만 놓는다 (가득 찬 쿨러 등)
   static const double floorOnlyKg = 20;
 
-  /// 마지막 격자 전수 탐색에 쓰는 최대 시간
-  static const Duration scanBudget = Duration(milliseconds: 500);
+  /// 마지막 격자 전수 탐색을 해 볼 미적재 박스 수 (큰 것부터). 시간이 아니라 개수로
+  /// 끊어야 기기 속도와 무관하게 같은 판정이 나온다.
+  static const int scanMaxBoxes = 2;
 
-  /// 보수(ejection chain) 단계에 쓰는 최대 시간
-  static const Duration repairBudget = Duration(milliseconds: 700);
+  /// 보수(ejection chain) 단계의 최대 시도 수 (빼 볼 박스 × 못 넣은 박스)
+  static const int repairMaxAttempts = 24;
+
+  /// 무작위 재시도가 이만큼 연속으로 나아지지 않으면 멈춘다
+  static const int restartPatience = 8;
+
+  /// 마지막에 보수·격자 채우기를 해 볼 상위 후보 수
+  static const int poolSize = 1;
 
   /// "무거운 짐이 가벼운 짐 위" 규칙: 이 무게 이상인 짐이 자기 무게의
   /// [lightBaseRatio] 미만인 짐 위에 놓이면 벌점·조언
@@ -168,9 +175,14 @@ class AutoLayoutEngine {
 
   /// 연질 짐 압축 단계: 안 누름 → 높이 절반 → 높이 최대 → 깊이 최대.
   /// [coarse] 는 전수 탐색용 축약 단계.
-  static List<_Squash> _squashLevels(TrimBox b, {bool coarse = false}) {
+  static List<_Squash> _squashLevels(TrimBox b,
+      {bool coarse = false, bool tight = false}) {
     if (!b.soft || b.compressibility <= 0) return const [_Squash.none];
     final c = b.compressibility;
+    // 빡빡한 패스: 처음부터 깊이를 최대로 눌러 촘촘히 세운다 (캐디백·침낭 여러 개)
+    if (tight) {
+      return [_Squash(0, c, 0), _Squash(0, 0, c), _Squash.none];
+    }
     if (coarse) {
       return [_Squash.none, _Squash(0, 0, c), _Squash(0, c, 0)];
     }
@@ -189,7 +201,7 @@ class AutoLayoutEngine {
     List<TrimBox> boxes, {
     LayoutStrategy strategy = LayoutStrategy.balanced,
     int restarts = 0,
-    Duration budget = const Duration(milliseconds: 800),
+    Duration budget = const Duration(seconds: 5),
     int seed = 1234,
   }) {
     if (boxes.isEmpty) {
@@ -205,24 +217,37 @@ class AutoLayoutEngine {
     // 정렬 순서 몇 가지를 모두 시도해 (배치 개수 ↓, 적재율 ↓) 가장 좋은 결과를 쓴다.
     final sw = Stopwatch()..start();
     AutoLayoutResult? best;
+    // 보수 전 상위 후보들 (순위순). 마지막에 이들 모두를 보수·격자 채우기 해서
+    // 가장 좋은 것을 고른다 — "재시도를 늘렸더니 보수가 안 되는 배치로 바뀌어
+    // 판정이 나빠지는" 일을 막는다.
+    final pool = <AutoLayoutResult>[];
     void consider(AutoLayoutResult r) {
-      final b = best;
-      if (b == null || r.placedCount > b.placedCount) {
-        best = r;
-        return;
-      }
-      if (r.placedCount < b.placedCount) return;
-      final rh = r.heavyStackedCount, bh = b.heavyStackedCount;
-      if (rh < bh || (rh == bh && r.utilizationPercent > b.utilizationPercent + 1e-9)) {
-        best = r;
-      }
+      if (best == null || _better(r, best!)) best = r;
+      pool.add(r);
+      pool.sort((a, b) => _better(a, b) ? -1 : (_better(b, a) ? 1 : 0));
+      if (pool.length > poolSize) pool.removeRange(poolSize, pool.length);
     }
 
     // 탐색 단계는 격자 전수 탐색(느림) 없이 돌리고, 마지막에 가장 좋은 결과의
     // 남은 박스만 전수 탐색으로 채운다.
-    for (final order in _sortVariants(boxes, strategy)) {
+    final variants = _sortVariants(boxes, strategy);
+    for (final order in variants) {
       consider(_pack(trunk, order, boxes, strategy, scan: false));
       if (best!.allBoxesFit) return best!;
+    }
+    // 같은 순서를 "세워 놓기" 편향으로 한 번 더 (앞의 두 변형만 — 비용 절반)
+    for (final order in variants.take(2)) {
+      consider(_pack(trunk, order, boxes, strategy,
+          scan: false, uprightBias: true));
+      if (best!.allBoxesFit) return best!;
+    }
+    // 연질 짐이 있으면 처음부터 눌러 촘촘히 놓는 패스
+    if (boxes.any((b) => b.soft && b.compressibility > 0)) {
+      for (final order in variants.take(2)) {
+        consider(_pack(trunk, order, boxes, strategy,
+            scan: false, softTight: true));
+        if (best!.allBoxesFit) return best!;
+      }
     }
 
     // 못 넣은 박스를 맨 앞에 두고 다시 (가장 효과가 큰 재시도)
@@ -236,11 +261,19 @@ class AutoLayoutEngine {
       consider(_pack(trunk, order, boxes, strategy, scan: false));
     }
 
+    // 재시도 0회의 결과는 항상 결선에 올린다 (재시도를 늘려도 나빠지지 않게)
+    final baseBest = best;
+
     // 무작위 순서 재시도 (시간 예산 안에서)
     final rnd = math.Random(seed);
+    var lastImproved = 0;
     for (var i = 0;
-        i < restarts && !best!.allBoxesFit && sw.elapsed < budget;
+        i < restarts &&
+            !best!.allBoxesFit &&
+            i - lastImproved < restartPatience &&
+            sw.elapsed < budget;
         i++) {
+      final before = best;
       // 부피에 잡음을 섞은 내림차순: 큰 것 먼저라는 원칙은 대체로 유지.
       // 짝수 회차는 바닥 면적 기준으로 섞어 다양성을 준다.
       final keyed = {
@@ -250,12 +283,37 @@ class AutoLayoutEngine {
       };
       final order = List<TrimBox>.from(boxes)
         ..sort((a, b) => keyed[b.id]!.compareTo(keyed[a.id]!));
-      consider(_pack(trunk, order, boxes, strategy, scan: false));
+      consider(_pack(trunk, order, boxes, strategy,
+          scan: false, uprightBias: i % 3 == 2, softTight: i % 4 == 1));
+      if (!identical(before, best)) lastImproved = i + 1;
     }
 
-    if (!best!.allBoxesFit) best = _repair(trunk, best!, boxes, strategy);
-    if (!best!.allBoxesFit) best = _scanFill(trunk, best!, boxes);
-    return best!;
+    if (best!.allBoxesFit) return best!;
+
+    // 상위 후보(+ 기본 정렬만의 최선) 를 각각 보수·격자 채우기 하고 최종 승자를 고른다
+    final finalists = <AutoLayoutResult>[...pool];
+    if (baseBest != null && !finalists.contains(baseBest)) finalists.add(baseBest);
+    AutoLayoutResult? winner;
+    for (final f in finalists) {
+      final r = _repair(trunk, f, boxes, strategy);
+      if (winner == null || _better(r, winner)) winner = r;
+      if (winner.allBoxesFit) return winner;
+    }
+    // 비싼 탐색(후보 축의 전체 곱 → 3cm 격자)은 최종 승자의 남은 박스에만
+    var result = _fill(trunk, winner!, boxes, strategy, exhaustive: true);
+    if (!result.allBoxesFit) result = _scanFill(trunk, result, boxes);
+    return result;
+  }
+
+  /// 결과 비교: 배치 개수 → 적재율(1%p 이상 차이) → 위층의 무거운 짐 적은 쪽 → 적재율
+  static bool _better(AutoLayoutResult a, AutoLayoutResult b) {
+    if (a.placedCount != b.placedCount) return a.placedCount > b.placedCount;
+    final du = a.utilizationPercent - b.utilizationPercent;
+    if (du.abs() > 1.0) return du > 0;
+    if (a.heavyStackedCount != b.heavyStackedCount) {
+      return a.heavyStackedCount < b.heavyStackedCount;
+    }
+    return du > 1e-9;
   }
 
   /// 보수: 못 넣은 박스마다, 이미 놓인 작은 박스 하나를 빼고 둘을 다시 넣어 본다
@@ -274,7 +332,7 @@ class AutoLayoutEngine {
             squash: p.squash, squashW: p.squashW, squashD: p.squashD),
     ];
     final unfit = List<TrimBox>.from(result.unfitBoxes);
-    final sw = Stopwatch()..start();
+    var attempts = 0;
     var improved = false;
 
     TrimBox? tryPlace(TrimBox original, List<TrimBox> into) {
@@ -286,12 +344,13 @@ class AutoLayoutEngine {
     }
 
     for (final u in List<TrimBox>.from(unfit)) {
-      if (sw.elapsed > repairBudget) break;
+      if (attempts >= repairMaxAttempts) break;
       // 작은 박스부터 빼 본다 (큰 박스를 빼면 되돌려 넣기 어렵다)
-      final candidates = List<TrimBox>.from(placed)
-        ..sort((a, b) => _vol(a).compareTo(_vol(b)));
+      final candidates = (List<TrimBox>.from(placed)
+            ..sort((a, b) => _vol(a).compareTo(_vol(b))))
+          .take(10);
       for (final p in candidates) {
-        if (sw.elapsed > repairBudget) break;
+        if (attempts++ >= repairMaxAttempts) break;
         final without = placed.where((b) => b.id != p.id).toList();
         final uPlaced = tryPlace(u, without);
         if (uPlaced == null) continue;
@@ -307,7 +366,44 @@ class AutoLayoutEngine {
       }
     }
     if (!improved) return result;
-    return _finalize(trunk, detector, placed, unfit, boxes, result.strategy);
+    // 뺀 박스 위에 얹혀 있던 짐이 검증 게이트에서 탈락할 수 있다 — 나아졌을 때만 채택
+    final repaired =
+        _finalize(trunk, detector, placed, unfit, boxes, result.strategy);
+    return _better(repaired, result) ? repaired : result;
+  }
+
+  /// [result] 의 미적재 박스를 후보 축의 전체 곱(O(n²) 후보)으로 한 번 더 찾아 넣는다.
+  static AutoLayoutResult _fill(
+    TrunkSpace trunk,
+    AutoLayoutResult result,
+    List<TrimBox> boxes,
+    LayoutStrategy strategy, {
+    required bool exhaustive,
+  }) {
+    final detector = CollisionDetector(trunk);
+    final placed = <TrimBox>[
+      for (final p in result.placements)
+        p.box.copyWith(
+            x: p.x, y: p.y, z: p.z, w: p.w, d: p.d, h: p.h, rotY: 0,
+            squash: p.squash, squashW: p.squashW, squashD: p.squashD),
+    ];
+    final unfit = <TrimBox>[];
+    var changed = false;
+    for (final box in result.unfitBoxes) {
+      final c = _bestCandidate(trunk, detector, placed, box, strategy, boxes,
+          exhaustive: exhaustive);
+      if (c == null) {
+        unfit.add(box);
+        continue;
+      }
+      placed.add(box.copyWith(
+          x: c.x, y: c.y, z: c.z, w: c.o.w, d: c.o.d, h: c.o.h, rotY: 0,
+          squash: c.o.sh, squashW: c.o.sw, squashD: c.o.sd));
+      changed = true;
+    }
+    if (!changed) return result;
+    final filled = _finalize(trunk, detector, placed, unfit, boxes, strategy);
+    return _better(filled, result) ? filled : result;
   }
 
   /// [result] 의 미적재 박스를 3cm 격자 전수 탐색으로 빈틈에 채운다.
@@ -321,9 +417,9 @@ class AutoLayoutEngine {
             squash: p.squash, squashW: p.squashW, squashD: p.squashD),
     ];
     final unfit = <TrimBox>[];
-    final sw = Stopwatch()..start();
+    var scanned = 0;
     for (final box in result.unfitBoxes) {
-      final c = sw.elapsed < scanBudget
+      final c = scanned++ < scanMaxBoxes
           ? _scanCandidate(trunk, detector, placed, box)
           : null;
       if (c == null) {
@@ -344,13 +440,18 @@ class AutoLayoutEngine {
     List<TrimBox> boxes,
     LayoutStrategy strategy, {
     bool scan = true,
+    bool uprightBias = false,
+    bool softTight = false,
   }) {
     final detector = CollisionDetector(trunk);
     final placed = <TrimBox>[]; // 배치된 사본 (rotY = 0, 치수 = 배치 방향)
     final unfit = <TrimBox>[];
 
-    void tryPlace(TrimBox box) {
-      final c = _bestCandidate(trunk, detector, placed, box, strategy, boxes);
+    void tryPlace(TrimBox box, {bool exhaustive = false}) {
+      final c = _bestCandidate(trunk, detector, placed, box, strategy, boxes,
+          uprightBias: uprightBias,
+          softTight: softTight,
+          exhaustive: exhaustive);
       if (c == null) {
         unfit.add(box);
         return;
@@ -371,7 +472,7 @@ class AutoLayoutEngine {
     for (final box in sorted) {
       tryPlace(box);
     }
-    // 2차: 나머지가 놓인 뒤 생긴 자리에 다시 시도
+    // 2차: 나머지가 놓인 뒤 생긴 자리(새 받침)에 다시 시도
     if (unfit.isNotEmpty) {
       final retry = List<TrimBox>.from(unfit);
       unfit.clear();
@@ -617,6 +718,21 @@ class AutoLayoutEngine {
     }
     // 오른쪽 벽에 붙이는 후보
     xs.add(_snapDown(trunk.w - o.ew));
+    // 폭을 거의 다 쓰는 긴 짐(캐디백·캐노피 가방)은 가운데 자리 하나뿐일 수 있다
+    if (o.ew > trunk.w * 0.75) xs.add(_snapDown((trunk.w - o.ew) / 2));
+    // 높이 올라가면 벽이 안쪽으로 기운다(텀블홈): 그 높이의 좌우 경계에 붙이는 후보
+    final zMid = trunk.d / 2;
+    final tops = <int>{
+      (o.eh * 100).round(),
+      for (final p in placed) ((p.top + o.eh) * 100).round(),
+    };
+    for (final t in tops) {
+      final top = t / 100;
+      final xMin = trunk.xMinAt(zMid, top);
+      if (xMin <= 0.001) continue;
+      xs.add(_snapUp(xMin));
+      xs.add(_snapDown(trunk.xMaxAt(zMid, top) - o.ew));
+    }
     // 테일게이트 닫힘 한계에 붙이는 후보: 바닥에 놓일 때와 각 박스 위에 놓일 때
     // 윗면 높이에서 허용되는 최대 z 에서 뒤로 물린 자리
     if (trunk.hasTailgateModel) {
@@ -624,6 +740,11 @@ class AutoLayoutEngine {
       for (final p in placed) {
         zs.add(_snapDown(trunk.rearDepthAt(p.top + o.eh) - o.ed));
       }
+    }
+    // 2열 슬라이드 빈틈: 절반만 걸치는 자리와 빈틈이 끝나는 자리
+    if (trunk.floorStartZ > 0) {
+      zs.add(_snapUp(trunk.floorStartZ - o.ed * 0.5));
+      zs.add(_snapUp(trunk.floorStartZ));
     }
     // 등받이 기울기: 윗면 높이에서 허용되는 최소 z 에 붙이는 후보
     if (trunk.frontProfile != null) {
@@ -644,14 +765,101 @@ class AutoLayoutEngine {
     return (xl, zl);
   }
 
+  /// 후보 (x, z) 점 목록 — 축의 곱(O(n²)) 대신 극점 쌍(O(n))만 만든다.
+  /// 각 놓인 박스의 모서리 쌍, 그 모서리와 벽·휠하우스·프로필 경계의 조합,
+  /// 그리고 경계끼리의 조합. 빠른 기본 경로이며, 못 찾으면 [_candidateAxes] 의
+  /// 전체 곱으로 한 번 더 찾는다.
+  static List<(double, double)> _candidatePoints(
+    TrunkSpace trunk,
+    List<TrimBox> placed,
+    _Orientation o,
+  ) {
+    final (xs0, zs0) = _candidateAxes(trunk, const [], o);
+    final seen = <int>{};
+    final out = <(double, double)>[];
+    void add(double x, double z) {
+      if (x < -1e-9 || z < -1e-9) return;
+      if (x + o.ew > trunk.w + 1e-9 || z + o.ed > trunk.d + 1e-9) return;
+      final key = (x * 100).round() * 10000 + (z * 100).round();
+      if (seen.add(key)) out.add((x, z));
+    }
+
+    for (final x in xs0) {
+      for (final z in zs0) {
+        add(x, z);
+      }
+    }
+    final zMid = trunk.d / 2;
+    for (final p in placed) {
+      final xp = [
+        _snapUp(p.x + p.effectiveW),
+        _snapDown(p.x),
+        _snapDown(p.x - o.ew),
+        _snapDown(p.x + p.effectiveW - o.ew),
+      ];
+      final zp = [
+        _snapUp(p.z + p.effectiveD),
+        _snapDown(p.z),
+        _snapDown(p.z - o.ed),
+        _snapDown(p.z + p.effectiveD - o.ed),
+      ];
+      // p 위에 얹을 때의 앞뒤 한계와 좌우 한계
+      final top = p.top + o.eh;
+      final zProf = <double>[
+        if (trunk.hasTailgateModel) _snapDown(trunk.rearDepthAt(top) - o.ed),
+        if (trunk.frontProfile != null) _snapUp(trunk.frontDepthAt(top)),
+      ];
+      final xMin = trunk.xMinAt(zMid, top);
+      final xTumble = <double>[
+        if (xMin > 0.001) _snapUp(xMin),
+        if (xMin > 0.001) _snapDown(trunk.xMaxAt(zMid, top) - o.ew),
+      ];
+      for (final x in xp) {
+        for (final z in zp) {
+          add(x, z);
+        }
+        for (final z in zs0) {
+          add(x, z);
+        }
+        for (final z in zProf) {
+          add(x, z);
+        }
+      }
+      for (final z in zp) {
+        for (final x in xs0) {
+          add(x, z);
+        }
+        for (final x in xTumble) {
+          add(x, z);
+        }
+      }
+      for (final z in zProf) {
+        for (final x in xs0) {
+          add(x, z);
+        }
+        for (final x in xTumble) {
+          add(x, z);
+        }
+      }
+    }
+    out.sort((a, b) {
+      final c = a.$2.compareTo(b.$2);
+      return c != 0 ? c : a.$1.compareTo(b.$1);
+    });
+    return out;
+  }
+
   static _Candidate? _bestCandidate(
     TrunkSpace trunk,
     CollisionDetector detector,
     List<TrimBox> placed,
     TrimBox box,
     LayoutStrategy strategy,
-    List<TrimBox> all,
-  ) {
+    List<TrimBox> all, {
+    bool uprightBias = false,
+    bool softTight = false,
+    bool exhaustive = false,
+  }) {
     final (wy, wz, wx, contactBonus) = switch (strategy) {
       LayoutStrategy.balanced => (6.0, 1.0, 0.3, 0.03),
       LayoutStrategy.maxUtilization => (4.0, 1.0, 0.5, 0.08),
@@ -672,7 +880,7 @@ class AutoLayoutEngine {
     if (heavy && !box.accessPriority) zWeight = wz * 2.0;
 
     // 압축은 필요한 만큼만: 덜 누른 단계에서 자리가 나오면 그걸로 끝
-    for (final squash in _squashLevels(box)) {
+    for (final squash in _squashLevels(box, tight: softTight)) {
       _Candidate? best;
       for (final o0 in _orientations(box)) {
         final o = o0.withSquash(squash);
@@ -682,19 +890,40 @@ class AutoLayoutEngine {
         final probe = box.copyWith(
             w: o.w, d: o.d, h: o.h, rotY: 0,
             squash: o.sh, squashW: o.sw, squashD: o.sd);
-        final (xs, zs) = _candidateAxes(trunk, placed, o);
-        for (final z in zs) {
-          for (final x in xs) {
+        final List<(double, double)> points;
+        if (exhaustive) {
+          final (xs, zs) = _candidateAxes(trunk, placed, o);
+          points = [
+            for (final z in zs)
+              for (final x in xs) (x, z),
+          ];
+        } else {
+          points = _candidatePoints(trunk, placed, o);
+        }
+        final biasTerm = uprightBias ? o.ew * o.ed * 4.0 : 0.0;
+        {
+          for (final (x, z) in points) {
+            // 가지치기: y·적층 벌점·테일게이트 항은 0 이상, 접촉 보너스는 최대 6면.
+            // 이 하한이 이미 찾은 최선보다 나쁘면 비싼 층·충돌 계산을 건너뛴다.
+            if (best != null) {
+              final lowerBound =
+                  z * zWeight + x * wx + biasTerm - contactBonus * 6;
+              if (lowerBound >= best.score) continue;
+            }
             probe
               ..x = x
-              ..z = z;
+              ..z = z
+              ..y = 0;
+            if (_cannotFitAnyLevel(detector, probe)) continue;
+            // 바닥면이 겹치는 박스만 지지·충돌에 관여한다 (한 번만 추린다)
+            final near = _xzNeighbors(probe, placed);
             // 떨어뜨리기: 낮은 유효 층부터 충돌 없는 첫 층
             double? y;
             var stackPenalty = 0.0;
-            for (final level in SupportRule.validLevels(probe, placed, trunk)) {
+            for (final level in SupportRule.validLevels(probe, near, trunk)) {
               probe.y = level;
-              if (detector.hasCollision(probe, placed)) continue;
-              final penalty = _stackPenalty(probe, level, placed);
+              if (detector.hasCollision(probe, near)) continue;
+              final penalty = _stackPenalty(probe, level, near);
               if (penalty == null) continue; // 허용 안 함 (단단한 짐이 연질 위)
               y = level;
               stackPenalty = penalty;
@@ -708,6 +937,8 @@ class AutoLayoutEngine {
               // 윗면 높이 비율만큼 z 를 더 무겁게 본다
               score += z * ((y + o.eh) / trunk.h) * 1.5;
             }
+            // 세워 놓기 편향: 바닥을 덜 차지하는 방향 우선 (캐리어·상자를 세워 싣는 배치)
+            score += biasTerm;
             score -= contactBonus * _contacts(trunk, placed, probe);
             if (best == null || score < best.score) {
               best = _Candidate(x, y, z, o, score);
@@ -719,6 +950,30 @@ class AutoLayoutEngine {
     }
     return null;
   }
+
+  /// [probe] 의 바닥면과 xz 로 겹치는 박스들. 겹치지 않는 박스는 받치지도 부딪히지도 않는다.
+  static List<TrimBox> _xzNeighbors(TrimBox probe, List<TrimBox> placed) {
+    final x1 = probe.x, x2 = probe.x + probe.effectiveW;
+    final z1 = probe.z, z2 = probe.z + probe.effectiveD;
+    final out = <TrimBox>[];
+    for (final p in placed) {
+      if (p.x < x2 - 1e-6 &&
+          p.x + p.effectiveW > x1 + 1e-6 &&
+          p.z < z2 - 1e-6 &&
+          p.z + p.effectiveD > z1 + 1e-6) {
+        out.add(p);
+      }
+    }
+    return out;
+  }
+
+  /// 바닥 높이(y = 0)에 놓아도 경계·테일게이트·등받이에 걸리면 더 높은 층에서도
+  /// 걸린다 (벽과 앞뒤 프로필은 위로 갈수록 안쪽으로만 들어온다). 놓인 짐을 돌아보지
+  /// 않는 O(1) 검사로 비싼 층·충돌 계산을 거른다.
+  static bool _cannotFitAnyLevel(CollisionDetector detector, TrimBox probeAtFloor) =>
+      detector.isOutOfBounds(probeAtFloor) ||
+      detector.blocksTailgate(probeAtFloor) ||
+      detector.hitsSeatBack(probeAtFloor);
 
   /// 층 [y]에 놓았을 때의 적층 벌점. null 이면 그 층은 쓰지 않는다.
   /// - 단단한 짐을 연질 짐 위에: 불허 (눌리고 불안정)
@@ -748,7 +1003,7 @@ class AutoLayoutEngine {
     List<TrimBox> placed,
     TrimBox box,
   ) {
-    const step = 0.03;
+    const step = 0.04;
     final used = placed.fold<double>(0, (s, p) => s + p.volume);
     if (used + box.volume > trunk.usableVolume) return null;
     for (final squash in _squashLevels(box, coarse: true)) {
@@ -767,13 +1022,16 @@ class AutoLayoutEngine {
           for (var x = 0.0; x <= maxX + 1e-9; x += step) {
             probe
               ..x = _snapDown(x)
-              ..z = _snapDown(z);
+              ..z = _snapDown(z)
+              ..y = 0;
+            if (_cannotFitAnyLevel(detector, probe)) continue;
+            final near = _xzNeighbors(probe, placed);
             double? y;
             var stackPenalty = 0.0;
-            for (final level in SupportRule.validLevels(probe, placed, trunk)) {
+            for (final level in SupportRule.validLevels(probe, near, trunk)) {
               probe.y = level;
-              if (detector.hasCollision(probe, placed)) continue;
-              final penalty = _stackPenalty(probe, level, placed);
+              if (detector.hasCollision(probe, near)) continue;
+              final penalty = _stackPenalty(probe, level, near);
               if (penalty == null) continue;
               y = level;
               stackPenalty = penalty;

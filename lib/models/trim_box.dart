@@ -4,6 +4,20 @@ import 'dart:ui';
 /// 박스 카테고리
 enum BoxCategory { custom, carrier, camping, moving }
 
+/// 화면에 그리는 짐의 모양. 표시 전용이며 충돌·지지 판정은 항상 AABB 다.
+/// 모든 모양은 박스의 AABB 안에 그려진다 (`lib/render3d/gear_shapes.dart`).
+enum GearShape { box, cylinder, softBag, cooler, crate, flat, hardCase }
+
+/// 저장된 이름에서 모양을 복원한다. 없거나 모르는 값이면 [GearShape.box].
+GearShape gearShapeFromName(Object? name) {
+  if (name is String) {
+    for (final s in GearShape.values) {
+      if (s.name == name) return s;
+    }
+  }
+  return GearShape.box;
+}
+
 /// 트렁크에 배치하는 박스 모델
 class TrimBox {
   final String id;
@@ -40,8 +54,11 @@ class TrimBox {
   /// 자주 꺼내는 짐 (쿨러 등) — 테일게이트 쪽을 선호
   bool accessPriority;
 
-  /// Transient display property: load order from auto-layout (1-based).
-  /// Not persisted in JSON.
+  /// 그릴 때의 모양 (표시 전용, 물리 판정과 무관)
+  GearShape shape;
+
+  /// 자동배치가 정한 적재 순서 (1부터). 손으로 옮기면 null 로 지워진다.
+  /// JSON 에 `order` 로 저장한다 (재시작·불러오기 뒤에도 순서 가이드를 쓸 수 있게).
   int? loadOrder;
 
   TrimBox({
@@ -64,6 +81,7 @@ class TrimBox {
     this.squashD = 0,
     this.weightKg = 0,
     this.accessPriority = false,
+    this.shape = GearShape.box,
     this.loadOrder,
   });
 
@@ -127,6 +145,7 @@ class TrimBox {
     double? squashD,
     double? weightKg,
     bool? accessPriority,
+    GearShape? shape,
     int? loadOrder,
   }) {
     final copy = TrimBox(
@@ -149,6 +168,7 @@ class TrimBox {
       squashD: squashD ?? this.squashD,
       weightKg: weightKg ?? this.weightKg,
       accessPriority: accessPriority ?? this.accessPriority,
+      shape: shape ?? this.shape,
     );
     copy.loadOrder = loadOrder ?? this.loadOrder;
     return copy;
@@ -170,6 +190,8 @@ class TrimBox {
         if (squashD > 0) 'squashD': squashD,
         if (weightKg > 0) 'weight': weightKg,
         if (accessPriority) 'access': true,
+        if (shape != GearShape.box) 'shape': shape.name,
+        if (loadOrder != null) 'order': loadOrder,
       };
 
   factory TrimBox.fromJson(Map<String, dynamic> json) {
@@ -198,6 +220,8 @@ class TrimBox {
       squashD: (json['squashD'] as num?)?.toDouble() ?? 0,
       weightKg: (json['weight'] as num?)?.toDouble() ?? 0,
       accessPriority: json['access'] == true,
+      shape: gearShapeFromName(json['shape']),
+      loadOrder: (json['order'] as num?)?.toInt(),
     );
   }
 }

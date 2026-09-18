@@ -96,6 +96,12 @@ Future<void> saveAutosave(String jsonStr) async {
   await prefs.setString(_autosaveKey, jsonStr);
 }
 
+/// 손상된 자동 저장을 버린다
+Future<void> clearAutosave() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(_autosaveKey);
+}
+
 Future<String?> loadAutosave() async {
   final prefs = await SharedPreferences.getInstance();
   return prefs.getString(_autosaveKey);

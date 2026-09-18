@@ -294,7 +294,8 @@ void main() {
       final s27 = TrunkSpace.sorento(seatSlide: 0.27);
       expect(s27.d, closeTo(s0.d + 0.27, 1e-9));
       expect(s27.leftWheelhouse.zStart, closeTo(0.27, 1e-9));
-      expect(s27.leftWheelhouse.zEnd, closeTo(0.27 + 0.58, 1e-9));
+      expect(s27.leftWheelhouse.zEnd, closeTo(0.27 + s0.leftWheelhouse.d, 1e-9));
+      expect(s27.floorStartZ, closeTo(0.27, 1e-9));
       expect(s27.usableVolume, greaterThan(s0.usableVolume + 0.15));
       expect(s27.officialVolumeLabel, contains('910'));
       expect(TrunkSpace.sorento7(seatSlide: 0.27).officialVolumeLabel, contains('821'));
@@ -313,7 +314,8 @@ void main() {
       expect(CollisionDetector(TrunkSpace.sorento()).overlapsLeftWheelhouse(b), isTrue);
       // 휠하우스 위 지지면도 이동
       final onWheel = box('w', 14, 20, 10, x: 0.0, z: 0.30);
-      expect(SupportRule.highestLevel(onWheel, [], s), closeTo(0.35, 1e-9));
+      expect(SupportRule.highestLevel(onWheel, [], s),
+          closeTo(s.leftWheelhouse.h, 1e-9));
     });
 
     test('슬라이드 후에도 자동배치는 물리적으로 유효하고 더 많이 들어간다', () {

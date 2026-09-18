@@ -9,6 +9,7 @@ enum AdviceKind {
   heavyOnLight, // 무거운 짐이 훨씬 가벼운 짐 위에
   rigidOnSoft, // 단단한 짐이 연질 짐 위에
   accessBuried, // 자주 꺼내는 짐이 안쪽 깊이
+  overSeatGap, // 2열을 당겨 생긴 바닥 빈틈 위에 놓임
 }
 
 class Advice {
@@ -34,7 +35,15 @@ class PackingAdvisor {
         out.add(Advice(AdviceKind.heavyHigh, b,
             '$name (${_kg(b.weightKg)}): 무거운 짐은 바닥에 두는 게 좋습니다'));
       }
-      if (!b.soft && b.weightKg >= 5 && supporters.any((s) => s.soft)) {
+      // 연질 짐이 단단한 짐의 오버행 아래 틈에 끼어 닿기만 한 경우는 제외:
+      // 연질 받침을 빼면 지지가 무너질 때만 "연질 위에 얹혀 있다"고 본다.
+      final restsOnSoft = !b.soft &&
+          b.weightKg >= 5 &&
+          supporters.any((s) => s.soft) &&
+          SupportRule.supportRatio(
+                  b, b.y, boxes.where((o) => !o.soft), space) <
+              SupportRule.minRatio - 1e-9;
+      if (restsOnSoft) {
         final under = supporters.firstWhere((s) => s.soft);
         out.add(Advice(AdviceKind.rigidOnSoft, b,
             '$name 이(가) ${_name(under)} 위에 있습니다 — 연질 짐은 맨 위나 틈에'));
@@ -46,6 +55,11 @@ class PackingAdvisor {
           out.add(Advice(AdviceKind.heavyOnLight, b,
               '$name (${_kg(b.weightKg)}) 이(가) ${_name(light.first)} (${_kg(light.first.weightKg)}) 위에 있습니다'));
         }
+      }
+      if (b.y <= SupportRule.heightTol &&
+          SupportRule.floorSupportRatio(b, space) < SupportRule.minRatio - 1e-9) {
+        out.add(Advice(AdviceKind.overSeatGap, b,
+            '$name: 2열을 당겨 생긴 바닥 빈틈 위에 있습니다 — 뒤로 옮기거나 긴 짐으로 걸치세요'));
       }
       if (b.accessPriority && b.z + b.effectiveD < space.d * 0.5) {
         // 앞쪽 절반에 있고 뒤에 다른 짐이 막고 있으면

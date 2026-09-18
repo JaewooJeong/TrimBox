@@ -1,3 +1,5 @@
+import 'trim_box.dart' show GearShape;
+
 /// 장비의 물리 속성(무게·연질·압축률·세움·접근성)을 라벨과 카테고리에서 정한다.
 ///
 /// 장비 DB(`add_box_dialog.dart`)는 치수와 카테고리만 갖고 있고, 물리 속성은
@@ -10,13 +12,29 @@ class GearPhysics {
   final bool upright; // 세워서만
   final bool access; // 자주 꺼냄 (테일게이트 쪽 선호)
 
+  /// 그릴 모양을 직접 지정한 값 (표시 전용). null 이면 [gearShapeFor] 가 정한다.
+  final GearShape? shapeOverride;
+
   const GearPhysics({
     required this.weightKg,
     this.soft = false,
     this.compress = 0,
     this.upright = false,
     this.access = false,
-  });
+    GearShape? shape,
+  }) : shapeOverride = shape;
+
+  /// 그릴 모양 (표시 전용 — 충돌·지지 판정에는 쓰지 않는다)
+  GearShape get shape => shapeOverride ?? GearShape.box;
+
+  GearPhysics withShape(GearShape shape) => GearPhysics(
+        weightKg: weightKg,
+        soft: soft,
+        compress: compress,
+        upright: upright,
+        access: access,
+        shape: shape,
+      );
 
   Map<String, dynamic> toItemFields() => {
         'weight': weightKg,
@@ -24,6 +42,7 @@ class GearPhysics {
         'compress': compress,
         'upright': upright,
         'access': access,
+        'shape': shape.name,
       };
 }
 
@@ -151,7 +170,7 @@ const Map<String, GearPhysics> gearOverrides = {
   '에어매트 (더블)': GearPhysics(weightKg: 4.5, soft: true, compress: 0.1),
   '자충매트 (싱글)': GearPhysics(weightKg: 1.6, soft: true, compress: 0.1),
   '써모레스트 네오에어 X라이트': GearPhysics(weightKg: 0.4, soft: true, compress: 0.1),
-  '써모레스트 Z라이트솔': GearPhysics(weightKg: 0.4),
+  '써모레스트 Z라이트솔': GearPhysics(weightKg: 0.4, shape: GearShape.box),
   '네모 텐서 매트': GearPhysics(weightKg: 0.5, soft: true, compress: 0.1),
   '엑스페드 신매트 UL': GearPhysics(weightKg: 0.5, soft: true, compress: 0.1),
   'Snow Peak 에어 매트 (접이)': GearPhysics(weightKg: 1.9, soft: true, compress: 0.1),
@@ -169,7 +188,7 @@ const Map<String, GearPhysics> gearOverrides = {
   '숯 (3kg 봉지)': GearPhysics(weightKg: 3.2),
   '워터저그 5L (일반)': GearPhysics(weightKg: 5.5, upright: true),
   '워터저그 10L (일반)': GearPhysics(weightKg: 11.5, upright: true),
-  '접이식 물통 (10L)': GearPhysics(weightKg: 10.3, upright: true),
+  '접이식 물통 (10L)': GearPhysics(weightKg: 0.4), // 접은 상태(30×30×5) = 빈 무게
   '파세코 캠프-10 등유 난로': GearPhysics(weightKg: 6.5, upright: true),
   '캠핑 선풍기 (접이식)': GearPhysics(weightKg: 1.0),
   '루메나 M3 랜턴': GearPhysics(weightKg: 0.1),
@@ -179,11 +198,122 @@ const Map<String, GearPhysics> gearOverrides = {
   '충전식 LED 랜턴 (중형)': GearPhysics(weightKg: 0.8, upright: true),
   '캠핑 랜턴 (대형)': GearPhysics(weightKg: 1.5, upright: true),
   '캠핑 구급함': GearPhysics(weightKg: 1.5, access: true),
+  // 이사박스: 옷걸이 박스는 부피는 크지만 옷이라 가볍다
+  '옷걸이 이사박스': GearPhysics(weightKg: 12),
+  '책 이사박스': GearPhysics(weightKg: 18),
 };
 
 /// 카테고리 키: 'tent' 'tarp' 'tableChair' 'cooler' 'sleepingGear' 'cooking'
 /// 'storage' 'carbivouac' 'misc' (캠핑), 'carrier', 'moving', 'custom'
 GearPhysics gearPhysicsFor({
+  required String label,
+  required String category,
+  String? subCategory,
+  required int wCm,
+  required int dCm,
+  required int hCm,
+}) {
+  final base = _gearPhysicsBase(
+    label: label,
+    category: category,
+    subCategory: subCategory,
+    wCm: wCm,
+    dCm: dCm,
+    hCm: hCm,
+  );
+  if (base.shapeOverride != null) return base;
+  return base.withShape(gearShapeFor(
+    label: label,
+    category: category,
+    subCategory: subCategory,
+    wCm: wCm,
+    dCm: dCm,
+    hCm: hCm,
+    soft: base.soft,
+  ));
+}
+
+/// 그릴 모양을 라벨 키워드·카테고리·치수 비율로 정한다 (표시 전용).
+///
+/// 길쭉한 수납 가방류(텐트·타프·폴대·의자·롤테이블·말아 둔 매트)는 단면이
+/// 둥근 편일 때만 원통으로 하고, 납작하면 [GearShape.flat], 뭉툭하면 가방으로 둔다.
+GearShape gearShapeFor({
+  required String label,
+  required String category,
+  String? subCategory,
+  required int wCm,
+  required int dCm,
+  required int hCm,
+  bool soft = false,
+}) {
+  bool has(List<String> words) => words.any(label.contains);
+
+  final dims = [wCm, dCm, hCm]..sort(); // 오름차순: min, mid, max
+  final lo = dims[0].toDouble(), mid = dims[1].toDouble(), hi = dims[2].toDouble();
+  // 말아서 자루에 넣은 모양: 작은 두 변이 비슷하고 길이가 그보다 길다
+  final rollLike = mid > 0 && lo / mid >= 0.6 && hi >= mid * 1.4;
+  // 세워 두는 통 모양 (코펠·워터저그): 바닥이 정사각에 가깝고 너무 납작하지 않다
+  final roundBase = wCm > 0 &&
+      dCm > 0 &&
+      (wCm < dCm ? wCm / dCm : dCm / wCm) >= 0.85 &&
+      hCm >= 0.5 * (wCm > dCm ? wCm : dCm);
+  final flatLike = mid > 0 && lo / mid <= 0.4;
+
+  GearShape longGear({GearShape otherwise = GearShape.box}) =>
+      rollLike ? GearShape.cylinder : (flatLike ? GearShape.flat : otherwise);
+
+  // 1) 하드 케이스·상자류 키워드 (가방 키워드보다 먼저: '컨테이너 하드케이스')
+  if (has(['쉘프컨테이너', '폴딩박스', 'SAMLA', '캐비닛', '하드케이스', 'GoBox'])) {
+    return GearShape.crate;
+  }
+  if (has(['캐리어 ('])) return GearShape.hardCase;
+  if (has(['EcoFlow', '잭커리', '파워뱅크', '파워스테이션', '구급함'])) {
+    return GearShape.hardCase;
+  }
+  if (has(['냉장고', '아이스박스'])) return GearShape.cooler;
+
+  // 2) 길쭉한 자루 (가방 키워드보다 먼저: '타프폴대 수납백', '텐트 전용 캐리백')
+  if (has(['폴대', '연결대', '행거', '어닝', '텐트 전용'])) return longGear();
+
+  // 3) 납작한 판
+  if (has(['그리들', '화로대', '돗자리', '전기장판', '팝업 텐트'])) {
+    return GearShape.flat;
+  }
+
+  // 3-1) 카테고리 밖에 있는 텐트·쉘터·타프 (차박 텐트, 메쉬 쉘터)
+  if (has(['텐트', '쉘터', '타프'])) return longGear(otherwise: GearShape.softBag);
+
+  // 4) 매트: 만 것은 원통, 접은 것은 판, 나머지는 가방
+  if (has(['매트'])) {
+    return longGear(otherwise: soft ? GearShape.softBag : GearShape.box);
+  }
+
+  // 5) 천 가방류
+  if (has([
+    '침낭', '베개', '모포', '담요', '더플백', '배낭', '토트백', '쿨러백', '수납백',
+    '수납가방', '파우치', '캐리백', '루프백', '폴딩백', '멀티컨테이너', '기어컨테이너',
+    '오거나이저', '정리함', '해먹', '에어 소파', '그라운드시트', '커튼', '모기장', '가방',
+  ])) {
+    return GearShape.softBag;
+  }
+
+  // 6) 세워 두는 통
+  if (has(['워터저그', '코펠', '더치오븐', '주전자', '랜턴', '난로']) && roundBase) {
+    return GearShape.cylinder;
+  }
+
+  return switch (subCategory ?? category) {
+    'tent' || 'tarp' => longGear(otherwise: GearShape.softBag),
+    'tableChair' => longGear(),
+    'cooler' => soft ? GearShape.softBag : GearShape.cooler,
+    'sleepingGear' => soft ? GearShape.softBag : GearShape.box,
+    'storage' => soft ? GearShape.softBag : GearShape.crate,
+    'carrier' => soft ? GearShape.softBag : GearShape.hardCase,
+    _ => soft ? GearShape.softBag : GearShape.box,
+  };
+}
+
+GearPhysics _gearPhysicsBase({
   required String label,
   required String category,
   String? subCategory,

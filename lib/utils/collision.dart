@@ -39,6 +39,10 @@ class CollisionDetector {
   /// 경계·천장·테일게이트 판정 허용 오차 (5mm)
   static const double boundsTol = 0.005;
 
+  /// 세워서만 싣는 짐이 개구부를 지날 때의 기울임 여유 (3cm). 실내가 개구부보다
+  /// 높아서 윗부분을 먼저 기울여 넣을 수 있다 (80cm 난로 ↔ 개구부 79cm 사례).
+  static const double uprightTiltAllowance = 0.03;
+
   /// 두 박스가 겹치는지 확인 (AABB)
   bool boxesOverlap(TrimBox a, TrimBox b) {
     if (a.id == b.id) return false;
@@ -58,7 +62,9 @@ class CollisionDetector {
   bool isOutOfBounds(TrimBox box) {
     const tol = boundsTol;
     final z1 = box.z, z2 = box.z + box.effectiveD;
-    if (box.x < -tol || z1 < -tol || z2 > space.d + tol) return true;
+    if (box.x < -tol || box.y < -tol || z1 < -tol || z2 > space.d + tol) {
+      return true;
+    }
     final yTop = box.top;
     for (final z in [z1, z2]) {
       if (box.x < space.xMinAt(z, yTop) - tol ||
@@ -125,8 +131,10 @@ class CollisionDetector {
     if (!keepUpright) {
       sections.addAll([(w, d), (d, w), (h, w), (h, d)]);
     }
+    final heightLimit = ap.height + tol + (keepUpright ? uprightTiltAllowance : 0);
     for (final (a, b) in sections) {
-      if (b <= ap.height + tol && a <= ap.widthAt(b) + tol) return true;
+      final bb = b > ap.height ? ap.height : b; // 기울여 넣을 때의 폭은 개구부 상단 기준
+      if (b <= heightLimit && a <= ap.widthAt(bb) + tol) return true;
     }
     return false;
   }
@@ -135,24 +143,26 @@ class CollisionDetector {
   bool overlapsLeftWheelhouse(TrimBox box) {
     final lw = space.leftWheelhouse;
     // 왼쪽 휠하우스: x=[0, lw.w], z=[lw.zStart, lw.zEnd] (뒷좌석/뒷축 쪽)
-    return box.x < lw.w &&
-        box.x + box.effectiveW > 0 &&
-        box.z < lw.zEnd &&
-        box.z + box.effectiveD > lw.zStart &&
-        box.y < lw.h &&
-        box.top > 0;
+    const t = overlapTol; // 맞닿기만 한 짐이 부동소수점 합 때문에 겹침이 되지 않게
+    return box.x < lw.w - t &&
+        box.x + box.effectiveW > t &&
+        box.z < lw.zEnd - t &&
+        box.z + box.effectiveD > lw.zStart + t &&
+        box.y < lw.h - t &&
+        box.top > t;
   }
 
   /// 박스가 오른쪽 휠하우스와 겹치는지 확인
   bool overlapsRightWheelhouse(TrimBox box) {
     final rw = space.rightWheelhouse;
     // 오른쪽 휠하우스: x=[space.w-rw.w, space.w], z=[rw.zStart, rw.zEnd]
-    return box.x < space.w &&
-        box.x + box.effectiveW > space.w - rw.w &&
-        box.z < rw.zEnd &&
-        box.z + box.effectiveD > rw.zStart &&
-        box.y < rw.h &&
-        box.top > 0;
+    const t = overlapTol;
+    return box.x < space.w - t &&
+        box.x + box.effectiveW > space.w - rw.w + t &&
+        box.z < rw.zEnd - t &&
+        box.z + box.effectiveD > rw.zStart + t &&
+        box.y < rw.h - t &&
+        box.top > t;
   }
 
   /// 트렁크 자체(다른 짐 제외)와의 충돌 사유들

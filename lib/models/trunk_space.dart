@@ -186,23 +186,28 @@ class Wheelhouse {
 
 // ── 쏘렌토 MQ4 (2020~, 디 올 뉴 쏘렌토 / 2024~ 더 뉴 쏘렌토 PE, 동일 차체) ──
 //
-// 근거 (2026-09-17 교차검증, 출처·범위는 backlog/sorento-mq4-measurements.md):
-//  - 국내 줄자 실측 6건(3열 접음·2열 세움) + 영국 RiDC·오너 실측:
+// 근거 (출처·범위는 backlog/sorento-mq4-measurements.md):
+//  - 줄자 실측 8건(3열 접음·2열 세움) + 영국 RiDC·오너 실측:
 //      바닥 길이(2열 등받이→테일게이트, 2열 최후방) 102~112 → 1.07
-//        (2열 슬라이드를 앞으로 당기면 최대 +27cm — 미모델링)
-//      휠하우스 사이 폭 107.5~112.5 → 1.09, 휠하우스 위 최대 폭 137~140 → 1.38
+//      휠하우스 사이 폭 107.5~112.5 → 1.09, 최대 폭 137~140 → 1.38
 //      높이: 뒷좌석 쪽 81~85 → 0.82, 개구부 76~84 → 0.79 로 낮아짐
-//  - 5인승과 7인승(3열 접음)은 위쪽 적재 공간이 같고 바닥 아래 수납함만 다르다
-//    (오너 증언; 기아 UK 공식 VDA 910L vs 821L 의 차이 ≈ 수납함). 미모델링.
-//  - 테일게이트: 외판 하부는 거의 수직(5~7°), 허리선(바닥 위 약 0.41~0.46) 위 유리는
-//    약 30° 기울어짐(기아 도면·측면 사진 계측). 개구부 상단에서 안쪽으로 약 0.22~0.26.
-//    클리앙 "줄자 잰 치수에서 30cm 는 빼야", Autoblog "tailgate 각도 때문에 못 넣음" 과 일치.
-//  - 개구부 폭: 바닥 110.6(RiDC 실측), 허리선 ~116, 상단 ~105(도면 추정).
-//  - 2열 등받이는 위로 갈수록 뒤(트렁크 쪽)로 눕는다 (SAE J1100 기본 25°, 세움 20~22°).
-//    등받이 상단 약 0.60, 헤드레스트 구간은 수직으로 본다 — 추정.
-//  - 휠하우스 길이·높이는 실측이 없어 추정 (뒷축 위치·타이어 지름 → 0.58 × 0.35).
+//  - 2026-09-18 실사례 보정 (오너 사진·ADAC·골프백 후기로 교차검증):
+//      · 폭 138 구간은 테일게이트 쪽 마지막 약 38cm 뿐이고 그 앞은 2열까지 109
+//        (myride 실측 도면, 6·7인승은 3열 컵홀더 콘솔, 5인승도 "살짝 튀어나온 부분")
+//        → 좁은 구간(휠하우스) 길이 0.58 → 0.69. 캐디백이 콘솔 위에 걸쳐 놓이고
+//        보스턴백 한 층 위로 브리지되므로 윗면 높이 0.35 → 0.30.
+//      · 125cm 캐디백이 턱 바로 안쪽 바닥에 가로로 놓인다 → 개구부 프레임은 얇은 턱
+//        (frameDepth 0.12 → 0.02). 개구부는 통과 검사용.
+//      · ADAC 실측 용량: 2열 뒤 천장까지 980 L, 커버 아래 495 L. 이전 모델 861 L 은
+//        기울기를 과하게 잡은 것 → 등받이 0.22 → 0.15(약 14°), 유리 상단 0.26 → 0.18.
+//        클리앙 "줄자 치수에서 30cm 는 빼야"(합 0.33), 캐디백 2단 적재 후 문 닫힘과 일치.
+//      · What Car? 기내용 캐리어(56×35×23) 10개가 커버 아래 들어감, 80cm 난로는
+//        입구에서 기울여 넣음 (개구부 79) → 세워 싣는 짐의 개구부 허용 +3cm.
+//      · 2열을 당기면 그만큼 바닥에 빈틈(홀)이 생긴다 (오너 증언) → floorStartZ.
+//  - 5인승과 7인승(3열 접음)은 위쪽 적재 공간이 같고 바닥 아래 수납함만 다르다. 미모델링.
+//  - 개구부 폭: 바닥 110.6(RiDC 실측), 상단 ~105(도면 추정). 높이 0.79.
 //
-// 미모델링: 바닥 아래 수납함, 2열 슬라이드, 헤드레스트 사이 틈, 개구부 모서리 R.
+// 미모델링: 바닥 아래 수납함, 헤드레스트 사이 틈, 개구부 모서리 R, 콘솔 세부 형상.
 const double _sorentoW = 1.38;
 const double _sorentoD = 1.07;
 const double _sorentoH = 0.82;
@@ -211,7 +216,25 @@ const double _sorentoH = 0.82;
 const double sorentoSeatSlideMax = 0.27;
 
 Wheelhouse _sorentoWheelhouse(double seatSlide) =>
-    Wheelhouse(w: 0.145, d: 0.58, h: 0.35, zStart: seatSlide);
+    Wheelhouse(w: 0.145, d: 0.69, h: 0.30, zStart: seatSlide);
+
+const Aperture _sorentoAperture = Aperture(
+  bottomWidth: 1.10,
+  topWidth: 1.05,
+  height: 0.79,
+  frameDepth: 0.02,
+);
+const WallProfile _sorentoRearProfile = WallProfile([
+  ProfilePoint(0.0, 0.0),
+  ProfilePoint(0.48, 0.03), // 하부 도어 트림: 거의 수직
+  ProfilePoint(0.52, 0.06), // 허리선 턱 (유리 하단 트림)
+  ProfilePoint(0.79, 0.18), // 유리 구간
+]);
+const WallProfile _sorentoFrontProfile = WallProfile([
+  ProfilePoint(0.0, 0.0),
+  ProfilePoint(0.60, 0.15), // 등받이 상단, 약 14° 기울기
+  ProfilePoint(0.82, 0.15), // 헤드레스트 구간은 수직으로 본다
+]);
 
 String _sorentoVolumeLabel(bool fiveSeat, double seatSlide) {
   final t = (seatSlide / sorentoSeatSlideMax).clamp(0.0, 1.0);
@@ -225,24 +248,6 @@ String _sorentoVolumeLabel(bool fiveSeat, double seatSlide) {
           : '2열 +${(seatSlide * 100).round()}cm';
   return 'VDA ${v}L ($pos)';
 }
-const Aperture _sorentoAperture = Aperture(
-  bottomWidth: 1.10,
-  topWidth: 1.05,
-  height: 0.79,
-  frameDepth: 0.12,
-);
-const WallProfile _sorentoRearProfile = WallProfile([
-  ProfilePoint(0.0, 0.0),
-  ProfilePoint(0.42, 0.04), // 하부 도어 트림: 거의 수직
-  ProfilePoint(0.46, 0.07), // 허리선 턱 (유리 하단 트림)
-  ProfilePoint(0.79, 0.26), // 유리 구간 tan 30° ≈ 0.58
-]);
-const WallProfile _sorentoFrontProfile = WallProfile([
-  ProfilePoint(0.0, 0.0),
-  ProfilePoint(0.60, 0.22), // 등받이 상단, 약 20° 기울기
-  ProfilePoint(0.82, 0.22), // 헤드레스트 구간은 수직으로 본다
-]);
-
 class TrunkSpace {
   final double w; // 트렁크 폭 (m)
   final double d; // 트렁크 깊이 (m)
@@ -298,6 +303,10 @@ class TrunkSpace {
 
   /// 닫힘 검사가 모델링돼 있는가
   bool get hasTailgateModel => rearProfile != null || aperture != null;
+
+  /// 바닥이 시작되는 z. 2열을 앞으로 당기면 등받이와 바닥 사이에 빈틈(홀)이 생겨
+  /// z < floorStartZ 구간에는 짐을 받칠 바닥이 없다.
+  double get floorStartZ => seatSlide;
 
   /// 휠하우스 사이 바닥 폭
   double get floorWidthBetweenWheelhouses =>
@@ -411,7 +420,8 @@ class TrunkSpace {
   double apertureNarrowAt(double z, double y) {
     final ap = aperture;
     if (ap == null) return 0;
-    if (z < d - ap.frameDepth - 1e-9) return 0;
+    // 프레임 시작면(z = d − frameDepth)에 닿기만 한 짐은 구간 밖으로 본다 (0.5mm 여유)
+    if (z <= d - ap.frameDepth + 0.0005) return 0;
     final n = (w - ap.widthAt(y)) / 2;
     return n < 0 ? 0 : n;
   }

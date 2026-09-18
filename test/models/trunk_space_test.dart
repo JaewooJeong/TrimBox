@@ -25,7 +25,8 @@ void main() {
       expect(s.d, 1.07);
       expect(s.h, 0.82);
       expect(s.leftWheelhouse.w, 0.145);
-      expect(s.leftWheelhouse.h, 0.35);
+      expect(s.leftWheelhouse.h, 0.30);
+      expect(s.leftWheelhouse.d, 0.69); // 폭 138 구간은 테일게이트 쪽 38cm 뿐
       expect(s.rearCeilingDrop, 0.03);
       expect(s.aperture!.height, 0.79);
       // body profile
@@ -43,12 +44,12 @@ void main() {
         expect(inset, greaterThanOrEqualTo(prev - 1e-12), reason: 'y=$y');
         prev = inset;
       }
-      expect(s.rearInsetAt(0.42), closeTo(0.04, 1e-9));
-      expect(s.rearInsetAt(0.79), closeTo(0.26, 1e-9));
+      expect(s.rearInsetAt(0.48), closeTo(0.03, 1e-9));
+      expect(s.rearInsetAt(0.79), closeTo(0.18, 1e-9));
       expect(s.rearInsetAt(s.h), greaterThanOrEqualTo(s.aperture!.frameDepth));
-      // 역함수: 테일게이트 바닥선에서 26cm 앞이면 개구부 상단 높이까지
-      expect(s.rearCeilingAt(s.d - 0.26), closeTo(0.79, 1e-6));
-      expect(s.ceilingHeightAt(s.d - 0.26), lessThanOrEqualTo(0.79 + 1e-6));
+      // 역함수: 테일게이트 바닥선에서 18cm 앞이면 개구부 상단 높이까지
+      expect(s.rearCeilingAt(s.d - 0.18), closeTo(0.79, 1e-6));
+      expect(s.ceilingHeightAt(s.d - 0.18), lessThanOrEqualTo(0.79 + 1e-6));
       // 개구부 상단에 닿는 선 앞쪽은 실내 천장
       expect(s.ceilingHeightAt(0.3), closeTo(s.interiorCeilingAt(0.3), 1e-9));
       // 천장은 테일게이트 쪽으로 낮아진다
@@ -59,9 +60,9 @@ void main() {
     test('쏘렌토 등받이 프로필: 위로 갈수록 뒤로, 헤드레스트 구간은 수직', () {
       final s = TrunkSpace.sorento();
       expect(s.frontInsetAt(0), 0);
-      expect(s.frontInsetAt(0.30), closeTo(0.11, 1e-9));
-      expect(s.frontInsetAt(0.60), closeTo(0.22, 1e-9));
-      expect(s.frontInsetAt(0.80), closeTo(0.22, 1e-9));
+      expect(s.frontInsetAt(0.30), closeTo(0.075, 1e-9));
+      expect(s.frontInsetAt(0.60), closeTo(0.15, 1e-9));
+      expect(s.frontInsetAt(0.80), closeTo(0.15, 1e-9));
     });
 
     test('개구부: 프레임 구간에서만 좁아진다', () {
@@ -78,8 +79,8 @@ void main() {
     test('실사용 부피는 형상 제약을 뺀 값이고 JSON 왕복 후에도 같다', () {
       final s = TrunkSpace.sorento();
       final boxVol = s.w * s.d * s.h;
-      expect(s.usableVolume, lessThan(boxVol * 0.8));
-      expect(s.usableVolume, greaterThan(boxVol * 0.6));
+      expect(s.usableVolume, lessThan(boxVol * 0.88));
+      expect(s.usableVolume, greaterThan(boxVol * 0.7));
       final back = TrunkSpace.fromJson(s.toJson());
       expect(back.rearProfile!.points.length, s.rearProfile!.points.length);
       expect(back.frontProfile!.points.length, s.frontProfile!.points.length);

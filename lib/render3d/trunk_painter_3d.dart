@@ -7,7 +7,10 @@ import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import 'camera.dart';
 import 'depth_sort.dart';
+import 'fixtures.dart';
+import 'gear_shapes.dart';
 import 'geometry.dart';
+import 'mesh.dart';
 import 'vec3.dart';
 
 /// 정적 트렁크 껍데기 렌더링을 카메라·크기·트렁크가 같을 때 재사용하기 위한 캐시.
@@ -17,6 +20,18 @@ class SceneCache {
   Size? size;
   TrunkSpace? space;
   ui.Picture? shell;
+
+  /// 고정물 메시(휠하우스·프레임·차체 윤곽)는 트렁크가 같으면 그대로 쓴다
+  TrunkSpace? _fixtureSpace;
+  List<FixtureObject>? _fixtures;
+
+  List<FixtureObject> fixturesFor(TrunkSpace sp) {
+    if (_fixtures == null || !identical(_fixtureSpace, sp)) {
+      _fixtureSpace = sp;
+      _fixtures = buildSceneFixtures(sp);
+    }
+    return _fixtures!;
+  }
 
   bool matches(OrbitCamera cam, Size sz, TrunkSpace sp) =>
       shell != null && camera == cam && size == sz && identical(space, sp);
@@ -35,23 +50,41 @@ class SceneCache {
   }
 }
 
+/// 박스와 같이 뒤→앞 정렬해야 하는 고정물 전부 (휠하우스 아치, 프레임, 차체 윤곽)
+List<FixtureObject> buildSceneFixtures(TrunkSpace space) {
+  final out = <FixtureObject>[];
+  for (final left in [true, false]) {
+    final mesh = wheelhouseMesh(space, left: left);
+    if (mesh == null) continue;
+    out.add(FixtureObject(
+      left ? Aabb.leftWheelhouse(space) : Aabb.rightWheelhouse(space),
+      mesh,
+      wheelhouseColor,
+    ));
+  }
+  out.addAll(frameFixtures(space));
+  out.addAll(bodyFixtures(space));
+  return out;
+}
+
 class _SceneObject {
   final Aabb aabb;
   final Color color;
   final TrimBox? box;
+  final Mesh mesh;
+  final double alpha;
+  final bool outline;
+  final int fadeSide;
 
-  /// 지정하면 AABB 면 대신 이 면들을 그린다 (개구부 프레임 등)
-  final List<Face>? faces;
-
-  const _SceneObject(this.aabb, this.color, this.box, {this.faces});
-
-  bool get isFixture => box == null;
+  const _SceneObject(this.aabb, this.color, this.box, this.mesh,
+      {this.alpha = 1.0, this.outline = true, this.fadeSide = 0});
 }
 
 /// 원근 카메라 + painter's algorithm 기반 트렁크 3D 페인터.
 ///
-/// 그리기 순서: 배경 → 트렁크 껍데기(법선 컬링, 먼 면부터) →
-/// 휠하우스·박스(뒤→앞 위상 정렬) → 캡션.
+/// 그리기 순서: 배경 → 트렁크 껍데기(캐시: 차 밖 범퍼, 바닥·벽·천장, 매트·격자·
+/// 접촉 음영, 벽 포켓, 등받이 쿠션·헤드레스트) → 고정물·박스(뒤→앞 위상 정렬,
+/// 물체 안에서는 법선 컬링 — 모든 메시가 볼록) → 테일게이트 경고 → 캡션.
 class TrunkPainter3D extends CustomPainter {
   final TrunkSpace space;
   final List<TrimBox> boxes;
@@ -84,12 +117,15 @@ class TrunkPainter3D extends CustomPainter {
 
   static const Color _bgTop = Color(0xFF1B1E22);
   static const Color _bgBottom = Color(0xFF101214);
-  static const Color _floorColor = Color(0xFF3D3D40);
-  static const Color _wallColor = Color(0xFF55524F);
-  static const Color _ceilingColor = Color(0xFF605D5A);
-  static const Color _seatColor = Color(0xFF3C4046);
-  static const Color _wheelhouseColor = Color(0xFF66625E);
-  static const Color _frameColor = Color(0xFF2B2D31);
+  static const Color _floorColor = Color(0xFF37373A); // 카펫
+  static const Color _wallColor = Color(0xFF56534F); // 플라스틱 사이드 트림
+  static const Color _ceilingColor = Color(0xFF8C8985); // 헤드라이너
+  static const Color _seatGapColor = Color(0xFF24262A);
+  static const Color _cushionColor = Color(0xFF494D55);
+  static const Color _headrestColor = Color(0xFF52565E);
+  static const Color _recessColor = Color(0xFF131518);
+  static const Color _bumperColor = Color(0xFF2A2C30);
+  static const Color _scuffColor = Color(0xFF7E838A);
   static const Color _limitLine = Color(0xFFFFC46B);
   static const Color _accent = Color(0xFF4DA3FF);
   static const Color _danger = Color(0xFFFF4D4D);
@@ -102,6 +138,10 @@ class TrunkPainter3D extends CustomPainter {
     _paintTailgateWarning(canvas, size);
     _paintCaption(canvas, size);
   }
+
+  /// 성능 측정용: 박스·고정물 패스만 그린다.
+  @visibleForTesting
+  void paintObjectsOnly(Canvas canvas, Size size) => _paintObjects(canvas, size);
 
   // ── 배경 ──
 
@@ -118,7 +158,7 @@ class TrunkPainter3D extends CustomPainter {
     );
   }
 
-  // ── 껍데기 ──
+  // ── 껍데기 (정적 → Picture 캐시) ──
 
   void _paintShell(Canvas canvas, Size size) {
     final c = cache;
@@ -143,43 +183,426 @@ class TrunkPainter3D extends CustomPainter {
         ShellPart.floor => _floorColor,
         ShellPart.ceiling => _ceilingColor,
         ShellPart.leftWall || ShellPart.rightWall => _wallColor,
-        ShellPart.seatBack => _seatColor,
-        ShellPart.frame => _frameColor,
+        ShellPart.seatBack => _seatGapColor,
+        ShellPart.seatRecess => _recessColor,
+        ShellPart.frame => frameColor,
         ShellPart.tailgate => _wallColor,
       };
 
+  /// 빛은 열린 테일게이트 쪽에서 들어온다: 안쪽(z 작은 쪽)일수록 어둡게.
+  double _depthLight(double z) {
+    if (space.d <= 0) return 1.0;
+    return 0.80 + 0.20 * (z / space.d).clamp(0.0, 1.0);
+  }
+
+  Color _scale(Color c, double k) => Color.fromARGB(
+        (c.a * 255).round(),
+        (c.r * 255 * k).round().clamp(0, 255),
+        (c.g * 255 * k).round().clamp(0, 255),
+        (c.b * 255 * k).round().clamp(0, 255),
+      );
+
   void _drawShell(Canvas canvas, Size size) {
     final camPos = camera.position;
-    final faces = buildTrunkShell(space, stations: 10)
-        .where((f) => f.face.facesCamera(camPos))
-        .toList()
+    final seat = seatLayout(space);
+    final faces = buildTrunkShell(
+      space,
+      stations: 10,
+      headrestZoneY: (seat?.hasHeadrests ?? false) ? seat!.topY : null,
+      headrestRecess: seat?.recess ?? 0,
+    ).where((f) => f.face.facesCamera(camPos)).toList()
       ..sort((a, b) => (b.face.centroid - camPos)
           .length
           .compareTo((a.face.centroid - camPos).length));
 
-    _drawOutsideGround(canvas, size);
+    _drawOutside(canvas, size);
 
     var seatVisible = false;
+    final fill = Paint();
+    final gap = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
     for (final sf in faces) {
       final path = _projectPath(sf.face.pts, size);
       if (path == null) continue;
-      final color = shadeColor(_shellBase(sf.part), sf.face.normal);
-      canvas.drawPath(path, Paint()..color = color);
+      final lit = sf.part == ShellPart.seatRecess
+          ? 1.0
+          : _depthLight(sf.face.centroid.z);
+      final color = shadeColor(_scale(_shellBase(sf.part), lit), sf.face.normal);
+      canvas.drawPath(path, fill..color = color);
       // 인접 면 사이 안티앨리어싱 틈 메우기
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = color
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0,
-      );
+      canvas.drawPath(path, gap..color = color);
       if (sf.part == ShellPart.seatBack) seatVisible = true;
     }
 
-    _drawFloorGrid(canvas, size);
-    if (seatVisible) _drawSeatSplitLines(canvas, size);
+    _drawFloorDetails(canvas, size);
+    _drawWallDetails(canvas, size, camPos);
+    if (seatVisible && seat != null) _drawSeat(canvas, size, seat, camPos);
     _drawTailgateLimitLines(canvas, size);
-    _drawOpeningOutline(canvas, size);
+    if (space.aperture == null) _drawOpeningOutline(canvas, size);
+  }
+
+  /// 차 밖: 범퍼 윗면(바닥보다 2.5cm 낮은 턱)과 못 넣은 짐을 세워 두는 자리
+  void _drawOutside(Canvas canvas, Size size) {
+    if (camera.position.y <= 0.01) return;
+    final ext = bodyOverhang(space);
+    final d = space.d, x0 = -ext, x1 = space.w + ext;
+    const sillY = -0.025, bumperZ = 0.12;
+
+    void quad(List<Vec3> pts, Color color, Vec3 normal) {
+      final path = _projectPath(pts, size);
+      if (path == null) return;
+      canvas.drawPath(path, Paint()..color = shadeColor(color, normal));
+    }
+
+    // 범퍼 뒷면 (아래로 말려 내려감) → 윗면 → 턱
+    quad([
+      Vec3(x0, sillY, d + bumperZ),
+      Vec3(x1, sillY, d + bumperZ),
+      Vec3(x1 - 0.02, sillY - 0.16, d + bumperZ + 0.035),
+      Vec3(x0 + 0.02, sillY - 0.16, d + bumperZ + 0.035),
+    ], _scale(_bumperColor, 0.8), const Vec3(0, 0.21, 0.98));
+    quad([
+      Vec3(x0, sillY, d),
+      Vec3(x1, sillY, d),
+      Vec3(x1, sillY, d + bumperZ),
+      Vec3(x0, sillY, d + bumperZ),
+    ], _bumperColor, const Vec3(0, 1, 0));
+    // 범퍼 보호 플레이트
+    final al = _apertureInset();
+    quad([
+      Vec3(al + 0.03, sillY + 0.001, d + 0.035),
+      Vec3(space.w - al - 0.03, sillY + 0.001, d + 0.035),
+      Vec3(space.w - al - 0.05, sillY + 0.001, d + 0.10),
+      Vec3(al + 0.05, sillY + 0.001, d + 0.10),
+    ], _scale(_scuffColor, 0.62), const Vec3(0, 1, 0));
+    quad([
+      Vec3(x0, sillY, d),
+      Vec3(x1, sillY, d),
+      Vec3(x1, 0, d),
+      Vec3(x0, 0, d),
+    ], _scale(_bumperColor, 0.55), const Vec3(0, 0, 1));
+
+    // 테일게이트 바깥 지면 (못 넣은 짐을 세워 두는 자리)
+    final ground = _projectPath([
+      Vec3(-0.15, -0.002, d + bumperZ),
+      Vec3(space.w + 0.15, -0.002, d + bumperZ),
+      Vec3(space.w + 0.15, -0.002, d + 0.8),
+      Vec3(-0.15, -0.002, d + 0.8),
+    ], size);
+    if (ground != null) {
+      canvas.drawPath(
+          ground, Paint()..color = Colors.white.withValues(alpha: 0.05));
+    }
+  }
+
+  /// 바닥 높이에서 개구부가 벽보다 안쪽으로 들어온 거리 (개구부 모델이 없으면 벽)
+  double _apertureInset() {
+    final ap = space.aperture;
+    if (ap == null) return space.xMinAt(space.d, 0);
+    return math.max(0.0, (space.w - ap.widthAt(0)) / 2);
+  }
+
+  double get _zWallMax => space.aperture == null
+      ? space.d
+      : space.d - space.aperture!.frameDepth - 1e-6;
+
+  void _fillPoly(Canvas canvas, Size size, List<Vec3> pts, Paint paint) {
+    final path = _projectPath(pts, size);
+    if (path != null) canvas.drawPath(path, paint);
+  }
+
+  /// 바닥: 카고 매트, 10cm 격자, 벽·등받이·휠하우스와 만나는 곳의 접촉 음영, 스커프 플레이트
+  void _drawFloorDetails(Canvas canvas, Size size) {
+    if (camera.position.y <= 0.01) return;
+    final outline = _projectPath(floorOutline(space, stations: 10), size);
+    if (outline == null) return;
+    final s = space;
+    const y = 0.0012;
+
+    canvas.save();
+    canvas.clipPath(outline);
+
+    // 2열을 앞으로 당기면 등받이와 바닥 사이에 빈틈이 생긴다 (짐을 받칠 바닥이 없다)
+    final gapZ = s.floorStartZ.clamp(0.0, s.d).toDouble();
+    if (gapZ > 0.005) {
+      _fillPoly(canvas, size, [
+        Vec3(0, y, 0), Vec3(s.w, y, 0), Vec3(s.w, y, gapZ), Vec3(0, y, gapZ), //
+      ], Paint()..color = _recessColor);
+    }
+
+    // 카고 매트 (휠하우스 사이, 모서리를 딴 직사각형)
+    final taper0 = s.taperAt(0);
+    final mx0 = math.max(s.leftWheelhouse.w, taper0) + 0.02;
+    final mx1 = s.w - math.max(s.rightWheelhouse.w, taper0) - 0.02;
+    final mz0 = gapZ + 0.03, mz1 = s.d - 0.085;
+    if (mx1 - mx0 > 0.2 && mz1 - mz0 > 0.2) {
+      const c = 0.03;
+      final mat = [
+        Vec3(mx0 + c, y, mz0), Vec3(mx1 - c, y, mz0), Vec3(mx1, y, mz0 + c), //
+        Vec3(mx1, y, mz1 - c), Vec3(mx1 - c, y, mz1), Vec3(mx0 + c, y, mz1),
+        Vec3(mx0, y, mz1 - c), Vec3(mx0, y, mz0 + c),
+      ];
+      final path = _projectPath(mat, size);
+      if (path != null) {
+        final base = shadeColor(
+            Color.lerp(_floorColor, Colors.white, 0.075)!, Vec3.unitY);
+        canvas.drawPath(path, Paint()..color = base.withValues(alpha: 0.9));
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2
+            ..color = Colors.black.withValues(alpha: 0.35),
+        );
+      }
+    }
+
+    // 격자: 10cm, 50cm 마다 진하게
+    final thin = Paint()
+      ..color = Colors.white.withValues(alpha: 0.055)
+      ..strokeWidth = 1.0;
+    final strong = Paint()
+      ..color = Colors.white.withValues(alpha: 0.12)
+      ..strokeWidth = 1.0;
+    const step = 0.1;
+    for (var i = 0; i * step <= s.w + 1e-9; i++) {
+      final x = i * step;
+      _drawSegment(canvas, size, Vec3(x, y, gapZ), Vec3(x, y, s.d),
+          i % 5 == 0 ? strong : thin);
+    }
+    for (var i = 0; i * step <= s.d + 1e-9; i++) {
+      final z = i * step;
+      if (z < gapZ - 1e-9) continue;
+      _drawSegment(canvas, size, Vec3(0, y, z), Vec3(s.w, y, z),
+          i % 5 == 0 ? strong : thin);
+    }
+
+    // 접촉 음영 (값싼 앰비언트 오클루전): 넓고 옅은 띠 + 좁고 진한 띠
+    final zw = _zWallMax;
+    for (final layer in const [[0.075, 0.10], [0.035, 0.14]]) {
+      final wdt = layer[0];
+      final p = Paint()..color = Colors.black.withValues(alpha: layer[1]);
+      // 양쪽 벽
+      _fillPoly(canvas, size, [
+        Vec3(s.xMinAt(0, 0), y, 0),
+        Vec3(s.xMinAt(zw, 0), y, s.d),
+        Vec3(s.xMinAt(zw, 0) + wdt, y, s.d),
+        Vec3(s.xMinAt(0, 0) + wdt, y, 0),
+      ], p);
+      _fillPoly(canvas, size, [
+        Vec3(s.xMaxAt(0, 0), y, 0),
+        Vec3(s.xMaxAt(zw, 0), y, s.d),
+        Vec3(s.xMaxAt(zw, 0) - wdt, y, s.d),
+        Vec3(s.xMaxAt(0, 0) - wdt, y, 0),
+      ], p);
+      // 등받이 밑 (빈틈이 있으면 바닥이 시작되는 곳)
+      _fillPoly(canvas, size, [
+        Vec3(0, y, gapZ), Vec3(s.w, y, gapZ), //
+        Vec3(s.w, y, gapZ + wdt), Vec3(0, y, gapZ + wdt),
+      ], p);
+      // 휠하우스 둘레
+      for (final a in [Aabb.leftWheelhouse(s), Aabb.rightWheelhouse(s)]) {
+        if (a.isEmpty) continue;
+        _fillPoly(canvas, size, [
+          Vec3(a.x1 - wdt, y, a.z1 - wdt),
+          Vec3(a.x2 + wdt, y, a.z1 - wdt),
+          Vec3(a.x2 + wdt, y, a.z2 + wdt),
+          Vec3(a.x1 - wdt, y, a.z2 + wdt),
+        ], p);
+      }
+    }
+    if (gapZ > 0.005) {
+      _drawSegment(
+        canvas,
+        size,
+        Vec3(s.xMinAt(gapZ, 0), y, gapZ),
+        Vec3(s.xMaxAt(gapZ, 0), y, gapZ),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.22)
+          ..strokeWidth = 1.5,
+      );
+    }
+    canvas.restore();
+
+    // 스커프 플레이트 (개구부 문턱): 밝은 수지 띠 + 미끄럼 방지 리브
+    final al = _apertureInset();
+    final sx0 = al + 0.006, sx1 = s.w - al - 0.006;
+    final sz0 = s.d - 0.06, sz1 = s.d - 0.003;
+    if (sx1 - sx0 > 0.2) {
+      final plate = _projectPath([
+        Vec3(sx0, y, sz0), Vec3(sx1, y, sz0), Vec3(sx1, y, sz1), Vec3(sx0, y, sz1), //
+      ], size);
+      if (plate != null) {
+        canvas.drawPath(
+            plate, Paint()..color = shadeColor(_scuffColor, Vec3.unitY));
+        final rib = Paint()
+          ..color = Colors.black.withValues(alpha: 0.28)
+          ..strokeWidth = 1.0;
+        for (final t in const [0.25, 0.5, 0.75]) {
+          final z = sz0 + (sz1 - sz0) * t;
+          _drawSegment(canvas, size, Vec3(sx0 + 0.02, y, z),
+              Vec3(sx1 - 0.02, y, z), rib);
+        }
+        canvas.drawPath(
+          plate,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.0
+            ..color = Colors.black.withValues(alpha: 0.45),
+        );
+      }
+    }
+  }
+
+  /// 보이는 쪽 벽: 바닥과 만나는 음영 띠, 휠하우스 뒤의 사이드 트림 포켓
+  void _drawWallDetails(Canvas canvas, Size size, Vec3 camPos) {
+    final s = space;
+    final zw = _zWallMax;
+    for (final left in [true, false]) {
+      final visible = left
+          ? camPos.x > s.xMinAt(s.d / 2, 0)
+          : camPos.x < s.xMaxAt(s.d / 2, 0);
+      if (!visible) continue;
+      double wx(double z, double y) => left
+          ? s.xMinAt(math.min(z, zw), y) + 0.0015
+          : s.xMaxAt(math.min(z, zw), y) - 0.0015;
+      List<Vec3> onWall(List<List<double>> zy) =>
+          [for (final p in zy) Vec3(wx(p[0], p[1]), p[1], p[0])];
+
+      // 바닥 쪽 음영
+      for (final layer in const [[0.07, 0.10], [0.03, 0.13]]) {
+        _fillPoly(
+          canvas,
+          size,
+          onWall([
+            [0, 0], [s.d, 0], [s.d, layer[0]], [0, layer[0]], //
+          ]),
+          Paint()..color = Colors.black.withValues(alpha: layer[1]),
+        );
+      }
+
+      // 포켓: 휠하우스 뒤 ~ 프레임 앞
+      final wh = left ? s.leftWheelhouse : s.rightWheelhouse;
+      final z0 = (wh.w > 0 ? wh.zEnd : s.d * 0.5) + 0.05;
+      final z1 = (s.aperture == null ? s.d - 0.04 : zw) - 0.05;
+      final kneeY = s.interiorCeilingAt(z1) * 0.6;
+      final y0 = 0.11, y1 = math.min(0.37, kneeY - 0.04);
+      if (z1 - z0 >= 0.12 && y1 - y0 >= 0.10) {
+        const c = 0.022;
+        final pocket = onWall([
+          [z0 + c, y0], [z1 - c, y0], [z1, y0 + c], [z1, y1 - c], //
+          [z1 - c, y1], [z0 + c, y1], [z0, y1 - c], [z0, y0 + c],
+        ]);
+        final path = _projectPath(pocket, size);
+        if (path != null) {
+          canvas.drawPath(
+              path, Paint()..color = Colors.black.withValues(alpha: 0.30));
+          canvas.drawPath(
+            path,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.0
+              ..color = Colors.black.withValues(alpha: 0.35),
+          );
+          // 위쪽 안 그림자, 아래쪽 하이라이트 → 파인 느낌
+          _drawSegment(
+            canvas,
+            size,
+            Vec3(wx(z0 + c, y1), y1 - 0.004, z0 + c),
+            Vec3(wx(z1 - c, y1), y1 - 0.004, z1 - c),
+            Paint()
+              ..color = Colors.black.withValues(alpha: 0.45)
+              ..strokeWidth = 2.5,
+          );
+          _drawSegment(
+            canvas,
+            size,
+            Vec3(wx(z0 + c, y0), y0, z0 + c),
+            Vec3(wx(z1 - c, y0), y0, z1 - c),
+            Paint()
+              ..color = Colors.white.withValues(alpha: 0.16)
+              ..strokeWidth = 1.2,
+          );
+        }
+      }
+    }
+  }
+
+  /// 2열 등받이: 분할 비율대로 쿠션 패널(사이 틈은 어두운 바탕), 박음질 선,
+  /// 헤드레스트와 기둥. 전부 등받이 프로필 평면 위 또는 그 뒤(실내 쪽)에 있다.
+  void _drawSeat(Canvas canvas, Size size, SeatLayout seat, Vec3 camPos) {
+    final s = space;
+    final prof = frontProfilePolyline(s);
+    const gapX = 0.009, bottom = 0.02, topGap = 0.012;
+    final fill = Paint();
+    final edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0
+      ..color = Colors.black.withValues(alpha: 0.5);
+    final seam = Paint()
+      ..color = Colors.black.withValues(alpha: 0.28)
+      ..strokeWidth = 1.0;
+    final cushionTop = seat.topY - (seat.hasHeadrests ? topGap : 0.03);
+
+    for (var i = 0; i + 1 < prof.length; i++) {
+      final a = prof[i], b = prof[i + 1];
+      if (b.y - a.y < 1e-9) continue;
+      final y0 = math.max(a.y, bottom), y1 = math.min(b.y, cushionTop);
+      if (y1 - y0 < 0.02) continue;
+      double zAt(double y) => a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
+      final normal = Vec3(0, -(b.z - a.z), b.y - a.y).normalized;
+      if (normal.dot(camPos - Vec3(s.w / 2, y0, zAt(y0))) <= 0) continue;
+      final lit = _depthLight(zAt((y0 + y1) / 2));
+      fill.color = shadeColor(_scale(_cushionColor, lit), normal);
+
+      for (final sec in seat.sections) {
+        double xa(double y) =>
+            math.max(sec[0], s.xMinAt(zAt(y), y)) + gapX;
+        double xb(double y) =>
+            math.min(sec[1], s.xMaxAt(zAt(y), y)) - gapX;
+        if (xb(y1) - xa(y1) < 0.05) continue;
+        final path = _projectPath([
+          Vec3(xa(y0), y0, zAt(y0)),
+          Vec3(xb(y0), y0, zAt(y0)),
+          Vec3(xb(y1), y1, zAt(y1)),
+          Vec3(xa(y1), y1, zAt(y1)),
+        ], size);
+        if (path == null) continue;
+        canvas.drawPath(path, fill);
+        canvas.drawPath(path, edge);
+        // 가로 박음질
+        for (final t in const [0.36, 0.70]) {
+          final y = y0 + (y1 - y0) * t;
+          _drawSegment(canvas, size, Vec3(xa(y) + 0.02, y, zAt(y)),
+              Vec3(xb(y) - 0.02, y, zAt(y)), seam);
+        }
+      }
+    }
+
+    if (!seat.hasHeadrests) return;
+    final meshes = headrestMeshes(seat);
+    final order = List<int>.generate(meshes.length, (i) => i)
+      ..sort((i, j) {
+        final ci = Vec3(seat.headrests[i].cx, seat.topY, seat.planeZ);
+        final cj = Vec3(seat.headrests[j].cx, seat.topY, seat.planeZ);
+        return (cj - camPos).length.compareTo((ci - camPos).length);
+      });
+    final post = Paint()
+      ..color = const Color(0xFF9A9EA4)
+      ..strokeWidth = 2.0;
+    final zPost = seat.planeZ - seat.recess * 0.4;
+    for (final i in order) {
+      final hr = seat.headrests[i];
+      for (final dx in [-hr.w * 0.22, hr.w * 0.22]) {
+        _drawSegment(canvas, size, Vec3(hr.cx + dx, seat.topY, zPost),
+            Vec3(hr.cx + dx, hr.y0 + 0.01, zPost), post);
+      }
+      _drawMesh(canvas, size, meshes[i], _scale(_headrestColor, 0.92), camPos,
+          hardEdges: false,
+          silhouette: Colors.black.withValues(alpha: 0.55),
+          silhouetteWidth: 1.0);
+    }
   }
 
   /// 닫힌 테일게이트 안쪽 면이 양쪽 벽과 만나는 선 (= 이 선 뒤로는 못 놓음).
@@ -253,74 +676,6 @@ class TrunkPainter3D extends CustomPainter {
     }
   }
 
-  /// 테일게이트 바깥 지면 (못 넣은 짐을 세워 두는 자리)
-  void _drawOutsideGround(Canvas canvas, Size size) {
-    if (camera.position.y <= 0.01) return;
-    final path = _projectPath([
-      Vec3(-0.15, -0.002, space.d),
-      Vec3(space.w + 0.15, -0.002, space.d),
-      Vec3(space.w + 0.15, -0.002, space.d + 0.8),
-      Vec3(-0.15, -0.002, space.d + 0.8),
-    ], size);
-    if (path == null) return;
-    canvas.drawPath(path, Paint()..color = Colors.white.withValues(alpha: 0.05));
-  }
-
-  void _drawFloorGrid(Canvas canvas, Size size) {
-    final outline = _projectPath(floorOutline(space, stations: 10), size);
-    if (outline == null) return;
-    final camPos = camera.position;
-    // 바닥이 카메라를 향할 때만 (아래에서 올려다보면 생략)
-    if (camPos.y <= 0.01) return;
-
-    canvas.save();
-    canvas.clipPath(outline);
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.09)
-      ..strokeWidth = 1.0;
-    final strong = Paint()
-      ..color = Colors.white.withValues(alpha: 0.16)
-      ..strokeWidth = 1.0;
-    const step = 0.1;
-    for (var i = 0; i * step <= space.w + 1e-9; i++) {
-      final x = i * step;
-      _drawSegment(canvas, size, Vec3(x, 0.001, 0), Vec3(x, 0.001, space.d),
-          i % 5 == 0 ? strong : paint);
-    }
-    for (var i = 0; i * step <= space.d + 1e-9; i++) {
-      final z = i * step;
-      _drawSegment(canvas, size, Vec3(0, 0.001, z), Vec3(space.w, 0.001, z),
-          i % 5 == 0 ? strong : paint);
-    }
-    canvas.restore();
-  }
-
-  void _drawSeatSplitLines(Canvas canvas, Size size) {
-    final ratios = space.seatSplitRatio;
-    if (ratios == null || ratios.length < 2) return;
-    final xl = space.xMinAt(0, 0);
-    final xr = space.xMaxAt(0, 0);
-    final paint = Paint()
-      ..color = Colors.black.withValues(alpha: 0.45)
-      ..strokeWidth = 2.0;
-    // 등받이 프로필을 따라 (기울어진 등받이도 선이 면 위에 붙도록)
-    final prof = frontProfilePolyline(space);
-    var cum = 0.0;
-    for (var i = 0; i < ratios.length - 1; i++) {
-      cum += ratios[i];
-      final x = xl + (xr - xl) * cum;
-      for (var k = 0; k + 1 < prof.length; k++) {
-        final a = prof[k], b = prof[k + 1];
-        final y0 = math.max(a.y, 0.03);
-        final y1 = math.min(b.y, space.h - 0.03);
-        if (y1 <= y0) continue;
-        double zAt(double y) => a.z + (b.z - a.z) * (y - a.y) / (b.y - a.y);
-        _drawSegment(canvas, size, Vec3(x, y0, zAt(y0) + 0.003),
-            Vec3(x, y1, zAt(y1) + 0.003), paint);
-      }
-    }
-  }
-
   void _drawOpeningOutline(Canvas canvas, Size size) {
     final path = _projectPath(openingOutline(space), size);
     if (path == null) return;
@@ -333,19 +688,18 @@ class TrunkPainter3D extends CustomPainter {
     );
   }
 
-  // ── 물체 ──
+  // ── 물체 (고정물 + 박스) ──
 
   void _paintObjects(Canvas canvas, Size size) {
     final objects = <_SceneObject>[];
-    final lw = Aabb.leftWheelhouse(space);
-    if (!lw.isEmpty) objects.add(_SceneObject(lw, _wheelhouseColor, null));
-    final rw = Aabb.rightWheelhouse(space);
-    if (!rw.isEmpty) objects.add(_SceneObject(rw, _wheelhouseColor, null));
-    objects.addAll(_frameObjects());
-
+    final fixtures = cache?.fixturesFor(space) ?? buildSceneFixtures(space);
+    for (final f in fixtures) {
+      objects.add(_SceneObject(f.aabb, f.color, null, f.mesh,
+          alpha: f.alpha, outline: f.outline, fadeSide: f.fadeSide));
+    }
     for (final b in boxes) {
       if (!_isVisibleInStepView(b)) continue;
-      objects.add(_SceneObject(Aabb.fromBox(b), b.color, b));
+      objects.add(_SceneObject(Aabb.fromBox(b), b.color, b, gearMesh(b)));
     }
     if (objects.isEmpty) return;
 
@@ -354,46 +708,6 @@ class TrunkPainter3D extends CustomPainter {
     for (final idx in order) {
       _drawObject(canvas, size, objects[idx], camPos);
     }
-  }
-
-  /// 개구부 프레임(D필러 트림·헤더)을 고정물 3개로. AABB 는 정렬용이며
-  /// 실제 면은 [frameFaces] 의 사다리꼴이다.
-  List<_SceneObject> _frameObjects() {
-    final ap = space.aperture;
-    if (ap == null) return const [];
-    final zf = space.d - ap.frameDepth;
-    final ceil = space.interiorCeilingAt(zf);
-    final top = math.min(ap.height, ceil);
-    final xl = space.xMinAt(zf - 1e-6, 0), xr = space.xMaxAt(zf - 1e-6, 0);
-    final al0 = (space.w - ap.widthAt(0)) / 2;
-    final faces = frameFaces(space).map((f) => f.face).toList();
-    // 왼쪽 기둥 / 오른쪽 기둥 / 헤더로 면을 나눈다
-    final left = <Face>[], right = <Face>[], header = <Face>[];
-    for (final f in faces) {
-      final c = f.centroid;
-      if (c.y >= top - 1e-6) {
-        header.add(f);
-      } else if (c.x < space.w / 2) {
-        left.add(f);
-      } else {
-        right.add(f);
-      }
-    }
-    final out = <_SceneObject>[];
-    if (left.isNotEmpty && al0 > xl + 1e-6) {
-      out.add(_SceneObject(Aabb(xl, 0, zf, al0, top, space.d), _frameColor, null,
-          faces: left));
-    }
-    if (right.isNotEmpty && space.w - al0 < xr - 1e-6) {
-      out.add(_SceneObject(
-          Aabb(space.w - al0, 0, zf, xr, top, space.d), _frameColor, null,
-          faces: right));
-    }
-    if (header.isNotEmpty && ceil > top + 1e-6) {
-      out.add(_SceneObject(Aabb(xl, top, zf, xr, ceil, space.d), _frameColor, null,
-          faces: header));
-    }
-    return out;
   }
 
   bool _isVisibleInStepView(TrimBox b) {
@@ -410,67 +724,214 @@ class TrunkPainter3D extends CustomPainter {
     return 1.0;
   }
 
+  /// 카메라가 옆으로 돌아가면 그쪽 기둥·차체 윤곽이 짐칸을 가린다 → 단면도처럼 흐리게.
+  double _sideFade(int side, Vec3 camPos) {
+    if (side == 0) return 1.0;
+    // 카메라가 개구부 가장자리를 넘어 옆으로 나간 거리
+    final edge = _apertureInset();
+    final beyond =
+        side < 0 ? edge - camPos.x : camPos.x - (space.w - edge);
+    final t = (beyond / 0.8).clamp(0.0, 1.0);
+    return 1.0 - 0.62 * t;
+  }
+
+  /// 어두운 짐은 밝은 모서리(하이라이트), 밝은 짐은 어두운 모서리
+  Color _edgeColorFor(Color base) => base.computeLuminance() < 0.10
+      ? Color.lerp(base, Colors.white, 0.30)!
+      : Color.lerp(base, Colors.black, 0.55)!;
+
   void _drawObject(Canvas canvas, Size size, _SceneObject obj, Vec3 camPos) {
     final box = obj.box;
-    final isColliding = box != null && collidingBoxIds.contains(box.id);
-    final isSelected = box != null && box.id == selectedBoxId;
+    if (box == null) {
+      var fade = _sideFade(obj.fadeSide, camPos);
+      if (obj.alpha < 1) fade = fade * fade * fade; // 차체 윤곽은 더 빨리 사라진다
+      _drawMesh(canvas, size, obj.mesh, obj.color, camPos,
+          opacity: obj.alpha * fade,
+          colorFaceAlpha: fade,
+          hardEdges: obj.outline,
+          edgeColor: Colors.black.withValues(alpha: 0.38 * fade),
+          silhouette: obj.outline
+              ? Colors.black.withValues(alpha: 0.45 * fade)
+              : null,
+          silhouetteWidth: 1.0);
+      return;
+    }
+
+    final isColliding = collidingBoxIds.contains(box.id);
+    final isSelected = box.id == selectedBoxId;
     final opacity = _opacityFor(box);
 
     var base = obj.color;
     if (isColliding) base = Color.lerp(base, _danger, 0.45)!;
+    final edgeColor = _edgeColorFor(base).withValues(alpha: 0.9 * opacity);
 
-    if (box != null) _drawContactShadow(canvas, size, obj.aabb, opacity);
+    _drawContactShadow(canvas, size, obj.aabb, opacity);
+    _drawMesh(canvas, size, obj.mesh, base, camPos,
+        opacity: opacity,
+        edgeColor: edgeColor,
+        silhouette: isSelected ? _accent.withValues(alpha: opacity) : edgeColor,
+        silhouetteWidth: isSelected ? 2.5 : 1.1);
 
-    final faces =
-        (obj.faces ?? aabbFaces(obj.aabb)).where((f) => f.facesCamera(camPos));
-    Path? largestPath;
+    // 실제 판정 경계(AABB). 충돌 중이면 빨간 와이어로 물리 경계를 보여준다.
+    final visible = [
+      for (final f in aabbFaces(obj.aabb))
+        if (f.facesCamera(camPos)) f
+    ];
+    List<Offset>? largest;
     var largestArea = 0.0;
-    final edgePaint = Paint()
+    final wire = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0
-      ..color = Color.lerp(base, Colors.black, 0.55)!
-          .withValues(alpha: 0.9 * opacity);
-
-    for (final f in faces) {
+      ..strokeWidth = 1.8
+      ..color = _danger.withValues(alpha: opacity);
+    for (final f in visible) {
       final pts = _projectPoints(f.pts, size);
       if (pts == null) continue;
-      final path = _pathFrom(pts);
-      final color = shadeColor(base, f.normal).withValues(alpha: opacity);
-      canvas.drawPath(path, Paint()..color = color);
-      if (obj.isFixture) {
-        canvas.drawPath(
-          path,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.0
-            ..color = Colors.black.withValues(alpha: 0.35),
-        );
-      } else {
-        canvas.drawPath(path, edgePaint);
-      }
+      if (isColliding) canvas.drawPath(_pathFrom(pts), wire);
       final area = _polygonArea(pts);
       if (area > largestArea) {
         largestArea = area;
-        largestPath = path;
+        largest = pts;
       }
     }
 
-    if (box == null) return;
+    if (showLabels && largest != null && largestArea > 700) {
+      _drawLabel(canvas, box, largest, opacity);
+    }
+  }
 
-    if (isSelected || isColliding) {
-      final outline = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = isSelected ? 2.5 : 2.0
-        ..color = (isSelected ? _accent : _danger).withValues(alpha: opacity);
-      for (final f in faces) {
-        final pts = _projectPoints(f.pts, size);
-        if (pts == null) continue;
-        canvas.drawPath(_pathFrom(pts), outline);
+  /// 메시 하나를 그린다: 법선 컬링 → 면 채우기 → 모서리/장식선 → 실루엣.
+  /// 메시가 볼록이라 보이는 면끼리는 화면에서 겹치지 않는다 (면 정렬 불필요).
+  void _drawMesh(
+    Canvas canvas,
+    Size size,
+    Mesh mesh,
+    Color base,
+    Vec3 camPos, {
+    double opacity = 1.0,
+    double colorFaceAlpha = 1.0,
+    bool hardEdges = true,
+    Color? edgeColor,
+    Color? silhouette,
+    double silhouetteWidth = 1.0,
+  }) {
+    final verts = mesh.verts;
+    final proj = List<Offset?>.filled(verts.length, null);
+    for (var i = 0; i < verts.length; i++) {
+      proj[i] = camera.project(verts[i], size)?.screen;
+    }
+
+    final fill = Paint();
+    final stroke = Paint()..style = PaintingStyle.stroke;
+    final front = List<bool>.filled(mesh.faces.length, false);
+    final drawn = <int>[];
+    final paths = <Path>[];
+    final shades = <Color>[];
+
+    // 1) 면 채우기 (모서리선이 이웃 면에 덮이지 않게 선은 나중에 한꺼번에)
+    for (var fi = 0; fi < mesh.faces.length; fi++) {
+      final f = mesh.faces[fi];
+      if (f.normal.dot(camPos - verts[f.idx[0]]) <= 0) continue;
+      front[fi] = true;
+
+      final path = Path();
+      var ok = true;
+      for (var k = 0; k < f.idx.length; k++) {
+        final p = proj[f.idx[k]];
+        if (p == null) {
+          ok = false;
+          break;
+        }
+        if (k == 0) {
+          path.moveTo(p.dx, p.dy);
+        } else {
+          path.lineTo(p.dx, p.dy);
+        }
+      }
+      if (!ok) continue;
+      path.close();
+
+      var c = f.color ?? base;
+      if (f.tint > 0) {
+        c = Color.lerp(c, Colors.white, f.tint)!;
+      } else if (f.tint < 0) {
+        c = Color.lerp(c, Colors.black, -f.tint)!;
+      }
+      final alpha = f.color != null ? f.color!.a * colorFaceAlpha : opacity;
+      final shaded = shadeColor(c, f.normal).withValues(alpha: alpha);
+      canvas.drawPath(path, fill..color = shaded);
+      if (alpha >= 0.99) {
+        // 이어지는 면 사이 안티앨리어싱 틈 메우기
+        canvas.drawPath(
+            path,
+            stroke
+              ..strokeWidth = 1.0
+              ..color = shaded);
+      }
+      drawn.add(fi);
+      paths.add(path);
+      shades.add(shaded);
+    }
+
+    // 2) 모서리선·장식선
+    final lineAlpha = math.sqrt(opacity.clamp(0.0, 1.0));
+    for (var n = 0; n < drawn.length; n++) {
+      final f = mesh.faces[drawn[n]];
+      if (hardEdges && !f.smooth && edgeColor != null) {
+        canvas.drawPath(
+            paths[n],
+            stroke
+              ..strokeWidth = 1.0
+              ..color = edgeColor);
+      }
+      for (final line in f.lines) {
+        final lp = _projectPoints(line.pts, size);
+        if (lp == null) continue;
+        final lc = line.tone < 0
+            ? Color.lerp(shades[n], Colors.black, -line.tone)!
+            : Color.lerp(shades[n], Colors.white, line.tone)!;
+        stroke
+          ..strokeWidth = line.width
+          ..color = lc.withValues(alpha: lineAlpha);
+        final lpath = Path()..moveTo(lp[0].dx, lp[0].dy);
+        for (var k = 1; k < lp.length; k++) {
+          lpath.lineTo(lp[k].dx, lp[k].dy);
+        }
+        if (line.closed) lpath.close();
+        canvas.drawPath(lpath, stroke);
       }
     }
 
-    if (showLabels && largestPath != null && largestArea > 700) {
-      _drawLabel(canvas, box, largestPath, largestArea, opacity);
+    if (silhouette == null || !mesh.closed) return;
+    // 실루엣: 보이는 면과 안 보이는 면이 공유하는 모서리
+    final nv = verts.length;
+    final count = <int, int>{};
+    for (var fi = 0; fi < mesh.faces.length; fi++) {
+      if (!front[fi]) continue;
+      final idx = mesh.faces[fi].idx;
+      for (var k = 0; k < idx.length; k++) {
+        final a = idx[k], b = idx[(k + 1) % idx.length];
+        final key = a < b ? a * nv + b : b * nv + a;
+        count[key] = (count[key] ?? 0) + 1;
+      }
+    }
+    final sil = Path();
+    var any = false;
+    count.forEach((key, n) {
+      if (n != 1) return;
+      final pa = proj[key ~/ nv], pb = proj[key % nv];
+      if (pa == null || pb == null) return;
+      sil
+        ..moveTo(pa.dx, pa.dy)
+        ..lineTo(pb.dx, pb.dy);
+      any = true;
+    });
+    if (any) {
+      canvas.drawPath(
+          sil,
+          stroke
+            ..strokeWidth = silhouetteWidth
+            ..strokeCap = StrokeCap.round
+            ..color = silhouette);
     }
   }
 
@@ -493,44 +954,59 @@ class TrunkPainter3D extends CustomPainter {
     );
   }
 
-  void _drawLabel(Canvas canvas, TrimBox box, Path facePath, double area,
-      double opacity) {
-    final bounds = facePath.getBounds();
-    final maxW = math.max(40.0, math.min(bounds.width - 8, 160.0));
-    final tp = TextPainter(
-      text: TextSpan(
-        text: box.isSquashed
-            ? '${box.label} ↓${(box.squashAmount * 100).round()}%'
-            : box.label,
-        style: TextStyle(
-          color: Colors.white.withValues(alpha: opacity),
-          fontSize: 11,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-      maxLines: 1,
-      ellipsis: '…',
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: maxW);
-    if (tp.width > bounds.width + 4) return;
-
-    final center = bounds.center;
-    final pill = Rect.fromCenter(
-      center: center,
-      width: tp.width + 12,
-      height: tp.height + 6,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(pill, const Radius.circular(6)),
-      Paint()..color = Colors.black.withValues(alpha: 0.55 * opacity),
-    );
-    tp.paint(canvas, Offset(center.dx - tp.width / 2, center.dy - tp.height / 2));
+  /// 가장 크게 보이는 AABB 면 가운데에 [순서 배지][라벨]. 라벨이 안 들어가면 배지만.
+  void _drawLabel(
+      Canvas canvas, TrimBox box, List<Offset> facePts, double opacity) {
+    var minX = double.infinity, maxX = -double.infinity;
+    var cx = 0.0, cy = 0.0;
+    for (final p in facePts) {
+      minX = math.min(minX, p.dx);
+      maxX = math.max(maxX, p.dx);
+      cx += p.dx;
+      cy += p.dy;
+    }
+    cx /= facePts.length;
+    cy /= facePts.length;
+    final faceW = maxX - minX;
 
     final order = box.loadOrder;
+    const badgeR = 10.0;
+    final badgeW = order != null ? badgeR * 2 + 4 : 0.0;
+
+    TextPainter? tp;
+    final room = math.min(faceW - 18 - badgeW, 160.0);
+    if (room >= 30) {
+      tp = TextPainter(
+        text: TextSpan(
+          text: box.isSquashed
+              ? '${box.label} ↓${(box.squashAmount * 100).round()}%'
+              : box.label,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: opacity),
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        maxLines: 1,
+        ellipsis: '…',
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: room);
+    }
+
+    final pillW = tp == null ? 0.0 : tp.width + 12;
+    final total = badgeW + pillW;
+    if (total <= 0) return;
+    var left = cx - total / 2;
+    if (total <= faceW - 4) {
+      left = left.clamp(minX + 2, maxX - total - 2).toDouble();
+    }
+
     if (order != null) {
-      final c = Offset(bounds.left + 12, bounds.top + 12);
+      final c = Offset(left + badgeR, cy);
       canvas.drawCircle(
-          c, 10, Paint()..color = _accent.withValues(alpha: opacity));
+          c, badgeR + 1, Paint()..color = Colors.black.withValues(alpha: 0.45 * opacity));
+      canvas.drawCircle(
+          c, badgeR, Paint()..color = _accent.withValues(alpha: opacity));
       final np = TextPainter(
         text: TextSpan(
           text: '$order',
@@ -543,6 +1019,16 @@ class TrunkPainter3D extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout();
       np.paint(canvas, Offset(c.dx - np.width / 2, c.dy - np.height / 2));
+      left += badgeW;
+    }
+
+    if (tp != null) {
+      final pill = Rect.fromLTWH(left, cy - tp.height / 2 - 3, pillW, tp.height + 6);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(pill, const Radius.circular(6)),
+        Paint()..color = Colors.black.withValues(alpha: 0.6 * opacity),
+      );
+      tp.paint(canvas, Offset(left + 6, cy - tp.height / 2));
     }
   }
 
@@ -568,7 +1054,9 @@ class TrunkPainter3D extends CustomPainter {
         ),
       ),
       textDirection: TextDirection.ltr,
-    )..layout();
+      maxLines: 2,
+      ellipsis: '…',
+    )..layout(maxWidth: math.max(120.0, size.width - 24)); // 폰 폭에서는 두 줄로
     var y = size.height - tp.height - 10;
     tp.paint(canvas, Offset(12, y));
 

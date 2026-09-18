@@ -4,6 +4,7 @@ import '../models/trim_box.dart';
 import '../models/trunk_space.dart';
 import '../models/packing_advisor.dart';
 import '../utils/collision.dart';
+import '../utils/load_stats.dart';
 
 /// 박스 리스트 패널 — 각 박스 정보 + 회전/삭제 버튼
 class BoxListPanel extends StatelessWidget {
@@ -22,6 +23,11 @@ class BoxListPanel extends StatelessWidget {
   final VoidCallback? onQuickCheck;
   final VoidCallback? onStepView;
   final VoidCallback? onShareCard;
+
+  /// 실행 취소 / 다시 실행. 둘 다 null 이면 버튼을 숨기고, 하나만 null 이면 그쪽만 비활성.
+  /// (터치 기기에는 Ctrl+Z 가 없으므로 버튼이 유일한 되돌리기 수단이다.)
+  final VoidCallback? onUndo;
+  final VoidCallback? onRedo;
   final ScrollController? scrollController;
   final bool showDragHandle;
 
@@ -42,6 +48,8 @@ class BoxListPanel extends StatelessWidget {
     this.onQuickCheck,
     this.onStepView,
     this.onShareCard,
+    this.onUndo,
+    this.onRedo,
     this.scrollController,
     this.showDragHandle = false,
   });
@@ -156,6 +164,11 @@ class BoxListPanel extends StatelessWidget {
             _actionButton(Icons.auto_fix_high, '자동 배치', onAutoLayout!),
           if (onShareCard != null)
             _actionButton(Icons.share, '공유 카드', onShareCard!),
+          // 맨 끝에 붙인다: 기존 버튼 위치가 바뀌지 않는다
+          if (onUndo != null || onRedo != null) ...[
+            _actionButton(Icons.undo, '실행 취소', onUndo),
+            _actionButton(Icons.redo, '다시 실행', onRedo),
+          ],
         ],
       ),
     );
@@ -279,11 +292,13 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
-  Widget _actionButton(IconData icon, String tooltip, VoidCallback onTap) {
+  Widget _actionButton(IconData icon, String tooltip, VoidCallback? onTap) {
     return IconButton(
       tooltip: tooltip,
       onPressed: onTap,
-      icon: Icon(icon, color: Colors.grey, size: 22),
+      icon: Icon(icon,
+          color: onTap == null ? const Color(0xFF555555) : Colors.grey,
+          size: 22),
       style: IconButton.styleFrom(
         backgroundColor: const Color(0xFF333333),
         padding: const EdgeInsets.all(10),
@@ -424,35 +439,14 @@ class BoxListPanel extends StatelessWidget {
   }
 
   Widget _statsBar(BuildContext context) {
-    // 면적 점유율
-    final boxArea = boxes.fold<double>(
-        0.0, (sum, b) => sum + b.effectiveW * b.effectiveD);
-    final effectiveArea = space.w * space.d -
-        (space.leftWheelhouse.w * space.leftWheelhouse.d) -
-        (space.rightWheelhouse.w * space.rightWheelhouse.d);
-    final areaRatio = effectiveArea > 0
-        ? (boxArea / effectiveArea).clamp(0.0, 1.0)
-        : 0.0;
+    // 트렁크 밖에 세워 둔(못 넣은) 짐은 통계에서 뺀다 — 오버레이·판정과 같은 기준
+    final stats = LoadStats.of(boxes, space);
+    final areaRatio = stats.areaRatio;
     final areaPct = (areaRatio * 100).round();
-
-    // 부피 점유율
-    final totalBoxVol = boxes.fold<double>(
-        0.0, (sum, b) => sum + b.effectiveW * b.effectiveD * b.h);
-    // 화면 오버레이·자동배치와 같은 분모 (천장 드롭·테이퍼·휠하우스 반영)
-    final totalSpaceVol = space.usableVolume;
-    final volRatio = totalSpaceVol > 0
-        ? (totalBoxVol / totalSpaceVol).clamp(0.0, 1.0)
-        : 0.0;
+    final volRatio = (stats.volumePercent / 100).clamp(0.0, 1.0);
     final volPct = (volRatio * 100).round();
-    final totalLiters = (totalBoxVol * 1000).round();
-
-    // 최대 스택 높이 및 남은 높이
-    double maxStackTop = 0;
-    for (final b in boxes) {
-      final top = b.y + b.h;
-      if (top > maxStackTop) maxStackTop = top;
-    }
-    final remainH = ((space.h - maxStackTop) * 100).round();
+    final totalLiters = stats.usedLiters;
+    final remainH = stats.remainingHeightCm;
 
     // 배치 불가 사유 (천장·테일게이트·개구부·경계·겹침) — CollisionDetector 가 단일 진실
     final detector = CollisionDetector(space);
@@ -506,7 +500,8 @@ class BoxListPanel extends StatelessWidget {
     if (warnings.isEmpty && advice.isNotEmpty) {
       final more = advice.length > 1 ? ' (+${advice.length - 1})' : '';
       return InkWell(
-        onTap: () => _showWarningsDialog(context, advice, title: '적재 조언'),
+        onTap: () => _showWarningsDialog(context, advice,
+            title: '적재 조언', isAdvice: true),
         child: Row(
           children: [
             const Icon(Icons.lightbulb_outline,
@@ -561,7 +556,7 @@ class BoxListPanel extends StatelessWidget {
   }
 
   void _showWarningsDialog(BuildContext context, List<String> warnings,
-      {String title = '배치 문제'}) {
+      {String title = '배치 문제', bool isAdvice = false}) {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -579,8 +574,14 @@ class BoxListPanel extends StatelessWidget {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.warning_amber_rounded,
-                          color: Color(0xFFFF4D4D), size: 16),
+                      Icon(
+                          isAdvice
+                              ? Icons.lightbulb_outline
+                              : Icons.warning_amber_rounded,
+                          color: isAdvice
+                              ? const Color(0xFFFFC46B)
+                              : const Color(0xFFFF4D4D),
+                          size: 16),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(w,
