@@ -77,10 +77,10 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 ```bash
 flutter pub get
 flutter run -d chrome        # 개발 실행
-flutter test                 # 단위/통합 테스트 (194개)
+flutter test                 # 단위·위젯·검증 테스트 (680여 개, 약 3분)
 flutter analyze
 flutter build web            # 웹 빌드 → build/web
-npx playwright test          # 스모크 E2E 4개 (build/web 을 서빙, 스크린샷은 e2e/screenshots/)
+npx playwright test          # 브라우저 E2E 36개, 약 12분 (build/web 을 서빙, 스크린샷은 e2e/screenshots/). 빠른 확인은 npx playwright test e2e/smoke.spec.ts
 flutter build apk --debug    # Android (JDK 17 필요: flutter config --jdk-dir <JDK17>)
 ```
 
@@ -89,7 +89,7 @@ WSL 에서 작업할 때는 Windows Flutter 를 `cmd.exe /c "flutter ..."` 로 �
 ## Conventions
 - 새 규칙을 추가할 때 화면·엔진·테스트에 각각 복사하지 말 것. `CollisionDetector` / `SupportRule` 에만 넣는다.
 - 자동배치 결과는 반드시 물리 검증(충돌 0, 부양 0)을 통과해야 한다. `test/models/auto_layout_test.dart` 의 `expectPhysicallyValid` 를 재사용한다.
-- 웹 E2E 는 고정 뷰포트 좌표 클릭이다. 레이아웃을 바꾸면 `e2e/smoke.spec.ts` 좌표를 갱신한다. `SemanticsBinding.ensureSemantics()` 를 웹에서 켜면 포인터 입력이 먹지 않으므로 쓰지 않는다.
+- 웹 E2E 는 고정 뷰포트 좌표 클릭 + 스크린샷 픽셀 단언이다(`e2e/helpers.ts`: 스낵바·상태 알약·패널 상태 행의 색, 영역 diff, 콘솔 에러 시 실패). 레이아웃을 바꾸면 `e2e/helpers.ts` 와 `e2e/smoke.spec.ts` 의 좌표를 갱신한다. 데스크톱 좌표가 여전히 맞는지는 `test/widgets/simulator_smoke_coords_test.dart` 가 먼저 알려 준다. `SemanticsBinding.ensureSemantics()` 를 웹에서 켜면 포인터 입력이 먹지 않으므로 쓰지 않는다.
 - 커밋 전 `flutter test` 와 `flutter analyze`. 한국어 커밋 메시지.
 
 ## Status (2026-09-17)

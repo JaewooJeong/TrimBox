@@ -18,7 +18,16 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        browserName: 'chromium',
+        // robustness.spec.ts 의 힙 측정(performance.memory)이 양자화되지 않도록
+        launchOptions: { args: ['--enable-precise-memory-info'] },
+      },
+    },
+  ],
   webServer: {
     command: 'npx http-server build/web -p 8080 -c-1 --silent',
     port: 8080,
