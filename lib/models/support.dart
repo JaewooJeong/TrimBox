@@ -90,15 +90,41 @@ class SupportRule {
     // 바닥은 footprint 의 절반 이상이 실제 바닥(z ≥ floorStartZ) 위에 있을 때만 유효.
     // 2열 슬라이드 빈틈 위에 통째로 놓인 작은 짐은 유효한 층이 없을 수 있다 (빈 목록).
     final levels = <double>[
-      if (floorSupportRatio(box, space) >= minRatio - 1e-9) 0.0,
+      if (floorSupportRatio(box, space) >= minRatio - 1e-9 &&
+          !intersectsWheelhouseAt(box, 0.0, space))
+        0.0,
     ];
     for (final e in groups.entries) {
-      if (e.key > heightTol && e.value >= area * minRatio - 1e-9) {
+      if (e.key > heightTol &&
+          e.value >= area * minRatio - 1e-9 &&
+          !intersectsWheelhouseAt(box, e.key, space)) {
         levels.add(e.key);
       }
     }
     levels.sort();
     return levels;
+  }
+
+  /// 박스를 높이 [y] 에 두면 휠하우스 덩어리 안으로 들어가는가. 바닥면의 절반이 바닥 위여도
+  /// 나머지가 휠하우스에 걸치면 그 층은 유효하지 않다 — 삭제·드래그 뒤 중력 정착이 짐을
+  /// 휠하우스 속으로 떨어뜨리지 않게 (CollisionDetector 의 휠하우스 판정과 같은 부피).
+  static bool intersectsWheelhouseAt(TrimBox box, double y, TrunkSpace space) {
+    const t = 0.0005;
+    final top = y + box.effectiveH;
+    bool hit(double x1, double z1, double x2, double z2, double h) {
+      if (h <= 0 || x2 - x1 <= 0 || z2 - z1 <= 0) return false;
+      return box.x < x2 - t &&
+          box.x + box.effectiveW > x1 + t &&
+          box.z < z2 - t &&
+          box.z + box.effectiveD > z1 + t &&
+          y < h - t &&
+          top > t;
+    }
+
+    final lw = space.leftWheelhouse;
+    final rw = space.rightWheelhouse;
+    return hit(0, lw.zStart, lw.w, lw.zEnd, lw.h) ||
+        hit(space.w - rw.w, rw.zStart, space.w, rw.zEnd, rw.h);
   }
 
   /// 박스 바닥면 중 실제 바닥(2열 슬라이드 빈틈 뒤쪽) 위에 있는 비율 (0..1)
@@ -110,13 +136,45 @@ class SupportRule {
     return (onFloor / d).clamp(0.0, 1.0);
   }
 
+  /// 받쳐 줄 층이 없을 때 짐을 두는 높이: 휠하우스 덩어리를 뚫지 않는 가장 낮은 높이
+  /// (바닥, 아니면 휠하우스 윗면). 미지지 상태이지만 충돌은 아니다.
+  static double restLevelWithoutSupport(TrimBox box, TrunkSpace space) {
+    final candidates = <double>[
+      0.0,
+      if (space.leftWheelhouse.h > 0) space.leftWheelhouse.h,
+      if (space.rightWheelhouse.h > 0) space.rightWheelhouse.h,
+    ]..sort();
+    for (final y in candidates) {
+      if (!intersectsWheelhouseAt(box, y, space)) return y;
+    }
+    return candidates.last;
+  }
+
+  /// 발밑(footprint 가 겹치고 윗면이 현재 높이 이하인 짐·휠하우스) 중 가장 높은 윗면.
+  /// 아무것도 없으면 휠하우스를 뚫지 않는 바닥 높이.
+  static double restOnWhateverIsBelow(
+      TrimBox box, Iterable<TrimBox> all, TrunkSpace space) {
+    const t = 0.0005;
+    var y = restLevelWithoutSupport(box, space);
+    for (final o in all) {
+      if (o.id == box.id) continue;
+      if (o.top > box.y + 1e-9) continue;
+      final overlap = box.x < o.x + o.effectiveW - t &&
+          box.x + box.effectiveW > o.x + t &&
+          box.z < o.z + o.effectiveD - t &&
+          box.z + box.effectiveD > o.z + t;
+      if (overlap) y = math.max(y, o.top);
+    }
+    return y;
+  }
+
   /// 현재 box.y 에 가장 가까운 유효 층 (드래그 중 점프 방지용)
   static double nearestLevel(
     TrimBox box,
     Iterable<TrimBox> others,
     TrunkSpace space,
   ) {
-    double best = 0;
+    double best = restLevelWithoutSupport(box, space);
     double bestDist = double.infinity;
     for (final level in validLevels(box, others, space)) {
       final dist = (level - box.y).abs();
@@ -136,7 +194,7 @@ class SupportRule {
     TrunkSpace space,
   ) {
     final levels = validLevels(box, others, space);
-    return levels.isEmpty ? 0.0 : levels.last;
+    return levels.isEmpty ? restLevelWithoutSupport(box, space) : levels.last;
   }
 
   /// 높이 [y]에서 박스 바닥면이 지지되는 면적 비율 (0..1).
@@ -218,8 +276,9 @@ class SupportRule {
         // 가장 높은 유효 층부터, 다른 짐과 겹치지 않는 첫 층. 지지 면적만 보면
         // 옆의 더 높은 짐을 뚫고 내려가는 층을 고를 수 있다.
         var levels = validLevels(box, below, space).reversed.toList();
-        // 받쳐 줄 곳이 없으면(2열 빈틈 위) 바닥 높이까지는 내려간다 — 미지지로 남는다
-        if (levels.isEmpty) levels = [0.0];
+        // 받쳐 줄 곳이 없으면(2열 빈틈 위, 휠하우스에 반만 걸침) 휠하우스를 뚫지 않는 가장
+        // 낮은 높이까지 내려간다 — 미지지로 남지만 충돌은 만들지 않는다
+        if (levels.isEmpty) levels = [restLevelWithoutSupport(box, space)];
         double? y;
         for (final level in levels) {
           if (!_overlapsAnyAt(box, level, boxes)) {
@@ -227,8 +286,14 @@ class SupportRule {
             break;
           }
         }
-        // 겹치지 않는 층이 없으면 그대로 둔다 (미지지 상태는 isSupported 가 알린다)
-        if (y == null) continue;
+        // 겹치지 않는 유효 층이 없다(내려앉을 자리를 다른 짐이 먼저 차지함): 발밑에 있는 가장
+        // 높은 것 위에 얹는다 — 지지 면적은 모자라도(미지지, isSupported 가 알린다) 허공에
+        // 뜨지는 않는다. 올라가는 일은 없다.
+        if (y == null) {
+          final rest = restOnWhateverIsBelow(box, boxes, space);
+          if (rest > box.y + 1e-9) continue; // 얹을 곳이 지금보다 높으면 그대로 둔다
+          y = rest;
+        }
         if ((box.y - y).abs() > 1e-6) {
           box.y = y;
           changed = true;

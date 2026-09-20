@@ -511,7 +511,11 @@ void main() {
       await tester.tap(find.text('들어갈까?'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.textContaining('적재 가능'), findsWidgets);
+      // 지금 배치에 문제가 있으면 "지금 배치: 문제 N개" + 다시 배치 제안, 아니면 적재 판정
+      expect(
+          find.textContaining('적재 가능').evaluate().isNotEmpty ||
+              find.textContaining('지금 배치').evaluate().isNotEmpty,
+          isTrue);
       await flushAutosave(tester);
     });
 

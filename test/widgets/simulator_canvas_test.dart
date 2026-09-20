@@ -116,6 +116,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(b.loadOrder, isNull);
       expect(find.text('적재 순서 가이드'), findsNothing);
+      // 처음 손으로 옮기면 "순서를 지웠어요" 안내가 한 번 뜬다
+      expect(snackTexts(tester).join(), contains('적재 순서를 지웠어요'));
+      await flushSnackBars(tester);
       final pos = (b.x, b.z);
 
       await addCustomBox(tester, label: '둘째 박스', w: 30, d: 30, h: 30);

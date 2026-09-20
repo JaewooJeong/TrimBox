@@ -16,7 +16,7 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 - Flutter (package `trimbox`), 웹·Android 공용
 - 3D 렌더링은 `CustomPainter` 위에 직접 만든 코어 (`lib/render3d/`): 원근 오빗 카메라, 법선 컬링 + 램버트 음영, 분리 평면 기반 뒤→앞 위상 정렬(painter's algorithm), 레이-AABB 피킹. 외부 3D 엔진 없음.
 - 월드 좌표: x = 폭(0..w, 테일게이트에서 봤을 때 왼쪽→오른쪽), y = 높이(0 = 바닥), z = 깊이(0 = 뒷좌석 등받이, d = 테일게이트 개구부). 카메라 yaw=0 은 테일게이트 뒤.
-- 유효성 판단은 `lib/utils/collision.dart` 의 `CollisionDetector` 하나가 단일 진실이다. 자동배치·화면·테스트가 모두 이것을 쓴다. 사유는 `CollisionKind` (경계·천장·휠하우스·테일게이트·등받이·개구부·겹침), 문장은 `describe()`. 지지/중력 규칙은 `lib/models/support.dart` 의 `SupportRule` 하나.
+- 유효성 판단은 `lib/utils/collision.dart` 의 `CollisionDetector` 하나가 단일 진실이다. 자동배치·화면·테스트가 모두 이것을 쓴다. 사유는 `CollisionKind` (경계·천장·휠하우스·테일게이트·등받이·개구부·겹침), 문장은 `describe()`. 지지/중력 규칙은 `lib/models/support.dart` 의 `SupportRule` 하나 — 유효한 층은 휠하우스 부피를 뚫지 않는 층뿐이고, 받칠 곳이 없으면 발밑 가장 높은 것 위에 얹는다(미지지, 충돌 아님).
 - 트렁크 형상은 `TrunkSpace` 의 함수로만 읽는다: `xMinAt/xMaxAt(z, y)` 좌우 경계, `interiorCeilingAt(z)` 실내 천장, `rearDepthAt(y)` 닫힌 테일게이트 한계(문이 닫히는 최대 z), `frontDepthAt(y)` 등받이 한계(최소 z), `aperture` 개구부. 렌더러·충돌·패커·부피가 전부 같은 함수를 쓴다.
 
 ### Key Files
@@ -27,7 +27,7 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 | `lib/render3d/geometry.dart` | `Aabb`, `Face`, 트렁크 껍데기 면 생성, AABB 면, 램버트 음영 |
 | `lib/render3d/depth_sort.dart` | 뒤→앞 위상 정렬 (모든 분리축이 일치할 때만 순서 제약) |
 | `lib/render3d/picking.dart` | 레이-AABB, 레이-수평면 교차 |
-| `lib/render3d/trunk_painter_3d.dart` | 페인터: 껍데기 Picture 캐시, 바닥 매트·격자, 고정물·짐 메시, 그림자/라벨/순서 배지, 테일게이트 경고 |
+| `lib/render3d/trunk_painter_3d.dart` | 페인터: 껍데기 Picture 캐시, 바닥 매트·격자, 고정물·짐 메시, 그림자/라벨/순서 배지(`LabelPolicy` all·compact), 캡션(`CaptionStyle`), 테일게이트 경고 |
 | `lib/render3d/mesh.dart` | 공유 정점 메시·빌더·장식선 |
 | `lib/render3d/fixtures.dart` | 고정물 메시: 휠하우스 아치, 개구부 프레임(D필러·헤더·씰), 범퍼·테일램프, 2열 등받이·헤드레스트 |
 | `lib/render3d/gear_shapes.dart` | 짐 모양 메시 (`GearShape`: box·cylinder·softBag·cooler·crate·flat·hardCase). 항상 박스 AABB 안에 그린다 |
@@ -40,14 +40,19 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 | `lib/utils/collision.dart` | AABB 충돌: 박스-박스(0.5mm 허용), 경계·테이퍼·C필러·천장, 휠하우스 |
 | `lib/utils/scene_storage.dart` | shared_preferences 저장소: 이름 저장, 자동 저장, 온보딩 플래그, `ensureReadable` (깨진 값 복구 뒤 읽기) |
 | `lib/utils/prefs_repair.dart` | 웹 localStorage 에 JSON 이 아닌 TrimBox 값이 있으면 시작 시 지운다 (shared_preferences_web 은 그런 값을 조용히 건너뛰어 쓰레기가 남음). 조건부 import, 비웹은 no-op |
-| `lib/widgets/add_box_dialog.dart` | 장비 선택 다이얼로그 (프리셋 198개 — 2026-09-17 교차검증 `backlog/gear-db-audit.md`, 번들 3종, 검색, 수량) |
+| `lib/widgets/add_box_dialog.dart` | 장비 선택 (프리셋 198개 — 2026-09-17 교차검증 `backlog/gear-db-audit.md`, 번들 3종, 검색, 수량). `showGearPicker(context, fullScreen:)`: 데스크톱은 다이얼로그, 폰은 전체 화면 페이지(고정 머리말, 하단 고정 '추가', 키보드가 목록만 줄임) |
 | `lib/widgets/box_list_panel.dart` | 박스 목록·판정 버튼·통계 패널 (모바일 시트 겸용, 폰 가로는 `compact` 압축 배치) |
 
-### Screen Layout
-- 폭 > 900: 캔버스 3 : 패널 1 옆 패널. 폰 세로: `DraggableScrollableSheet` (초기 높이 목표 220px = 손잡이+빈 상태 안내+CTA, 본문 높이의 28~50%로 클램프 → 390×844 는 28% 그대로). 폰 가로(가로가 더 길고 높이 < 500): 오른쪽 300px 압축 패널(한 줄 액션바 · 36px 히어로 줄 · 통계 한 줄, 목록 3행 이상).
-- 스텝 뷰 컨트롤은 캔버스 왼쪽 위 고정 폭 316px (라벨 160px 고정이라 ✕ ‹ › 가 단계마다 움직이지 않음). 캔버스 왼쪽 아래는 캡션·테일게이트 상태 알약 자리다. 알약은 걸림(빨강) → 트렁크 밖 미적재 짐(주황 "미적재 N개") → 초록 순.
+### Screen Layout (`_LayoutMode`, 설계는 `backlog/phone-ux-w9.md`)
+- 모드는 `simulator_screen.dart` 의 `_LayoutMode.of(본문 폭, 화면)` 하나로 정한다: desktop(폭 > 900, 옆 320px 패널) · tablet(600~900, 옆 280px) · phoneLandscape(가로가 더 길고 높이 < 500, 옆 300px 압축 패널) · phone(폭 < 600, 아래 시트). desktop·tablet 의 픽셀 배치는 바꾸지 않는다 (웹 E2E 고정 좌표).
+- 폰(세로·가로) 공통: 라벨 `LabelPolicy.compact`(배지는 전부, 이름 알약은 선택·드래그·충돌·걸림 + 큰 면 3개, 겹치면 안 그림), 캡션 `CaptionStyle.compact`(한 줄), 적재율은 한 줄 칩, 짐을 탭하면 캔버스 아래 선택 도구 띠(회전·삭제·선택 해제, 툴팁 '선택한 짐 …'), 장비 선택은 전체 화면 페이지 `showGearPicker(fullScreen: true)`, 판정·자동배치 결과는 `_presentResult` → `showModalBottomSheet` + `resultSheetBody`(✕ 닫기, 전체 폭 버튼: 보조 초록 위·주 파랑 아래, '확인' 텍스트 버튼 없음), 도움말 `?` 는 '조작법'. 캔버스가 160px 보다 낮으면 캡션·알약, 200px 보다 낮으면 칩·도구 띠를 그리지 않는다.
+- 폰 세로 시트: 손잡이 → 히어로 줄(들어갈까? · 자동 배치) → 도구 한 줄(박스 추가 · 순서 가이드 · 실행 취소 · 다시 실행 · ⋯{배치 저장·불러오기·스크린샷·공유 카드}) → 상태 두 줄 → 목록(48px 버튼) → 하단 `viewPadding.bottom` 여백. 빈 상태는 CTA + '저장된 배치 불러오기' 만. 초기 높이 = (220px + 아래 인셋)/본문 (28~50% 클램프, 390×844 는 28%), 짐이 처음 들어오면 45%(`_sheetLoaded`)로 올라간다. 스냅 12/28/45/85%. 캔버스는 `DraggableScrollableController` 를 따라 항상 시트가 덮지 않는 높이만 쓴다(카메라는 `_ensureCamera` 가 다시 맞춤). `snapSizes` 는 같은 리스트 인스턴스를 유지해야 한다 — 빌드마다 새 리스트를 주면 시트가 매 프레임 다시 스냅해 끌 수 없다.
+- 스텝 뷰 컨트롤은 캔버스 왼쪽 위 고정 폭 316px. 상태 알약은 걸림(빨강) → 트렁크 밖 미적재 짐(주황 "미적재 N개") → 초록 순.
 - 온보딩 조작법은 터치 폼팩터(Android/iOS 또는 짧은 변 < 600 또는 터치 입력 있음)면 제스처 안내, 아니면 마우스·단축키 안내. 캔버스 높이 < 450 이면 압축 카드(폭이 되면 두 단).
-- 판정·자동배치·조언 다이얼로그는 `scrollable` + `actionsOverflowButtonSpacing: 8`. 화면에 입력란이 없으므로 `resizeToAvoidBottomInset: false`.
+- 데스크톱 다이얼로그는 `scrollable` + `actionsOverflowButtonSpacing: 8`. 화면에 입력란이 없으므로 `resizeToAvoidBottomInset: false`. 본문은 `SafeArea(top: false)` (폰 세로는 bottom 도 false — 시트가 안쪽 여백으로 처리).
+
+### 판정 규칙 (들어갈까?)
+`_showQuickFitCheck` 는 화면의 **지금 배치**를 판정한다: 트렁크 안 짐에 충돌·테일게이트 위반이 있으면 "지금 배치: 문제 N개" 와 "다시 배치하면 N/M개" + `이 배치 적용`; 문제 없이 다 실렸으면 화면 배치 그대로(`_currentLayoutAsResult`); 못 실은 짐만 있으면 재배치 판정(일부/불가 + 2열 제안). 재시도 횟수는 `_restartsFor(n)` (16개까지 24, 24개까지 12, 그 위 6 — 패커는 UI 스레드 동기 실행). 스낵바는 못 넣은 짐을 두 항목 + "외 N개" 로 줄이고 `자세히` 로 판정 시트를 연다.
 
 ### Vehicle Presets
 1차 메뉴에는 쏘렌토 두 구성 + 커스텀만 노출된다 (`_releasePresets`). 나머지 프리셋(투싼·싼타페·카니발·아이오닉5·아반떼)은 코드와 테스트에 남아 있다.
@@ -84,10 +89,10 @@ TrimBox Simulator는 캠핑용 트렁크 짐 적재 시뮬레이터입니다.
 ```bash
 flutter pub get
 flutter run -d chrome        # 개발 실행
-flutter test                 # 단위·위젯·검증 테스트 (680여 개, 약 3분)
+flutter test                 # 단위·위젯·검증 테스트 (830여 개, 약 2.5분)
 flutter analyze
 flutter build web            # 웹 빌드 → build/web
-npx playwright test          # 브라우저 E2E 32개, 약 12분 (build/web 을 서빙, 스크린샷은 e2e/screenshots/). 빠른 확인은 npx playwright test e2e/smoke.spec.ts
+npx playwright test          # 브라우저 E2E 34개, 약 12분 (build/web 을 서빙, 스크린샷은 e2e/screenshots/). 590초 timeout 안에 끝내려면 스펙 파일을 3배치로. 빠른 확인은 npx playwright test e2e/smoke.spec.ts
 flutter build apk --debug    # Android (JDK 17 필요: flutter config --jdk-dir <JDK17>)
 ```
 
@@ -99,6 +104,6 @@ WSL 에서 작업할 때는 Windows Flutter 를 `cmd.exe /c "flutter ..."` 로 �
 - 웹 E2E 는 고정 뷰포트 좌표 클릭 + 스크린샷 픽셀 단언이다(`e2e/helpers.ts`: 스낵바·상태 알약·패널 상태 행의 색, 영역 diff, 콘솔 에러 시 실패). 레이아웃을 바꾸면 `e2e/helpers.ts`(데스크톱 `D`/`RD`), `e2e/smoke.spec.ts`, `e2e/mobile.spec.ts`(폰 `M`/`RM`, 크기별 `SANITY`) 의 좌표를 갱신한다. 새 좌표는 위젯 테스트에서 `tester.getRect(...)` 를 `debugPrint` 로 찍어 얻는다(`simulator_edit_test.dart` 의 STEP-VIEW-COORDS 처럼; 상태 알약은 페인터가 그리므로 캔버스 아래에서 41~71px 위, x 4~134 영역). 데스크톱 좌표가 여전히 맞는지는 `test/widgets/simulator_smoke_coords_test.dart` 가 먼저 알려 준다. `SemanticsBinding.ensureSemantics()` 를 웹에서 켜면 포인터 입력이 먹지 않으므로 쓰지 않는다.
 - 커밋 전 `flutter test` 와 `flutter analyze`. 한국어 커밋 메시지.
 
-## Status (2026-09-18)
-완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5), 장비 DB 교차검증 + 연질·무게·접근성 규칙 + 2열 슬라이드(W6), 보이는 현실감(고정물·짐 모양 메시) + 실제 적재 사례 검증·모델 보정 + 테스트 대확장(W7), 브라우저 E2E 32개가 찾은 UI 9건 수정 — 스텝 컨트롤 고정, 폰 가로 압축 패널, 작은 폰 시트 높이, 낮은 화면 온보딩, 터치 조작법, 미적재 주황 알약, 차종 메뉴 설명 줄, 빈 배치 저장 차단, 웹 저장소 복구(W8).
-남은 것: 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), Android 실기기 확인, 공유 이미지 정리, 장비 치수 미확인 항목(gear-db-audit 5절).
+## Status (2026-09-20)
+완료: 3D 코어 재작성(W1), 자동배치 재작성(W2), 추가 즉시 자동 배치·자동 저장·모바일 시트·Android 저장소(W3), 문서·스모크 테스트(W4 일부), 쏘렌토 MQ4 실측 교차검증 + 테일게이트 닫힘·개구부·등받이 기울기 모델(W5), 장비 DB 교차검증 + 연질·무게·접근성 규칙 + 2열 슬라이드(W6), 보이는 현실감(고정물·짐 모양 메시) + 실제 적재 사례 검증·모델 보정 + 테스트 대확장(W7), 브라우저 E2E 32개가 찾은 UI 9건 수정 — 스텝 컨트롤 고정, 폰 가로 압축 패널, 작은 폰 시트 높이, 낮은 화면 온보딩, 터치 조작법, 미적재 주황 알약, 차종 메뉴 설명 줄, 빈 배치 저장 차단, 웹 저장소 복구(W8), 폰 UX 라운드 — 시트를 따라가는 캔버스, 압축 라벨, 전체 화면 장비 페이지, 결과 아래 시트, 선택 도구 띠 + 실제 빌드 UX 리뷰 17건 중 16건 수정 (`backlog/phone-ux-w9.md`)(W9).
+남은 것: Android 실기기 확인(APK 는 `flutter build apk --debug`), 사용자 실측으로 프로필 보정(체크리스트는 measurements 문서 5절), 패커 isolate 이관(`phone-ux-w9.md` 6.3), 공유 이미지 정리, 장비 치수 미확인 항목(gear-db-audit 5절).

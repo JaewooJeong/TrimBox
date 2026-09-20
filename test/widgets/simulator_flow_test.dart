@@ -75,7 +75,7 @@ void main() {
     });
 
     const mouseOnly = ['마우스 휠', '우클릭 드래그', 'R', '?'];
-    const touchOnly = ['한 손가락 드래그', '두 손가락', '짐을 끌어서', '목록의 버튼'];
+    const touchOnly = ['한 손가락 드래그', '두 손가락', '짐을 탭', '시트 도구 줄'];
 
     testWidgets('데스크톱(마우스·키보드)에서는 마우스·단축키 조작법을 보여준다', (tester) async {
       await pumpApp(tester, size: kDesktop);
@@ -93,7 +93,7 @@ void main() {
       for (final t in touchOnly) {
         expect(find.text(t), findsOneWidget, reason: t);
       }
-      expect(find.text('회전·삭제·실행 취소'), findsOneWidget);
+      expect(find.text('도구 띠로 회전·삭제'), findsOneWidget);
       expect(find.text('확대·이동'), findsOneWidget);
       for (final t in mouseOnly) {
         expect(find.text(t), findsNothing, reason: t);
@@ -261,14 +261,18 @@ void main() {
       await tester.pumpAndSettle();
       var rows = presetRowLabels(tester);
       expect(rows, isNotEmpty);
-      expect(rows.every((l) => l.contains('헬리녹스')), isTrue, reason: '$rows');
+      expect(rows.every((l) => l.contains('헬리녹스') || l.toLowerCase().contains('helinox')),
+          isTrue, reason: '$rows');
 
       // 캐리어 카테고리 항목도 캠핑 탭에서 검색된다
       await tester.enterText(search, '캐리어');
       await tester.pumpAndSettle();
       rows = presetRowLabels(tester);
       expect(rows, isNotEmpty);
-      expect(rows.every((l) => l.contains('캐리어')), isTrue, reason: '$rows');
+      // "캐리어" 는 카테고리 이름이기도 해서 캐리어 분류 전체(더플백·배낭 포함)가 나온다
+      expect(rows.any((l) => l.contains('캐리어')), isTrue, reason: '$rows');
+      expect(rows.any((l) => l.contains('더플백') || l.contains('배낭')), isTrue,
+          reason: '분류 이름 검색: $rows');
 
       // 검색 결과 하나를 골라 추가
       await tester.enterText(search, '헬리녹스 체어원');
@@ -303,7 +307,7 @@ void main() {
       await tester.pumpAndSettle();
       final field = tester.widget<TextField>(_inDialog(find.byType(TextField)));
       expect(field.controller!.text, isEmpty);
-      expect(presetRowLabels(tester).any((l) => !l.contains('헬리녹스')), isTrue,
+      expect(presetRowLabels(tester).any((l) => !l.contains('헬리녹스') && !l.toLowerCase().contains('helinox')), isTrue,
           reason: '필터가 풀려 다른 장비가 다시 보인다');
       expect(_inDialog(find.text(_family)), findsOneWidget, reason: '세트도 다시 보인다');
     });
@@ -537,7 +541,7 @@ void main() {
           expect(hint.first, contains('16개 모두 들어갑니다'));
           expect(find.text('2열 +${cm}cm 적용'), findsOneWidget);
         } else {
-          expect(find.textContaining('2열 시트를 앞으로 당겨 보세요'), findsOneWidget);
+          expect(find.textContaining('2열을 당겨도 다 들어가지 않습니다'), findsOneWidget);
         }
       }
       await tester.tap(find.text('확인'));
@@ -657,7 +661,7 @@ void main() {
       expect(find.textContaining('너무 큰 박스 — 트렁크보다 큼'), findsOneWidget);
       // 2열을 당겨도 안 들어가므로 제안 버튼은 없다
       expect(find.textContaining('적용'), findsNothing);
-      expect(find.textContaining('더 작은 장비를 선택하거나'), findsOneWidget);
+      expect(find.textContaining('2열을 당겨도 다 들어가지 않습니다'), findsOneWidget);
 
       await tester.tap(find.text('다시 배치'));
       await tester.pumpAndSettle();

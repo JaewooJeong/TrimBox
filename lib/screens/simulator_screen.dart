@@ -47,6 +47,35 @@ class SimulatorScreen extends StatefulWidget {
   State<SimulatorScreen> createState() => _SimulatorScreenState();
 }
 
+/// 화면 모드 — 패널 배치, 라벨·캡션 정책, 결과를 다이얼로그로 낼지 아래 시트로 낼지의 단일 기준.
+/// (`backlog/phone-ux-w9.md` 2절)
+enum _LayoutMode {
+  /// 본문 폭 > 900: 옆 320px 고정 패널
+  desktop,
+
+  /// 600 ≤ 폭 ≤ 900: 옆 280px 고정 패널
+  tablet,
+
+  /// 가로가 더 길고 높이 < 500 (폰 가로): 옆 300px 압축 패널
+  phoneLandscape,
+
+  /// 폭 < 600 (폰 세로): 아래 시트
+  phone;
+
+  static _LayoutMode of(double bodyWidth, Size screen) {
+    if (screen.width > screen.height && screen.height < 500) {
+      return _LayoutMode.phoneLandscape;
+    }
+    if (bodyWidth > 900) return _LayoutMode.desktop;
+    if (bodyWidth >= 600) return _LayoutMode.tablet;
+    return _LayoutMode.phone;
+  }
+
+  /// 폰(세로·가로): 압축 라벨·한 줄 캡션·선택 도구 띠·전체 화면 장비 선택·결과는 아래 시트
+  bool get isPhoneLike =>
+      this == _LayoutMode.phone || this == _LayoutMode.phoneLandscape;
+}
+
 class _SimulatorScreenState extends State<SimulatorScreen>
     with WidgetsBindingObserver {
   late TrunkSpace _space;
@@ -60,6 +89,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   /// 자동배치 무작위 재시도 예산. 웹(JS)은 VM 보다 1.5~2배 느리므로 24회가
   /// 기기와 무관하게 다 돌도록 넉넉히 준다 (결과가 기기 속도에 따라 흔들리지 않게).
   static const Duration _packBudget = Duration(milliseconds: 2500);
+
+  /// 재시도 횟수: 16개(번들)까지는 24 로 판정을 고정하고, 그 위는 줄여 32개도 UI 가 몇 초씩
+  /// 멈추지 않게 한다 (패커는 UI 스레드에서 동기 실행 — isolate 이관은 backlog 참고).
+  static int _restartsFor(int n) => n <= 16 ? 24 : (n <= 24 ? 12 : 6);
 
   /// 쏘렌토 2열 슬라이드 (0 = 최후방, 최대 0.27)
   double _seatSlide = 0.0;
@@ -124,6 +157,27 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   // 터치/마우스 판별
   bool _lastPointerIsTouch = false;
 
+  /// 현재 화면 모드 (build 에서 갱신). 이후에 뜨는 다이얼로그·시트가 이것을 본다.
+  _LayoutMode _layout = _LayoutMode.desktop;
+
+  /// 폰 세로 시트: 현재 높이 비율. 캔버스는 시트가 덮지 않는 부분만 쓴다 (따라 줄어든다).
+  final DraggableScrollableController _sheetCtrl = DraggableScrollableController();
+  double _sheetFraction = 0;
+  static const double _sheetMin = 0.12;
+  static const double _sheetMax = 0.85;
+
+  /// 짐이 있을 때의 시트 높이: 히어로·도구 줄·상태·목록 2~3행이 보이고, 남는 캔버스(약 430px)에
+  /// 트렁크가 꽉 찬다 (초기 28% 에서는 트렁크 위아래가 100px 씩 비어 보인다)
+  static const double _sheetLoaded = 0.45;
+
+  /// 스냅 크기 목록은 같은 인스턴스를 유지한다 — DraggableScrollableSheet 는 목록의
+  /// 동일성(==)만 보고 바뀌었다고 판단해 매 프레임 다시 스냅하므로, 빌드마다 새 목록을
+  /// 주면 시트를 초기 높이 너머로 끌 수 없다.
+  List<double> _snapSizes = const [];
+
+  /// 시트가 만들어질 때의 시작 높이 (붙어 있는 동안은 바꾸지 않는다)
+  double _sheetStart = 0.28;
+
   // Step-by-step loading guide
   bool _stepViewActive = false;
   int _stepViewCurrentStep = 1; // 1-based load order
@@ -143,7 +197,25 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     // 폰트 변경 알림을 받으면 다시 그린다.
     PaintingBinding.instance.systemFonts.addListener(_onSystemFontsChanged);
     WidgetsBinding.instance.addObserver(this);
+    _sheetCtrl.addListener(_onSheetMoved);
     _restoreSession();
+  }
+
+  /// 빈 트렁크에 짐이 처음 들어오면 시트를 "짐 있음" 높이로 올린다 — 판정 버튼·목록이 보이고
+  /// 캔버스는 트렁크가 꽉 차는 크기로 줄어든다. 이미 그보다 높으면 그대로.
+  void _raiseSheetForContent() {
+    if (!_sheetCtrl.isAttached || _boxes.isEmpty) return;
+    if (_sheetCtrl.size >= _sheetLoaded - 0.01) return;
+    _sheetCtrl.animateTo(_sheetLoaded,
+        duration: const Duration(milliseconds: 300), curve: Curves.easeOutCubic);
+  }
+
+  /// 시트가 움직이면 캔버스 높이를 맞춘다 (카메라는 _ensureCamera 가 크기 변화에 다시 맞춘다)
+  void _onSheetMoved() {
+    if (!_sheetCtrl.isAttached) return;
+    final f = _sheetCtrl.size;
+    if ((f - _sheetFraction).abs() < 0.002) return;
+    setState(() => _sheetFraction = f);
   }
 
   @override
@@ -162,6 +234,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     WidgetsBinding.instance.removeObserver(this);
     _flushAutosave();
     _canvasFocusNode.dispose();
+    _sheetCtrl.removeListener(_onSheetMoved);
+    _sheetCtrl.dispose();
     _sceneCache.dispose();
     super.dispose();
   }
@@ -296,6 +370,10 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
   @override
   Widget build(BuildContext context) {
+    // 앱바(도움말 툴팁)도 모드를 보므로 본문 LayoutBuilder 보다 먼저 정한다. 이 화면은
+    // 옆 내비게이션이 없어 본문 폭 = 화면 폭이다 (LayoutBuilder 가 같은 값으로 다시 확인).
+    final screenNow = MediaQuery.sizeOf(context);
+    _layout = _LayoutMode.of(screenNow.width, screenNow);
     return Scaffold(
       backgroundColor: const Color(0xFF1C1C1C),
       // 이 화면에는 입력란이 없다 (입력은 전부 다이얼로그 안). 키보드가 올라올 때 본문을
@@ -309,8 +387,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         actions: [
           IconButton(
             icon: const Icon(Icons.help_outline, size: 22),
-            tooltip: '키보드 단축키 (?)',
-            onPressed: _showKeyboardShortcuts,
+            // 폰에서는 키보드가 없다 → 터치 조작법
+            tooltip: _layout.isPhoneLike ? '조작법' : '키보드 단축키 (?)',
+            onPressed: _showHelp,
           ),
         ],
       ),
@@ -318,50 +397,91 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         builder: (context, constraints) {
           final w = constraints.maxWidth;
           final screen = MediaQuery.sizeOf(context);
-          // 폰 가로처럼 낮고 넓은 화면: 시트 대신 옆 패널, 패널은 압축 배치
-          // (일반 패널은 액션바·히어로 버튼·통계가 높이를 다 써서 목록이 0행이 된다)
-          final shortWide = screen.width > screen.height && screen.height < 500;
-          if (shortWide) {
-            return Row(
-              children: [
-                Expanded(child: _buildCanvas()),
-                SizedBox(width: 300, child: _buildPanel(compact: true)),
-              ],
-            );
-          } else if (w > 900) {
-            return Row(
-              children: [
-                Expanded(flex: 3, child: _buildCanvas()),
-                SizedBox(width: 320, child: _buildPanel()),
-              ],
-            );
-          } else if (w >= 600) {
-            return Row(
-              children: [
-                Expanded(flex: 3, child: _buildCanvas()),
-                SizedBox(width: 280, child: _buildPanel()),
-              ],
-            );
-          } else {
-            // 시트 초기 높이: 빈 상태 CTA 가 온전히 보이는 약 220px.
-            // 390×844 에서는 기존 28% 그대로, 작은 폰(360×640)에서는 비율을 키운다.
-            final sheetInitial =
-                (_sheetInitialPx / constraints.maxHeight).clamp(0.28, 0.5);
-            return Stack(
-              children: [
-                // 시트 초기 높이만큼 비워 트렁크가 가려지지 않게 한다
-                Positioned.fill(
-                  bottom: constraints.maxHeight * sheetInitial,
-                  child: _buildCanvas(),
+          final mode = _LayoutMode.of(w, screen);
+          _layout = mode;
+          switch (mode) {
+            case _LayoutMode.phoneLandscape:
+              // 폰 가로처럼 낮고 넓은 화면: 시트 대신 옆 패널, 패널은 압축 배치
+              // (일반 패널은 액션바·히어로 버튼·통계가 높이를 다 써서 목록이 0행이 된다)
+              return SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Expanded(child: _buildCanvas()),
+                    SizedBox(width: 300, child: _buildPanel(compact: true)),
+                  ],
                 ),
-                DraggableScrollableSheet(
-                  initialChildSize: sheetInitial,
-                  minChildSize: 0.12,
-                  maxChildSize: 0.85,
-                  builder: (ctx, scrollCtrl) => _buildDraggablePanel(scrollCtrl),
+              );
+            case _LayoutMode.desktop:
+              return SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Expanded(flex: 3, child: _buildCanvas()),
+                    SizedBox(width: 320, child: _buildPanel()),
+                  ],
                 ),
-              ],
-            );
+              );
+            case _LayoutMode.tablet:
+              return SafeArea(
+                top: false,
+                child: Row(
+                  children: [
+                    Expanded(flex: 3, child: _buildCanvas()),
+                    SizedBox(width: 280, child: _buildPanel()),
+                  ],
+                ),
+              );
+            case _LayoutMode.phone:
+              // 시트 초기 높이: 빈 상태 CTA 가 온전히 보이는 약 220px (+ 제스처 바 인셋).
+              // 390×844 에서는 기존 28% 그대로, 작은 폰(360×640)에서는 비율을 키운다.
+              final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+              final sheetInitial =
+                  ((_sheetInitialPx + bottomInset) / constraints.maxHeight)
+                      .clamp(0.28, 0.5)
+                      .toDouble();
+              // 시트가 아직 없으면(첫 빌드, 가로→세로 복귀) 시작 높이를 정한다:
+              // 빈 트렁크는 초기 높이, 짐이 있으면 "짐 있음" 높이
+              if (!_sheetCtrl.isAttached) {
+                _sheetStart = _boxes.isNotEmpty && _sheetLoaded > sheetInitial
+                    ? _sheetLoaded
+                    : sheetInitial;
+                _sheetFraction = _sheetStart;
+              }
+              final wanted = [
+                sheetInitial,
+                if (_sheetLoaded > sheetInitial + 0.02) _sheetLoaded,
+              ];
+              if (_snapSizes.length != wanted.length ||
+                  _snapSizes.first != wanted.first) {
+                _snapSizes = wanted;
+              }
+              final sheetPx = constraints.maxHeight *
+                  _sheetFraction.clamp(_sheetMin, _sheetMax);
+              // 좌우 인셋은 SafeArea 가, 아래 인셋은 시트가 안쪽 여백으로 처리한다
+              return SafeArea(
+                top: false,
+                bottom: false,
+                child: Stack(
+                  children: [
+                    // 시트가 덮지 않는 높이만 캔버스에 준다 → 시트를 올려도 트렁크가 가려지지 않고 줄어든다
+                    Positioned.fill(
+                      bottom: sheetPx,
+                      child: _buildCanvas(),
+                    ),
+                    DraggableScrollableSheet(
+                      controller: _sheetCtrl,
+                      initialChildSize: _sheetStart,
+                      minChildSize: _sheetMin,
+                      maxChildSize: _sheetMax,
+                      snap: true,
+                      snapSizes: _snapSizes,
+                      builder: (ctx, scrollCtrl) =>
+                          _buildDraggablePanel(scrollCtrl),
+                    ),
+                  ],
+                ),
+              );
           }
         },
       ),
@@ -490,6 +610,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       builder: (context, constraints) {
         final canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
         final camera = _ensureCamera(canvasSize);
+        // 선택한 짐이 캔버스 아래쪽에 있으면 도구 띠를 위에 둔다 (짐을 덮지 않게)
+        final toolbarAtTop = _selectionToolbarAtTop(camera, canvasSize);
 
         return Stack(
           children: [
@@ -522,6 +644,13 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                         draggingBoxId: _isDragging ? _selectedBoxId : null,
                         highlightLoadOrder: _stepViewActive ? _stepViewCurrentStep : null,
                         cache: _sceneCache,
+                        // 폰: 라벨은 선택·문제·큰 짐 몇 개만, 캡션은 한 줄
+                        labelPolicy: _layout.isPhoneLike
+                            ? LabelPolicy.compact
+                            : LabelPolicy.all,
+                        captionStyle: _layout.isPhoneLike
+                            ? CaptionStyle.compact
+                            : CaptionStyle.full,
                       ),
                       size: Size.infinite,
                     ),
@@ -537,12 +666,30 @@ class _SimulatorScreenState extends State<SimulatorScreen>
                 right: 0,
                 child: _buildUtilizationBar(),
               ),
-            // Utilization info overlay (top-right)
-            if (_boxes.isNotEmpty)
+            // Utilization info overlay (top-right) — 폰은 한 줄 칩. 시트를 끝까지 올려
+            // 캔버스가 아주 낮으면(200px 미만) 트렁크를 가리므로 뺀다 (같은 숫자가 시트에 있다)
+            if (_boxes.isNotEmpty &&
+                (!_layout.isPhoneLike || canvasSize.height >= 200))
               Positioned(
-                top: 12,
-                right: 12,
-                child: _buildUtilizationOverlay(),
+                top: _layout.isPhoneLike ? 8 : 12,
+                right: _layout.isPhoneLike ? 8 : 12,
+                child: _layout.isPhoneLike
+                    ? _buildUtilizationChip()
+                    : _buildUtilizationOverlay(),
+              ),
+            // 폰: 선택한 짐의 도구 띠 (회전·삭제·선택 해제). 목록을 스크롤해 찾지 않아도 된다.
+            if (_layout.isPhoneLike &&
+                canvasSize.height >= 200 &&
+                _selectedBoxId != null &&
+                !_isDragging &&
+                !_stepViewActive &&
+                _boxes.any((b) => b.id == _selectedBoxId))
+              Positioned(
+                left: 8,
+                right: 8,
+                top: toolbarAtTop ? (_boxes.isNotEmpty ? 48 : 8) : null,
+                bottom: toolbarAtTop ? null : _selectionToolbarBottom,
+                child: _buildSelectionToolbar(),
               ),
             // Step view controls
             // 왼쪽 아래는 캔버스 캡션·테일게이트 상태 표시 자리라서 위쪽에 둔다.
@@ -648,6 +795,115 @@ class _SimulatorScreenState extends State<SimulatorScreen>
             '남은 공간: ~${remainingLiters}L',
             style: TextStyle(color: Colors.grey[400], fontSize: 11),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// 폰용 한 줄 적재율 칩: `적재율 62% · 16개 · 남은 358L`
+  Widget _buildUtilizationChip() {
+    final stats = _stats;
+    final pct = stats.volumePercent;
+    final color = _utilizationColor(pct);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xCC1C1C1C),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0x33FFFFFF), width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('적재율 ',
+              style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+          Text('${pct.round()}%',
+              style: TextStyle(
+                  color: color, fontSize: 14, fontWeight: FontWeight.bold)),
+          Text(' · ${_boxes.length}개 · 남은 ${stats.remainingLiters}L',
+              style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
+  // ──── 폰: 선택 도구 띠 ────
+
+  /// 캡션 한 줄(약 22px) + 상태 알약(약 28px) 위에 놓는다
+  static const double _selectionToolbarBottom = 60;
+
+  /// 선택한 짐이 도구 띠 자리(캔버스 아래 60~108px)까지 내려와 있으면 띠를 위쪽(칩 아래)에
+  /// 놓는다 — 띠가 방금 선택한 짐을 덮지 않게. 기준은 짐의 앞쪽 아래 모서리(카메라 쪽).
+  bool _selectionToolbarAtTop(OrbitCamera camera, Size canvasSize) {
+    final box = _boxes.where((b) => b.id == _selectedBoxId).firstOrNull;
+    if (box == null) return false;
+    final p = camera
+        .project(
+            Vec3(box.x + box.effectiveW / 2, box.y, box.z + box.effectiveD),
+            canvasSize)
+        ?.screen;
+    return p != null && p.dy > canvasSize.height - _selectionToolbarBottom - 52;
+  }
+
+  Widget _buildSelectionToolbar() {
+    final box = _boxes.where((b) => b.id == _selectedBoxId).firstOrNull;
+    if (box == null) return const SizedBox.shrink();
+    final name = box.label.isNotEmpty ? box.label : box.id;
+    final dims =
+        '${(box.w * 100).round()}×${(box.d * 100).round()}×${(box.h * 100).round()}';
+
+    Widget btn(IconData icon, String tooltip, VoidCallback onTap,
+        {Color color = Colors.white}) {
+      return IconButton(
+        tooltip: tooltip,
+        onPressed: onTap,
+        icon: Icon(icon, color: color, size: 22),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+      );
+    }
+
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.only(left: 12, right: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xEE1C1C1C),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF4DA3FF), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: box.color,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 13)),
+                Text('$dims cm · R:${box.rotY}°',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.grey, fontSize: 10)),
+              ],
+            ),
+          ),
+          btn(Icons.rotate_right, '선택한 짐 회전', () => _rotateBox(box.id)),
+          btn(Icons.delete_outline, '선택한 짐 삭제', () => _deleteBox(box.id),
+              color: const Color(0xFFFF6B6B)),
+          btn(Icons.close, '선택 해제',
+              () => setState(() => _selectedBoxId = null),
+              color: Colors.white54),
         ],
       ),
     );
@@ -812,8 +1068,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
           if (isTouch) ...[
             _controlRow('한 손가락 드래그', '회전'),
             _controlRow('두 손가락', '확대·이동'),
+            _controlRow('짐을 탭', '도구 띠로 회전·삭제'),
             _controlRow('짐을 끌어서', '옮기기'),
-            _controlRow('목록의 버튼', '회전·삭제·실행 취소'),
+            _controlRow('시트 도구 줄', '실행 취소 · 저장'),
           ] else ...[
             _controlRow('박스 드래그', '박스 이동'),
             _controlRow('빈 곳 드래그', '카메라 회전'),
@@ -976,10 +1233,43 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       onRedo: _redoStack.isNotEmpty ? _redo : null,
       scrollController: scrollCtrl,
       showDragHandle: true,
+      bottomPadding: MediaQuery.viewPaddingOf(context).bottom,
     );
   }
 
-  void _showKeyboardShortcuts() {
+  void _showHelp() {
+    if (_layout.isPhoneLike) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF252525),
+          title: const Text('조작법',
+              style: TextStyle(color: Colors.white, fontSize: 16)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _controlRow('한 손가락 드래그', '회전'),
+              _controlRow('두 손가락', '확대·이동'),
+              _controlRow('짐을 탭', '선택 → 도구 띠로 회전·삭제'),
+              _controlRow('짐을 끌어서', '옮기기 (다른 짐 위에 올리면 쌓임)'),
+              if (_layout == _LayoutMode.phone) ...[
+                _controlRow('시트 손잡이', '위로 끌면 목록 · 아래로 내리면 트렁크만'),
+                _controlRow('실행 취소', '시트 도구 줄의 ↶'),
+              ] else
+                _controlRow('실행 취소', '오른쪽 패널 도구 줄의 ↶'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     showDialog(context: context, builder: (_) => const KeyboardShortcutsDialog());
   }
 
@@ -1049,7 +1339,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         _selectedBoxId = hit.id;
         _isDragging = true;
         _dragGrabOffset = Vec3(p.x - hit.x, 0, p.z - hit.z);
-        // 수동 이동은 자동배치 순서를 무효화
+        // 수동 이동은 자동배치 순서를 무효화 (처음 한 번은 알린다)
+        _ordersClearedByDrag = _boxes.any((b) => b.loadOrder != null);
         for (final b in _boxes) {
           b.loadOrder = null;
         }
@@ -1128,6 +1419,25 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         _updateCollisions();
       });
     }
+    _maybeNotifyOrdersCleared();
+  }
+
+  bool _ordersClearedByDrag = false;
+  bool _orderNoticeShown = false;
+
+  /// 손으로 옮겨 적재 순서(배지·순서 가이드)가 사라졌음을 세션에 한 번만 알린다
+  void _maybeNotifyOrdersCleared() {
+    if (!_ordersClearedByDrag) return;
+    _ordersClearedByDrag = false;
+    if (_orderNoticeShown || !mounted) return;
+    _orderNoticeShown = true;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(
+        content: const Text('손으로 옮겨 적재 순서를 지웠어요 · 자동 배치로 다시 만들 수 있어요'),
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(label: '자동 배치', onPressed: _showAutoLayoutDialog),
+      ));
   }
 
   /// 캔버스 키 입력. 처리한 키는 [KeyEventResult.handled] 로 소비한다 — 그렇지 않으면
@@ -1160,7 +1470,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     if (isCtrl) return KeyEventResult.ignored; // 브라우저·시스템 단축키는 건드리지 않는다
 
     if (event.character == '?') {
-      _showKeyboardShortcuts();
+      _showHelp();
       return KeyEventResult.handled;
     }
 
@@ -1289,10 +1599,9 @@ class _SimulatorScreenState extends State<SimulatorScreen>
   }
 
   Future<void> _showAddDialog() async {
-    final result = await showDialog<List<Map<String, dynamic>>>(
-      context: context,
-      builder: (_) => const AddBoxDialog(),
-    );
+    // 폰은 전체 화면 페이지 (키보드가 목록을 가리지 않고, 하단 "추가" 가 항상 보인다)
+    final result =
+        await showGearPicker(context, fullScreen: _layout.isPhoneLike);
     if (result == null || result.isEmpty) return;
 
     _pushUndo();
@@ -1341,15 +1650,31 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       }
     });
     // 손으로 옮긴 적이 없으면 전체를 다시 자동 배치해 바로 판정을 보여준다
-    if (!_manualEdited) _autoPackQuietly();
+    if (!_manualEdited) {
+      _autoPackQuietly();
+    } else if (_lastAddHadNoRoom && mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(
+          content: const Text('빈 자리가 없어 트렁크 밖에 두었습니다'),
+          backgroundColor: const Color(0xFFFFAA33),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: '자동 배치',
+            textColor: Colors.black87,
+            onPressed: _showAutoLayoutDialog,
+          ),
+        ));
+    }
+    _lastAddHadNoRoom = false;
+    _raiseSheetForContent();
   }
 
   /// 모달 없이 자동 배치를 적용하고 스낵바로 판정만 알린다
   void _autoPackQuietly() {
     if (_boxes.isEmpty) return;
-    final result =
-        AutoLayoutEngine.computeLayout(_space, _boxes,
-        restarts: 24, budget: _packBudget);
+    final result = AutoLayoutEngine.computeLayout(_space, _boxes,
+        restarts: _restartsFor(_boxes.length), budget: _packBudget);
     setState(() {
       for (final p in result.placements) {
         p.applyTo(_boxes.firstWhere((b) => b.id == p.box.id));
@@ -1396,11 +1721,22 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         }
       }
     }
+    // 자리가 없다: 테일게이트를 막는 자리에 억지로 얹지 않고 트렁크 밖에 세워 둔다
+    // (자동배치가 못 넣은 짐과 같은 자리·같은 뜻). 스낵바로 알린다.
     box.rotY = 0;
-    box.x = ((_space.w - box.effectiveW) / 2).clamp(0.0, _space.w);
-    box.z = (_space.d - box.effectiveD).clamp(0.0, _space.d);
-    box.y = SupportRule.highestLevel(box, _boxes, _space);
+    var x = 0.0;
+    for (final b in _boxes) {
+      if (LoadStats.isParked(b, _space)) x = math.max(x, b.x + b.effectiveW + 0.05);
+    }
+    box.x = x;
+    box.z = _space.d + 0.06;
+    box.y = 0;
+    box.loadOrder = null;
+    _lastAddHadNoRoom = true;
   }
+
+  /// 마지막 추가에서 트렁크 안에 자리를 못 찾은 짐이 있었는가 (스낵바용)
+  bool _lastAddHadNoRoom = false;
 
   // ──── 트렁크 프리셋 변경 ────
 
@@ -1525,28 +1861,49 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         return AlertDialog(
           backgroundColor: const Color(0xFF333333),
           title: const Text('배치 저장', style: TextStyle(color: Colors.white)),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
-              labelText: '배치 이름',
-              labelStyle: TextStyle(color: Colors.grey),
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF555555)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: '배치 이름',
+                  labelStyle: TextStyle(color: Colors.grey),
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF555555)),
+                  ),
+                  focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF4DA3FF)),
+                  ),
+                ),
+                onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
               ),
-              focusedBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF4DA3FF)),
-              ),
-            ),
-            onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
+              // 폰에서는 버튼 세 개가 세로로 접히므로 내보내기는 입력란 아래 링크로
+              if (file_io.fileActionsSupported && _layout.isPhoneLike)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _saveSceneToFile();
+                    },
+                    icon: const Icon(Icons.download, size: 16, color: Colors.white70),
+                    label: const Text('파일로 내보내기',
+                        style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  ),
+                ),
+            ],
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('취소', style: TextStyle(color: Colors.grey)),
             ),
-            if (file_io.fileActionsSupported)
+            if (file_io.fileActionsSupported && !_layout.isPhoneLike)
               TextButton(
                 onPressed: () {
                   Navigator.pop(ctx);
@@ -1743,6 +2100,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         _manualEdited = false;
         _autoPackQuietly();
       }
+      _raiseSheetForContent();
       if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2022,41 +2380,250 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     // 계산 시간 측정
     final sw = Stopwatch()..start();
     final alternatives = AutoLayoutEngine.generateAlternatives(_space, _boxes,
-        restarts: 24, budget: _packBudget);
+        restarts: math.max(4, _restartsFor(_boxes.length) ~/ 2),
+        budget: _packBudget);
     sw.stop();
     final computeMs = sw.elapsedMilliseconds;
 
     if (!mounted) return;
 
-    final selected = await showDialog<AutoLayoutResult>(
-      context: context,
-      builder: (ctx) => _AutoLayoutDialog(
-        alternatives: alternatives,
-        computeTimeMs: computeMs,
-        trunkVolumeLiters: (_totalTrunkVolume() * 1000).round(),
-      ),
+    // 같은 결과를 내는 전략은 카드에 "(= 균형 배치)" 로 표시한다 — 같은 걸 셋 중에 고르게 하지 않게
+    final sameAs = <LayoutStrategy, String>{};
+    for (var i = 0; i < alternatives.length; i++) {
+      for (var j = 0; j < i; j++) {
+        if (_sameLayout(alternatives[i], alternatives[j])) {
+          sameAs[alternatives[i].strategy] = alternatives[j].strategy.label;
+          break;
+        }
+      }
+    }
+    final dialog = _AutoLayoutDialog(
+      alternatives: alternatives,
+      computeTimeMs: computeMs,
+      trunkVolumeLiters: (_totalTrunkVolume() * 1000).round(),
+      sheet: _layout.isPhoneLike,
+      sameAs: sameAs,
     );
+    // 폰은 아래 시트 (카드·적용 버튼이 전체 폭), 그 외는 기존 다이얼로그
+    final Future<AutoLayoutResult?> pending = _layout.isPhoneLike
+        ? showModalBottomSheet<AutoLayoutResult>(
+            context: context,
+            isScrollControlled: true,
+            useSafeArea: true,
+            showDragHandle: false,
+            backgroundColor: const Color(0xFF2A2A2A),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+            ),
+            builder: (ctx) => dialog,
+          )
+        : showDialog<AutoLayoutResult>(
+            context: context,
+            builder: (ctx) => dialog,
+          );
+    final selected = await pending;
 
     if (selected != null) {
       _applyAutoLayout(selected);
     }
   }
 
-  /// Quick fit check — just validates without applying layout
+  /// 두 배치가 같은가: 같은 짐이 같은 자리·같은 방향 (1mm 안)
+  static bool _sameLayout(AutoLayoutResult a, AutoLayoutResult b) {
+    if (a.placements.length != b.placements.length) return false;
+    final byId = {for (final p in b.placements) p.box.id: p};
+    for (final p in a.placements) {
+      final q = byId[p.box.id];
+      if (q == null) return false;
+      const t = 0.001;
+      if ((p.x - q.x).abs() > t ||
+          (p.y - q.y).abs() > t ||
+          (p.z - q.z).abs() > t ||
+          (p.w - q.w).abs() > t ||
+          (p.d - q.d).abs() > t ||
+          (p.h - q.h).abs() > t) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// "들어갈까?" — 화면에 있는 **지금 배치**를 판정한다. 재배치 결과는 지금 배치에 문제가
+  /// 있거나(겹침·테일게이트) 못 실은 짐이 있을 때 "다시 배치하면 …" 으로 함께 보여 주고
+  /// 적용 버튼을 준다. (전에는 새로 짠 가상 배치의 판정만 보여 줘, 트렁크가 빨간데도
+  /// "모두 적재 가능" 이라고 했다.)
   void _showQuickFitCheck() {
     if (_boxes.isEmpty) return;
 
     final sw = Stopwatch()..start();
     final result = AutoLayoutEngine.computeLayout(_space, _boxes,
-        restarts: 24, budget: _packBudget);
+        restarts: _restartsFor(_boxes.length), budget: _packBudget);
     sw.stop();
-
     if (!mounted) return;
+
+    final problems = _currentLayoutProblems();
+    final parked = _stats.parked;
+    if (problems.isNotEmpty || (parked.isNotEmpty && result.allBoxesFit)) {
+      _showCurrentProblemsVerdict(problems, result,
+          computeTimeMs: sw.elapsedMilliseconds,
+          slideSuggestion: result.allBoxesFit ? null : _suggestSeatSlide());
+      return;
+    }
+    if (parked.isEmpty) {
+      // 지금 배치가 그대로 유효 → 지금 배치 기준으로 판정 (적재율·순서도 화면의 것)
+      _showVerdictDialog(
+        _currentLayoutAsResult(),
+        computeTimeMs: sw.elapsedMilliseconds,
+        showLoadOrder: _boxes.any((b) => b.loadOrder != null),
+      );
+      return;
+    }
+    // 못 실은 짐이 있고 재배치로도 다 못 넣는다: 재배치 판정(일부/불가) + 2열 제안
     _showVerdictDialog(
       result,
       computeTimeMs: sw.elapsedMilliseconds,
-      slideSuggestion: result.allBoxesFit ? null : _suggestSeatSlide(),
+      slideSuggestion: _suggestSeatSlide(),
     );
+  }
+
+  /// 지금 배치의 문제: 트렁크 안 짐 중 충돌·경계·테일게이트·개구부 위반 (사유 문장 포함).
+  /// 트렁크 밖에 세워 둔(못 실은) 짐은 문제가 아니라 "못 실은 짐" 으로 따로 센다.
+  List<(TrimBox, List<String>)> _currentLayoutProblems() {
+    final out = <(TrimBox, List<String>)>[];
+    for (final b in _boxes) {
+      if (LoadStats.isParked(b, _space)) continue;
+      final reasons = _detector.describe(b, _boxes);
+      if (reasons.isNotEmpty) out.add((b, reasons));
+    }
+    return out;
+  }
+
+  /// 화면의 배치를 그대로 판정 결과 형태로 (전부 트렁크 안이고 문제가 없을 때만 부른다)
+  AutoLayoutResult _currentLayoutAsResult() {
+    final inside = List<TrimBox>.from(_stats.inside)
+      ..sort((a, b) =>
+          (a.loadOrder ?? 1 << 20).compareTo(b.loadOrder ?? 1 << 20));
+    final placements = <BoxPlacement>[
+      for (var i = 0; i < inside.length; i++)
+        BoxPlacement(
+          box: inside[i],
+          x: inside[i].x,
+          y: inside[i].y,
+          z: inside[i].z,
+          w: inside[i].effectiveW,
+          d: inside[i].effectiveD,
+          h: inside[i].effectiveH,
+          loadOrder: inside[i].loadOrder ?? (i + 1),
+          squash: inside[i].squash,
+          squashW: inside[i].squashW,
+          squashD: inside[i].squashD,
+        ),
+    ];
+    return AutoLayoutResult(
+      placements: placements,
+      utilizationPercent: _stats.volumePercent,
+      allBoxesFit: true,
+      unfitBoxes: const [],
+      strategy: LayoutStrategy.balanced,
+    );
+  }
+
+  /// 지금 배치에 문제가 있거나 못 실은 짐이 있을 때의 판정: 문제 목록 + "다시 배치하면 …" + 적용 버튼
+  void _showCurrentProblemsVerdict(
+    List<(TrimBox, List<String>)> problems,
+    AutoLayoutResult result, {
+    int? computeTimeMs,
+    ({double slide, AutoLayoutResult result})? slideSuggestion,
+  }) {
+    final parked = _stats.parked;
+    final placed = result.placements.length;
+    final total = placed + result.unfitBoxes.length;
+    final pct = result.utilizationPercent.round();
+    final hasProblems = problems.isNotEmpty;
+
+    String name(TrimBox b) => b.label.isNotEmpty ? b.label : b.id;
+    final repack = result.allBoxesFit
+        ? '$total개 모두 들어갑니다 (적재율 $pct%)'
+        : '$placed/$total개 들어갑니다 (적재율 $pct%)';
+
+    _presentResult(
+      dotColor: hasProblems ? const Color(0xFFFF4D4D) : const Color(0xFFFFAA33),
+      title: hasProblems ? '지금 배치: 문제 ${problems.length}개' : '다시 배치하면 모두 들어갑니다',
+      content: [
+        if (hasProblems) ...[
+          const Text('화면의 배치를 그대로 두면:',
+              style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 6),
+          for (final (b, reasons) in problems)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 3),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Color(0xFFFF4D4D), size: 14),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text('${name(b)}: ${reasons.join(', ')}',
+                        style: const TextStyle(
+                            color: Color(0xFFFF6B6B), fontSize: 13)),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 8),
+        ],
+        if (parked.isNotEmpty) ...[
+          _verdictInfoRow('못 실은 짐', '${parked.length}개 (트렁크 밖에 둠)'),
+          const SizedBox(height: 8),
+        ],
+        const Divider(color: Color(0xFF444444), height: 1),
+        const SizedBox(height: 8),
+        _verdictInfoRow('다시 배치하면', repack),
+        if (!result.allBoxesFit && result.unfitBoxes.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            '못 넣는 짐: ${_groupedUnfitLabels(result).join(', ')}',
+            style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12),
+          ),
+        ],
+        if (slideSuggestion != null) ...[
+          const SizedBox(height: 8),
+          _verdictInfoRow('2열 시트',
+              '${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 $total개 모두 들어갑니다'),
+        ],
+      ],
+      actions: [
+        _ResultAction('확인', _ResultActionKind.dismiss, (ctx) => Navigator.pop(ctx)),
+        if (slideSuggestion != null)
+          _ResultAction(
+            '2열 +${(slideSuggestion.slide * 100).round()}cm 적용',
+            _ResultActionKind.secondary,
+            (ctx) {
+              Navigator.pop(ctx);
+              _applySeatSlideSuggestion(slideSuggestion);
+            },
+          ),
+        _ResultAction('이 배치 적용', _ResultActionKind.primary, (ctx) {
+          Navigator.pop(ctx);
+          _applyAutoLayout(result);
+        }),
+      ],
+    );
+  }
+
+  /// 못 넣은 짐을 (이름, 사유) 로 묶어 "이름 ×N — 사유" 로 (14개가 같은 사유로 늘어서지 않게)
+  List<String> _groupedUnfitLabels(AutoLayoutResult result) {
+    final counts = <(String, String), int>{};
+    for (final b in result.unfitBoxes) {
+      final k = (b.label.isNotEmpty ? b.label : b.id, result.unfitReasons[b.id] ?? '');
+      counts[k] = (counts[k] ?? 0) + 1;
+    }
+    return [
+      for (final e in counts.entries)
+        '${e.key.$1}${e.value > 1 ? ' ×${e.value}' : ''}'
+            '${e.key.$2.isEmpty ? '' : ' — ${e.key.$2}'}',
+    ];
   }
 
   /// 다 안 들어갈 때: 2열을 앞으로 당기면 전부 들어가는 첫 단계를 찾는다
@@ -2067,7 +2634,8 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       final space = _selectedPreset.toTrunkSpace(seatSlide: slide);
       if (space == null) continue;
       final r = AutoLayoutEngine.computeLayout(space, _boxes,
-          restarts: 12, budget: const Duration(milliseconds: 1500));
+          restarts: math.min(12, _restartsFor(_boxes.length)),
+          budget: const Duration(milliseconds: 1500));
       if (r.allBoxesFit) return (slide: slide, result: r);
     }
     return null;
@@ -2107,13 +2675,6 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     }
   }
 
-  /// "라벨 — 사유" (사유가 있을 때)
-  String _labelWithReason(AutoLayoutResult result, TrimBox b) {
-    final label = b.label.isNotEmpty ? b.label : b.id;
-    final reason = result.unfitReasons[b.id];
-    return reason == null ? label : '$label — $reason';
-  }
-
   void _showVerdictSnackBar(AutoLayoutResult result) {
     final pct = result.utilizationPercent.round();
     final placed = result.placements.length;
@@ -2122,12 +2683,18 @@ class _SimulatorScreenState extends State<SimulatorScreen>
         ? '${result.strategy.label}: $total개 배치 완료 (적재율 $pct%)'
         : '${result.strategy.label}: $placed/$total개 배치 (적재율 $pct%)';
 
+    // 못 넣은 짐은 두 개까지만 사유와 함께, 나머지는 "외 N개" — 14개를 늘어놓으면 화면 절반을
+    // 5초 동안 덮는다. 전체는 '자세히' 로 판정 시트에서.
     String snackMsg = msg;
     if (result.unfitBoxes.isNotEmpty) {
-      final unfitLabels = result.unfitBoxes
-          .map((b) => _labelWithReason(result, b))
-          .join(', ');
-      snackMsg = '$msg\n적재 불가: $unfitLabels';
+      final grouped = _groupedUnfitLabels(result);
+      final shown = grouped.take(2).join(', ');
+      final rest = result.unfitBoxes.length -
+          result.unfitBoxes
+              .where((b) => grouped.take(2).any((g) =>
+                  g.startsWith(b.label.isNotEmpty ? b.label : b.id)))
+              .length;
+      snackMsg = '$msg\n적재 불가: $shown${rest > 0 ? ' 외 $rest개' : ''}';
     }
 
     // 지난 판정이 5초씩 줄 서서 나오지 않게, 남은 스낵바를 치우고 최신 판정만 보여준다
@@ -2135,11 +2702,19 @@ class _SimulatorScreenState extends State<SimulatorScreen>
       ..clearSnackBars()
       ..showSnackBar(
       SnackBar(
-        content: Text(snackMsg),
+        content: Text(snackMsg, maxLines: 3, overflow: TextOverflow.ellipsis),
         backgroundColor:
             result.allBoxesFit ? const Color(0xFF6BD06B) : const Color(0xFFFFAA33),
         duration: const Duration(seconds: 5),
         dismissDirection: DismissDirection.horizontal,
+        action: result.unfitBoxes.isEmpty
+            ? null
+            : SnackBarAction(
+                label: '자세히',
+                textColor: Colors.black87,
+                onPressed: () => _showVerdictDialog(result,
+                    slideSuggestion: _suggestSeatSlide()),
+              ),
       ),
     );
   }
@@ -2148,6 +2723,7 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     AutoLayoutResult result, {
     int? computeTimeMs,
     ({double slide, AutoLayoutResult result})? slideSuggestion,
+    bool showLoadOrder = true,
   }) {
     final pct = result.utilizationPercent.round();
     final placed = result.placements.length;
@@ -2160,353 +2736,327 @@ class _SimulatorScreenState extends State<SimulatorScreen>
     final remainingLiters = ((totalSpaceVol - totalBoxVol) * 1000).round();
     final capacityLiters = (totalSpaceVol * 1000).round();
 
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        // Shared utilization bar widget
-        Widget utilizationVisual() {
-          final ratio = (pct / 100).clamp(0.0, 1.0);
-          final barColor = pct < 70
+    // Shared utilization bar widget
+    Widget utilizationVisual() {
+      final ratio = (pct / 100).clamp(0.0, 1.0);
+      // 막대 색은 판정 색을 따른다 (일부만 들어가는데 초록 막대가 뜨지 않게)
+      final barColor = !result.allBoxesFit
+          ? const Color(0xFFFFAA33)
+          : pct < 70
               ? const Color(0xFF4CAF50)
               : pct < 90
                   ? const Color(0xFFFFC107)
                   : const Color(0xFFFF5252);
-          return Column(
-            mainAxisSize: MainAxisSize.min,
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '적재율',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                  ),
-                  Text(
-                    '$pct%',
-                    style: TextStyle(
-                      color: barColor,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
+              Text(
+                '적재율',
+                style: TextStyle(color: Colors.grey[400], fontSize: 12),
               ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: ratio,
-                  backgroundColor: const Color(0xFF444444),
-                  valueColor: AlwaysStoppedAnimation<Color>(barColor),
-                  minHeight: 8,
+              Text(
+                '$pct%',
+                style: TextStyle(
+                  color: barColor,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 6),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '사용: ${(totalBoxVol * 1000).round()}L',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                  ),
-                  Text(
-                    '남은 공간: ${remainingLiters}L / ${capacityLiters}L',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                  ),
-                ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: ratio,
+              backgroundColor: const Color(0xFF444444),
+              valueColor: AlwaysStoppedAnimation<Color>(barColor),
+              minHeight: 8,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '사용: ${(totalBoxVol * 1000).round()}L',
+                style: TextStyle(color: Colors.grey[500], fontSize: 11),
+              ),
+              Text(
+                '남은 공간: ${remainingLiters}L / ${capacityLiters}L',
+                style: TextStyle(color: Colors.grey[500], fontSize: 11),
               ),
             ],
-          );
-        }
+          ),
+        ],
+      );
+    }
 
-        // 2열을 당기면 다 들어갈 때의 적용 버튼 (일부만/하나도 안 들어간 판정 공용)
-        Widget slideSuggestionButton() {
-          final s = slideSuggestion!;
-          return OutlinedButton(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF00E676),
-              side: const BorderSide(color: Color(0xFF00E676)),
+    // 2열을 당기면 다 들어갈 때의 적용 동작 (일부만/하나도 안 들어간 판정 공용)
+    _ResultAction slideAction() {
+      final s = slideSuggestion!;
+      return _ResultAction(
+        '2열 +${(s.slide * 100).round()}cm 적용',
+        _ResultActionKind.secondary,
+        (ctx) {
+          Navigator.pop(ctx);
+          _applySeatSlideSuggestion(s);
+        },
+      );
+    }
+
+    Widget computeTimeBadge() {
+      // 폰 시트에서는 개발용 계산 시간 배지를 빼서 한 줄이라도 덜 스크롤하게
+      if (computeTimeMs == null || _layout.isPhoneLike) {
+        return const SizedBox.shrink();
+      }
+      final timeStr = computeTimeMs < 1000
+          ? '${computeTimeMs}ms'
+          : '${(computeTimeMs / 1000).toStringAsFixed(1)}s';
+      return Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.bolt, color: Colors.grey[600], size: 14),
+            const SizedBox(width: 4),
+            Text(
+              '$timeStr 만에 계산 완료',
+              style: TextStyle(color: Colors.grey[600], fontSize: 11),
             ),
-            onPressed: () {
+          ],
+        ),
+      );
+    }
+
+    Widget tipBox(Color bg, String text) {
+      return Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.lightbulb_outline,
+                color: Color(0xFFFFD700), size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                    color: Colors.white70, fontSize: 12, height: 1.4),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final dismiss = _ResultAction(
+        '확인', _ResultActionKind.dismiss, (ctx) => Navigator.pop(ctx));
+
+    if (result.placements.isEmpty && result.unfitBoxes.isNotEmpty) {
+      // NO boxes fit
+      _presentResult(
+        dotColor: const Color(0xFFFF4D4D),
+        title: '적재 불가',
+        content: [
+          const Text(
+            '선택한 장비가 트렁크에 맞지 않습니다.',
+            style: TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          utilizationVisual(),
+          const SizedBox(height: 12),
+          tipBox(
+            const Color(0xFF2A1E1E),
+            slideSuggestion != null
+                ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
+                    '$total개 모두 들어갑니다.'
+                : _hasSeatSlide
+                    ? '2열을 당겨도 들어가지 않습니다.\n장비 크기를 확인하세요.'
+                    : '장비 크기를 확인하세요.',
+          ),
+          computeTimeBadge(),
+        ],
+        actions: [
+          if (slideSuggestion != null) slideAction(),
+          _ResultAction('확인', _ResultActionKind.primary,
+              (ctx) => Navigator.pop(ctx)),
+        ],
+      );
+    } else if (result.allBoxesFit) {
+      // ALL boxes fit
+      _presentResult(
+        dotColor: const Color(0xFF6BD06B),
+        title: '모두 적재 가능!',
+        content: [
+          utilizationVisual(),
+          const SizedBox(height: 12),
+          _verdictInfoRow('적재 장비', '$total개 모두 트렁크에 들어갑니다'),
+          if (_space.hasTailgateModel) ...[
+            const SizedBox(height: 8),
+            _verdictInfoRow('테일게이트', '닫힙니다 (닫힘 한계·개구부 반영)'),
+          ],
+          ..._verdictExtras(result),
+          if (showLoadOrder && result.placements.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _verdictLoadOrderSummary(result),
+          ],
+          computeTimeBadge(),
+        ],
+        actions: [
+          dismiss,
+          if (_maxLoadOrder > 1)
+            _ResultAction('순서 가이드', _ResultActionKind.secondary, (ctx) {
               Navigator.pop(ctx);
-              _applySeatSlideSuggestion(s);
-            },
-            child: Text('2열 +${(s.slide * 100).round()}cm 적용'),
-          );
-        }
+              _enterStepView();
+            }),
+          _ResultAction('배치 저장', _ResultActionKind.primary, (ctx) {
+            Navigator.pop(ctx);
+            _saveScene();
+          }),
+        ],
+      );
+    } else {
+      // SOME boxes don't fit
+      final unfitLabels = _groupedUnfitLabels(result);
+      final extras = _verdictExtras(result);
 
-        Widget computeTimeBadge() {
-          if (computeTimeMs == null) return const SizedBox.shrink();
-          final timeStr = computeTimeMs < 1000
-              ? '${computeTimeMs}ms'
-              : '${(computeTimeMs / 1000).toStringAsFixed(1)}s';
-          return Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.bolt, color: Colors.grey[600], size: 14),
-                const SizedBox(width: 4),
-                Text(
-                  '$timeStr 만에 계산 완료',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 11),
+      _presentResult(
+        dotColor: const Color(0xFFFFAA33),
+        title: '$placed/$total개 적재 가능',
+        content: [
+          utilizationVisual(),
+          ...extras,
+          const SizedBox(height: 12),
+          const Text(
+            '적재 불가 장비:',
+            style: TextStyle(color: Color(0xFFFF6B6B), fontSize: 13),
+          ),
+          const SizedBox(height: 4),
+          ...unfitLabels.map((name) => Padding(
+                padding: const EdgeInsets.only(left: 8, bottom: 2),
+                child: Row(
+                  children: [
+                    const Icon(Icons.close, color: Color(0xFFFF6B6B), size: 14),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                            color: Color(0xFFFF6B6B), fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          );
-        }
+              )),
+          const SizedBox(height: 12),
+          tipBox(
+            const Color(0xFF1E2A1E),
+            slideSuggestion != null
+                ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
+                    '$total개 모두 들어갑니다.'
+                : _hasSeatSlide
+                    ? '2열을 당겨도 다 들어가지 않습니다.\n장비를 줄이거나 작은 것으로 바꿔 보세요.'
+                    : '더 작은 장비를 선택해 보세요.',
+          ),
+          computeTimeBadge(),
+        ],
+        actions: [
+          dismiss,
+          if (slideSuggestion != null) slideAction(),
+          _ResultAction('다시 배치', _ResultActionKind.primary, (ctx) {
+            Navigator.pop(ctx);
+            _showAutoLayoutDialog();
+          }),
+        ],
+      );
+    }
+  }
 
-        if (result.placements.isEmpty && result.unfitBoxes.isNotEmpty) {
-          // NO boxes fit
-          return AlertDialog(
-            backgroundColor: const Color(0xFF2A2A2A),
-            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
-            scrollable: true,
-            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
-            actionsOverflowButtonSpacing: 8,
-            title: Row(
-              children: [
-                Container(
-                  width: 14, height: 14,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFFF4D4D),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  '적재 불가',
-                  style: TextStyle(color: Colors.white, fontSize: 18),
-                ),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '선택한 장비가 트렁크에 맞지 않습니다.',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-                const SizedBox(height: 12),
-                utilizationVisual(),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2A1E1E),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.lightbulb_outline,
-                          color: Color(0xFFFFD700), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          slideSuggestion != null
-                              ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
-                                  '$total개 모두 들어갑니다.'
-                              : '장비 크기를 확인하거나\n더 큰 차량을 선택하세요.',
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 12, height: 1.4),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                computeTimeBadge(),
-              ],
-            ),
-            actions: [
-              if (slideSuggestion != null) slideSuggestionButton(),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4DA3FF),
-                ),
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('확인'),
-              ),
-            ],
-          );
-        } else if (result.allBoxesFit) {
-          // ALL boxes fit
-          return AlertDialog(
-            backgroundColor: const Color(0xFF2A2A2A),
-            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
-            scrollable: true,
-            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
-            actionsOverflowButtonSpacing: 8,
-            title: Row(
-              children: [
-                Container(
-                  width: 14, height: 14,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF6BD06B),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  '모두 적재 가능!',
-                  style: TextStyle(color: Colors.white, fontSize: 18),
-                ),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                utilizationVisual(),
-                const SizedBox(height: 12),
-                _verdictInfoRow('적재 장비', '$total개 모두 트렁크에 들어갑니다'),
-                if (_space.hasTailgateModel) ...[
-                  const SizedBox(height: 8),
-                  _verdictInfoRow('테일게이트', '닫힙니다 (닫힘 한계·개구부 반영)'),
-                ],
-                ..._verdictExtras(result),
-                if (result.placements.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _verdictLoadOrderSummary(result),
-                ],
-                computeTimeBadge(),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('확인', style: TextStyle(color: Colors.grey)),
-              ),
-              if (_maxLoadOrder > 1)
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF00E676),
-                    side: const BorderSide(color: Color(0xFF00E676)),
-                  ),
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _enterStepView();
-                  },
-                  child: const Text('순서 가이드'),
-                ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4DA3FF),
-                ),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  _saveScene();
-                },
-                child: const Text('배치 저장'),
-              ),
-            ],
-          );
-        } else {
-          // SOME boxes don't fit
-          final unfitLabels = result.unfitBoxes
-              .map((b) => _labelWithReason(result, b))
-              .toList();
-          final extras = _verdictExtras(result);
+  /// 판정 결과를 데스크톱·태블릿은 다이얼로그(기존과 픽셀 동일), 폰은 아래 시트로 낸다.
+  /// 시트에서는 버튼이 전체 폭 세로 스택(보조 → 주)이고 "확인" 은 제목 행의 ✕ 가 대신한다.
+  void _presentResult({
+    required Color dotColor,
+    required String title,
+    required List<Widget> content,
+    required List<_ResultAction> actions,
+  }) {
+    Widget dot() => Container(
+          width: 14,
+          height: 14,
+          decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+        );
 
-          return AlertDialog(
-            backgroundColor: const Color(0xFF2A2A2A),
-            // 낮은 화면(폰 가로, 작은 폰)에서는 넘치지 않고 스크롤된다
-            scrollable: true,
-            // 폰 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
-            actionsOverflowButtonSpacing: 8,
-            title: Row(
-              children: [
-                Container(
-                  width: 14, height: 14,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFFFAA33),
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  '$placed/$total개 적재 가능',
-                  style: const TextStyle(color: Colors.white, fontSize: 18),
-                ),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                utilizationVisual(),
-                ...extras,
-                const SizedBox(height: 12),
-                const Text(
-                  '적재 불가 장비:',
-                  style: TextStyle(color: Color(0xFFFF6B6B), fontSize: 13),
-                ),
-                const SizedBox(height: 4),
-                ...unfitLabels.map((name) => Padding(
-                      padding: const EdgeInsets.only(left: 8, bottom: 2),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.close, color: Color(0xFFFF6B6B), size: 14),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              name,
-                              style: const TextStyle(
-                                  color: Color(0xFFFF6B6B), fontSize: 13),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E2A1E),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.lightbulb_outline,
-                          color: Color(0xFFFFD700), size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          slideSuggestion != null
-                              ? '2열 시트를 ${(slideSuggestion.slide * 100).round()}cm 앞으로 당기면 '
-                                  '$total개 모두 들어갑니다.'
-                              : '더 작은 장비를 선택하거나\n2열 시트를 앞으로 당겨 보세요.',
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 12, height: 1.4),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                computeTimeBadge(),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('확인', style: TextStyle(color: Colors.grey)),
-              ),
-              if (slideSuggestion != null) slideSuggestionButton(),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4DA3FF),
-                ),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  _showAutoLayoutDialog();
-                },
-                child: const Text('다시 배치'),
-              ),
+    if (!_layout.isPhoneLike) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          // 낮은 화면(태블릿 가로 등)에서는 넘치지 않고 스크롤된다
+          scrollable: true,
+          // 좁은 폭에서 버튼이 세로로 쌓일 때 서로 붙지 않게 (잘못 누름 방지)
+          actionsOverflowButtonSpacing: 8,
+          title: Row(
+            children: [
+              dot(),
+              const SizedBox(width: 10),
+              Text(title,
+                  style: const TextStyle(color: Colors.white, fontSize: 18)),
             ],
-          );
-        }
-      },
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: content,
+          ),
+          actions: [for (final a in actions) a.dialogButton(ctx)],
+        ),
+      );
+      return;
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: false,
+      backgroundColor: const Color(0xFF2A2A2A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => resultSheetBody(
+        ctx,
+        title: Row(
+          children: [
+            dot(),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 18)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: content,
+        ),
+        buttons: [
+          for (final a in actions)
+            if (a.kind == _ResultActionKind.secondary) a.sheetButton(ctx),
+          for (final a in actions)
+            if (a.kind == _ResultActionKind.primary) a.sheetButton(ctx),
+        ],
+      ),
     );
   }
 
@@ -2673,15 +3223,161 @@ class _SimulatorScreenState extends State<SimulatorScreen>
 
 // ──── 자동 배치 대안 선택 다이얼로그 ────
 
+enum _ResultActionKind {
+  /// 다이얼로그: 회색 텍스트 버튼. 시트: 버튼 없음 (제목 행의 ✕·스크림·아래로 끌기가 대신)
+  dismiss,
+
+  /// 초록 외곽선 (2열 적용, 순서 가이드)
+  secondary,
+
+  /// 파란 채움 (배치 저장, 다시 배치, 확인)
+  primary,
+}
+
+/// 판정 결과의 동작 하나. 다이얼로그·시트 양쪽에서 같은 문구·같은 콜백을 쓴다.
+class _ResultAction {
+  final String label;
+  final _ResultActionKind kind;
+  final void Function(BuildContext ctx) onTap;
+
+  const _ResultAction(this.label, this.kind, this.onTap);
+
+  /// 데스크톱 다이얼로그의 버튼 (기존 판정 다이얼로그와 같은 위젯·스타일)
+  Widget dialogButton(BuildContext ctx) {
+    switch (kind) {
+      case _ResultActionKind.dismiss:
+        return TextButton(
+          onPressed: () => onTap(ctx),
+          child: Text(label, style: const TextStyle(color: Colors.grey)),
+        );
+      case _ResultActionKind.secondary:
+        return OutlinedButton(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF00E676),
+            side: const BorderSide(color: Color(0xFF00E676)),
+          ),
+          onPressed: () => onTap(ctx),
+          child: Text(label),
+        );
+      case _ResultActionKind.primary:
+        return ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF4DA3FF),
+          ),
+          onPressed: () => onTap(ctx),
+          child: Text(label),
+        );
+    }
+  }
+
+  /// 폰 시트의 전체 폭 버튼
+  Widget sheetButton(BuildContext ctx) {
+    final shape =
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(10));
+    const textStyle = TextStyle(fontSize: 15, fontWeight: FontWeight.w600);
+    switch (kind) {
+      case _ResultActionKind.dismiss:
+        return TextButton(
+          onPressed: () => onTap(ctx),
+          child: Text(label, style: const TextStyle(color: Colors.grey)),
+        );
+      case _ResultActionKind.secondary:
+        return OutlinedButton(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFF00E676),
+            side: const BorderSide(color: Color(0xFF00E676), width: 1.5),
+            shape: shape,
+          ),
+          onPressed: () => onTap(ctx),
+          child: Text(label, style: textStyle),
+        );
+      case _ResultActionKind.primary:
+        return ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF4DA3FF),
+            foregroundColor: Colors.white,
+            shape: shape,
+          ),
+          onPressed: () => onTap(ctx),
+          child: Text(label, style: textStyle),
+        );
+    }
+  }
+}
+
+/// 폰용 결과 시트 몸통: 손잡이 → 제목 행(✕ 닫기) → 스크롤되는 내용 → 전체 폭 버튼(48px, 세로 스택)
+/// → 하단 시스템 인셋 여백. 높이는 화면의 90% 까지.
+@visibleForTesting
+Widget resultSheetBody(
+  BuildContext ctx, {
+  required Widget title,
+  required Widget content,
+  required List<Widget> buttons,
+}) {
+  final bottom = MediaQuery.viewPaddingOf(ctx).bottom;
+  final maxH = MediaQuery.sizeOf(ctx).height * 0.9;
+  return ConstrainedBox(
+    constraints: BoxConstraints(maxHeight: maxH),
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(16, 8, 16, 12 + bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Center(
+            child: Container(
+              width: 32,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF666666),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(child: title),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white54, size: 22),
+                tooltip: '닫기',
+                onPressed: () => Navigator.pop(ctx),
+                constraints:
+                    const BoxConstraints.tightFor(width: 44, height: 44),
+                padding: EdgeInsets.zero,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Flexible(child: SingleChildScrollView(child: content)),
+          if (buttons.isNotEmpty) const SizedBox(height: 12),
+          for (var i = 0; i < buttons.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            SizedBox(height: 48, child: buttons[i]),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
 class _AutoLayoutDialog extends StatefulWidget {
   final List<AutoLayoutResult> alternatives;
   final int computeTimeMs;
   final int trunkVolumeLiters;
 
+  /// true 면 폰용 아래 시트 몸통으로 (showModalBottomSheet 안에서), false 면 AlertDialog
+  final bool sheet;
+
+  /// 앞 전략과 결과가 같은 전략 → 그 전략 이름 ("(= 균형 배치)" 로 표시)
+  final Map<LayoutStrategy, String> sameAs;
+
   const _AutoLayoutDialog({
     required this.alternatives,
     required this.computeTimeMs,
     required this.trunkVolumeLiters,
+    this.sheet = false,
+    this.sameAs = const {},
   });
 
   @override
@@ -2719,43 +3415,57 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
       if (a.utilizationPercent > maxPct) maxPct = a.utilizationPercent;
     }
 
-    return AlertDialog(
-      backgroundColor: const Color(0xFF2A2A2A),
-      scrollable: true,
-      actionsOverflowButtonSpacing: 8,
-      title: Row(
-        children: [
-          const Icon(Icons.auto_fix_high, color: Color(0xFF4DA3FF), size: 22),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              '자동 배치',
-              style: TextStyle(color: Colors.white, fontSize: 18),
-            ),
+    final title = Row(
+      children: [
+        const Icon(Icons.auto_fix_high, color: Color(0xFF4DA3FF), size: 22),
+        const SizedBox(width: 8),
+        const Expanded(
+          child: Text(
+            '자동 배치',
+            style: TextStyle(color: Colors.white, fontSize: 18),
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1A1A2E),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.bolt, color: Color(0xFF6BD06B), size: 14),
-                const SizedBox(width: 3),
-                Text(
-                  timeStr,
-                  style: const TextStyle(color: Color(0xFF6BD06B), fontSize: 12),
-                ),
-              ],
-            ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A2E),
+            borderRadius: BorderRadius.circular(12),
           ),
-        ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.bolt, color: Color(0xFF6BD06B), size: 14),
+              const SizedBox(width: 3),
+              Text(
+                timeStr,
+                style: const TextStyle(color: Color(0xFF6BD06B), fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    final apply = ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFF4DA3FF),
+        foregroundColor: Colors.white,
+        shape: widget.sheet
+            ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
+            : null,
       ),
-      content: SizedBox(
-        width: math.min(400.0, MediaQuery.sizeOf(context).width - 48),
-        child: Column(
+      // 하나도 못 넣는 배치는 적용할 것이 없다
+      onPressed: widget.alternatives.isEmpty ||
+              widget.alternatives[_selectedIndex].placements.isEmpty
+          ? null
+          : () => Navigator.pop(context, widget.alternatives[_selectedIndex]),
+      child: Text('이 배치 적용',
+          style: widget.sheet
+              ? const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)
+              : null),
+    );
+
+    final content = Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -2832,6 +3542,18 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
                                       ),
                                     ),
                                   ),
+                                  if (widget.sameAs[result.strategy] != null) ...[
+                                    const SizedBox(width: 6),
+                                    Flexible(
+                                      child: Text(
+                                        '(= ${widget.sameAs[result.strategy]})',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            color: Colors.grey, fontSize: 11),
+                                      ),
+                                    ),
+                                  ],
                                   if (isBest) ...[
                                     const SizedBox(width: 6),
                                     Container(
@@ -2927,7 +3649,21 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
               ),
             ],
           ],
-        ),
+        );
+
+    if (widget.sheet) {
+      return resultSheetBody(context,
+          title: title, content: content, buttons: [apply]);
+    }
+
+    return AlertDialog(
+      backgroundColor: const Color(0xFF2A2A2A),
+      scrollable: true,
+      actionsOverflowButtonSpacing: 8,
+      title: title,
+      content: SizedBox(
+        width: math.min(400.0, MediaQuery.sizeOf(context).width - 48),
+        child: content,
       ),
       actions: [
         TextButton(
@@ -2935,15 +3671,7 @@ class _AutoLayoutDialogState extends State<_AutoLayoutDialog> {
           child:
               const Text('취소', style: TextStyle(color: Colors.grey)),
         ),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF4DA3FF),
-            foregroundColor: Colors.white,
-          ),
-          onPressed: () =>
-              Navigator.pop(context, widget.alternatives[_selectedIndex]),
-          child: const Text('이 배치 적용'),
-        ),
+        apply,
       ],
     );
   }

@@ -184,7 +184,8 @@ void main() {
     testWidgets('키보드로 옮겨 다른 짐 위에 올리면 쌓이고, 빼면 바닥으로 내려온다', (tester) async {
       await pumpAppWithScene(tester, [
         mkBox('box-001', '받침', w: 0.50, d: 0.40, h: 0.30, x: 0.30, z: 0.30),
-        mkBox('box-002', '위', w: 0.40, d: 0.30, h: 0.20, x: 0.85, z: 0.35),
+        // x 0.80~1.20: 오른쪽 휠하우스(x ≥ 1.235)에 닿지 않는 바닥 자리
+        mkBox('box-002', '위', w: 0.40, d: 0.30, h: 0.20, x: 0.80, z: 0.35),
       ]);
       await tapTile(tester, '위');
       final top = boxesOf(tester).firstWhere((b) => b.id == 'box-002');
@@ -192,7 +193,7 @@ void main() {
       await pressKey(tester, LogicalKeyboardKey.arrowLeft,
           times: (0.50 / unit).round());
       await tester.pumpAndSettle();
-      expect(top.x, closeTo(0.35, 1e-6));
+      expect(top.x, closeTo(0.30, 1e-6));
       expect(top.y, closeTo(0.30, 1e-6), reason: '받침 위로 올라간다');
       expectSceneValid(tester);
       await pressKey(tester, LogicalKeyboardKey.arrowRight,
@@ -364,12 +365,12 @@ void main() {
             x: 0.20, z: _sorento.d - 0.30),
       ]);
       expect(statusOf(tester), StatusState.problems);
-      expect(_inPanel(find.textContaining('(+1)')), findsOneWidget);
+      expect(_inPanel(find.textContaining('외 1건')), findsOneWidget);
       expect(panelOf(tester).collidingBoxIds, {'box-001', 'box-002'});
       // 충돌 타일에는 경고 아이콘
       expect(find.byTooltip('충돌 감지: 다른 박스 또는 경계와 겹침'), findsNWidgets(2));
 
-      await tester.tap(_inPanel(find.textContaining('(+1)')));
+      await tester.tap(_inPanel(find.textContaining('외 1건')));
       await tester.pumpAndSettle();
       expect(find.text('배치 문제 2개'), findsOneWidget);
       final dialogTexts = [
@@ -421,14 +422,16 @@ void main() {
       expect(snack, contains('적재 불가: 냉장고 — 트렁크보다 큼'));
       expect(insideBoxes(tester), isEmpty, reason: '테일게이트 밖에 세워 둔다');
       expect(statusOf(tester), StatusState.problems);
-      expect(_inPanel(find.textContaining('냉장고: 트렁크 경계 밖')), findsOneWidget);
+      // 앱이 밖에 세워 둔 짐은 "경계 밖 충돌" 이 아니라 못 실은 짐으로 말한다
+      expect(_inPanel(find.textContaining('냉장고: 안 들어감')), findsOneWidget);
+      expect(find.byTooltip('트렁크에 넣을 자리가 없어 밖에 두었습니다'), findsOneWidget);
       await flushSnackBars(tester);
 
       await tester.tap(find.text('들어갈까?'));
       await tester.pumpAndSettle();
       expect(find.text('적재 불가'), findsOneWidget);
       expect(find.text('선택한 장비가 트렁크에 맞지 않습니다.'), findsOneWidget);
-      expect(find.textContaining('더 큰 차량을 선택하세요'), findsOneWidget);
+      expect(find.textContaining('2열을 당겨도 들어가지 않습니다'), findsOneWidget);
       await tester.tap(find.text('확인'));
       await tester.pumpAndSettle();
       await flushAutosave(tester);

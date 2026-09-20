@@ -25,7 +25,7 @@ const _d = (
 );
 
 /// e2e/smoke.spec.ts 의 M (모바일 390×844)
-const _m = (onboarding: Offset(195, 300), cta: Offset(195, 787));
+const _m = (onboarding: Offset(195, 300), cta: Offset(195, 767));
 
 void _expectInside(WidgetTester tester, Finder f, Offset p, String what) {
   expect(f, findsOneWidget, reason: what);

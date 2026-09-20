@@ -55,6 +55,46 @@ class SceneCache {
 /// 캔버스 상태 표시의 종류 (색을 정한다)
 enum CaptionStatusKind { ok, unloaded, blocked }
 
+/// 짐 이름 알약(라벨) 표시 정책
+enum LabelPolicy {
+  /// 데스크톱·태블릿: 모든 짐에 라벨. 겹치면 위아래로 비켜 놓고, 그래도 겹치면 배지만.
+  all,
+
+  /// 폰: 순서 배지는 전부 그리되 이름 알약은 선택·드래그 중·충돌·테일게이트에 걸린 짐과
+  /// 화면에서 가장 큰 면 [TrunkPainter3D.compactLabelLimit]개까지만. 겹치는 알약은
+  /// 그리지 않는다 (좁은 화면에서 라벨이 짐을 덮는 것을 막는다).
+  compact,
+}
+
+/// 캔버스 왼쪽 아래 캡션 형식
+enum CaptionStyle {
+  /// 차종 · 폭 × 깊이 × 높이 cm · 공식 용량 (폰 폭에서는 두 줄)
+  full,
+
+  /// 폰: 한 줄 (차종 · 폭×깊이×높이 cm), 공식 용량은 생략, 넘치면 말줄임
+  compact,
+}
+
+/// 테스트 훅: 한 프레임에 그린 라벨 묶음 하나. 배지·알약 각각의 화면 사각형이고,
+/// 그리지 않은 쪽은 null.
+class DrawnLabel {
+  final String boxId;
+  final Rect? badge;
+  final Rect? pill;
+
+  const DrawnLabel(this.boxId, {this.badge, this.pill});
+}
+
+/// compact 정책에서 메시를 다 그린 뒤에 라벨을 얹기 위해 모아 두는 박스 하나의 자료
+class _LabelCandidate {
+  final TrimBox box;
+  final List<Offset> facePts;
+  final double area;
+  final double opacity;
+
+  const _LabelCandidate(this.box, this.facePts, this.area, this.opacity);
+}
+
 /// 원근 카메라 + painter's algorithm 기반 트렁크 3D 페인터.
 ///
 /// 그리기 순서: 배경 → 트렁크 껍데기(캐시: 차 밖 범퍼, 바닥·벽·천장, 매트·격자·
@@ -77,6 +117,22 @@ class TrunkPainter3D extends CustomPainter {
   final SceneCache? cache;
   final bool showLabels;
 
+  /// 라벨 표시 정책 (기본: 전부). 폰 화면은 [LabelPolicy.compact].
+  final LabelPolicy labelPolicy;
+
+  /// 캡션 형식 (기본: 두 줄까지). 폰 화면은 [CaptionStyle.compact].
+  final CaptionStyle captionStyle;
+
+  /// [LabelPolicy.compact] 에서 "큰 면" 기준으로 라벨을 붙일 최대 짐 수
+  static const int compactLabelLimit = 3;
+
+  /// [LabelPolicy.compact] 에서 이름 알약의 최대 폭(px). [LabelPolicy.all] 은 160.
+  static const double compactPillMaxWidth = 120.0;
+
+  /// 테스트 훅: 마지막 [paint] 에서 그린 라벨 묶음 (그린 순서). 프레임마다 비운다.
+  @visibleForTesting
+  final List<DrawnLabel> lastDrawnLabels = [];
+
   TrunkPainter3D({
     required this.space,
     required this.boxes,
@@ -88,6 +144,8 @@ class TrunkPainter3D extends CustomPainter {
     this.highlightLoadOrder,
     this.cache,
     this.showLabels = true,
+    this.labelPolicy = LabelPolicy.all,
+    this.captionStyle = CaptionStyle.full,
   });
 
   static const Color _bgTop = Color(0xFF1B1E22);
@@ -670,6 +728,7 @@ class TrunkPainter3D extends CustomPainter {
   // ── 물체 (고정물 + 박스) ──
 
   void _paintObjects(Canvas canvas, Size size) {
+    lastDrawnLabels.clear();
     final camPos = camera.position;
     final ordered = sceneDrawOrder(
       space,
@@ -678,8 +737,38 @@ class TrunkPainter3D extends CustomPainter {
       fixtures: cache?.fixturesFor(space),
     );
     final placedLabels = <Rect>[];
+    // all: 라벨을 박스마다 바로 얹는다 (데스크톱 픽셀 E2E 가 이 순서에 기대고 있다).
+    // compact: 라벨을 모아 두고 메시를 다 그린 뒤에 얹는다 — 앞 박스가 덮지 못한다.
+    final deferred =
+        labelPolicy == LabelPolicy.compact ? <_LabelCandidate>[] : null;
     for (final obj in ordered) {
-      _drawObject(canvas, size, obj, camPos, placedLabels);
+      _drawObject(canvas, size, obj, camPos, placedLabels, deferred);
+    }
+    if (deferred != null) _drawCompactLabels(canvas, deferred, placedLabels);
+  }
+
+  /// compact 정책의 라벨 패스. 이름 알약이 붙는 짐([compactLabelIds])을 먼저 놓아 알약이
+  /// 자리를 얻게 하고, 배지만 남는 짐은 그 뒤에 놓는다 (배지는 작아서 잘 비켜 간다).
+  void _drawCompactLabels(
+      Canvas canvas, List<_LabelCandidate> cands, List<Rect> placed) {
+    final named = compactLabelIds(
+      areas: [for (final c in cands) (c.box.id, c.area)],
+      selected: selectedBoxId,
+      dragging: draggingBoxId,
+      colliding: collidingBoxIds,
+      blocked: tailgateBlockedIds,
+      limit: compactLabelLimit,
+    );
+    for (final pass in [true, false]) {
+      for (final c in cands) {
+        if (named.contains(c.box.id) != pass) continue;
+        // 트렁크 밖 짐에는 배지·이름을 붙이지 않는다 (알약 "미적재 N개" 가 대신 알린다)
+        if (LoadStats.isParked(c.box, space)) continue;
+        _drawLabel(canvas, c.box, c.facePts, c.opacity, placed,
+            withName: pass,
+            maxPillWidth: compactPillMaxWidth,
+            dropOverlappingPill: true);
+      }
     }
   }
 
@@ -691,6 +780,10 @@ class TrunkPainter3D extends CustomPainter {
 
   double _opacityFor(TrimBox? b) {
     if (b == null) return 1.0;
+    // 폰: 트렁크 밖에 세워 둔(못 실은) 짐은 흐리게 — 캡션·알약 위로 겹쳐 보이는 것을 줄인다
+    if (labelPolicy == LabelPolicy.compact && LoadStats.isParked(b, space)) {
+      return 0.45;
+    }
     final h = highlightLoadOrder;
     if (h != null && b.loadOrder != null && b.loadOrder! < h) return 0.35;
     if (b.id == draggingBoxId) return 0.9;
@@ -714,7 +807,7 @@ class TrunkPainter3D extends CustomPainter {
       : Color.lerp(base, Colors.black, 0.55)!;
 
   void _drawObject(Canvas canvas, Size size, SceneObject obj, Vec3 camPos,
-      List<Rect> placedLabels) {
+      List<Rect> placedLabels, List<_LabelCandidate>? deferred) {
     final box = obj.box;
     if (box == null) {
       var fade = _sideFade(obj.fadeSide, camPos);
@@ -774,7 +867,12 @@ class TrunkPainter3D extends CustomPainter {
     }
 
     if (showLabels && largest != null && largestArea > 700) {
-      _drawLabel(canvas, box, largest, opacity, placedLabels);
+      if (deferred != null) {
+        deferred.add(_LabelCandidate(box, largest, largestArea, opacity));
+      } else {
+        _drawLabel(canvas, box, largest, opacity, placedLabels,
+            withName: true, maxPillWidth: 160.0, dropOverlappingPill: false);
+      }
     }
   }
 
@@ -947,8 +1045,15 @@ class TrunkPainter3D extends CustomPainter {
   /// 가장 크게 보이는 AABB 면 가운데에 [순서 배지][라벨]. 라벨이 안 들어가면 배지만.
   /// 먼저 놓인 이웃의 배지·라벨([placed])과 겹치면 면 안에서 위아래로 비켜 놓고,
   /// 그래도 겹치면 배지만 남긴다.
+  ///
+  /// [withName] 이 false 면 알약 없이 배지만 놓는다. 알약 폭은 [maxPillWidth] 까지.
+  /// [dropOverlappingPill] 이면 빈 자리를 못 찾아 이웃과 겹치게 된 알약은 떼고 배지만
+  /// 그린다 (배지도 없으면 아무것도 안 그린다) — compact 정책.
   void _drawLabel(Canvas canvas, TrimBox box, List<Offset> facePts,
-      double opacity, List<Rect> placed) {
+      double opacity, List<Rect> placed,
+      {required bool withName,
+      required double maxPillWidth,
+      required bool dropOverlappingPill}) {
     var minX = double.infinity, maxX = -double.infinity;
     var minY = double.infinity, maxY = -double.infinity;
     var cx = 0.0, cy = 0.0;
@@ -969,8 +1074,8 @@ class TrunkPainter3D extends CustomPainter {
     final badgeW = order != null ? badgeR * 2 + 4 : 0.0;
 
     TextPainter? tp;
-    final room = math.min(faceW - 18 - badgeW, 160.0);
-    if (room >= 30) {
+    final room = math.min(faceW - 18 - badgeW, maxPillWidth);
+    if (withName && room >= 30) {
       tp = TextPainter(
         text: TextSpan(
           text: box.isSquashed
@@ -988,22 +1093,39 @@ class TrunkPainter3D extends CustomPainter {
       )..layout(maxWidth: room);
     }
 
-    final found = placeLabelGroup(
-      face: Rect.fromLTRB(minX, minY, maxX, maxY),
-      centre: Offset(cx, cy),
+    final face = Rect.fromLTRB(minX, minY, maxX, maxY);
+    final centre = Offset(cx, cy);
+    var found = placeLabelGroup(
+      face: face,
+      centre: centre,
       badgeWidth: badgeW,
       pillWidth: tp == null ? null : tp.width + 12,
       placed: placed,
     );
     if (found == null) return;
+    if (dropOverlappingPill && found.overlapping && tp != null) {
+      tp = null;
+      found = placeLabelGroup(
+        face: face,
+        centre: centre,
+        badgeWidth: badgeW,
+        pillWidth: null,
+        placed: placed,
+        sideways: true,
+      );
+      if (found == null) return;
+    }
     final spot = found.rect;
     final withPill = found.withPill;
     placed.add(spot);
 
     var left = spot.left;
     final midY = spot.center.dy;
+    Rect? badgeRect;
+    Rect? pillRect;
     if (order != null) {
       final c = Offset(left + badgeR, midY);
+      badgeRect = Rect.fromCircle(center: c, radius: badgeR);
       canvas.drawCircle(
           c, badgeR + 1, Paint()..color = Colors.black.withValues(alpha: 0.45 * opacity));
       canvas.drawCircle(
@@ -1031,7 +1153,9 @@ class TrunkPainter3D extends CustomPainter {
         Paint()..color = Colors.black.withValues(alpha: 0.6 * opacity),
       );
       tp.paint(canvas, Offset(left + 6, midY - tp.height / 2));
+      pillRect = pill;
     }
+    lastDrawnLabels.add(DrawnLabel(box.id, badge: badgeRect, pill: pillRect));
   }
 
   // ── 캡션 ──
@@ -1044,11 +1168,20 @@ class TrunkPainter3D extends CustomPainter {
   static (String, CaptionStatusKind) captionStatus(
     TrunkSpace space,
     List<TrimBox> boxes,
-    Set<String> tailgateBlockedIds,
-  ) {
+    Set<String> tailgateBlockedIds, {
+    Set<String> collidingIds = const {},
+  }) {
     final blocked = tailgateBlockedIds.length;
     if (blocked > 0) {
       return ('테일게이트 안 닫힘 · $blocked개 걸림', CaptionStatusKind.blocked);
+    }
+    // 트렁크 안에서 겹치거나 경계를 넘은 짐 (밖에 세워 둔 짐은 아래 "미적재" 로 센다)
+    final colliding = boxes
+        .where((b) =>
+            collidingIds.contains(b.id) && !LoadStats.isParked(b, space))
+        .length;
+    if (colliding > 0) {
+      return ('짐 겹침 $colliding개 · 확인 필요', CaptionStatusKind.blocked);
     }
     final parked = boxes.where((b) => LoadStats.isParked(b, space)).length;
     if (parked > 0) {
@@ -1060,34 +1193,60 @@ class TrunkPainter3D extends CustomPainter {
     return ('테일게이트 닫힘 OK', CaptionStatusKind.ok);
   }
 
-  void _paintCaption(Canvas canvas, Size size) {
+  /// 캔버스 왼쪽 아래 캡션 문구 (상태 알약 제외).
+  ///
+  /// [CaptionStyle.full]: `차종 · 폭 a~b × 깊이 d × 높이 c~e cm · 공식 용량(2열 위치)`.
+  /// [CaptionStyle.compact]: 한 줄용 `차종 · a~b×d×c~e cm` — 같은 숫자를 쓰되 공식 용량
+  /// (2열 위치 포함)은 뺀다. 범위의 양끝이 같으면 숫자 하나만 쓴다.
+  @visibleForTesting
+  static String captionText(TrunkSpace space, CaptionStyle style) {
     final name = space.vehicleName ?? '커스텀';
     final wIn = (space.floorWidthBetweenWheelhouses * 100).round();
     final wMax = (space.w * 100).round();
-    final widthText = wIn < wMax ? '폭 $wIn~$wMax' : '폭 $wMax';
+    final dCm = (space.d * 100).round();
     final hMin = (space.ceilingHeightAt(space.rearDepthAt(space.h)) * 100).round();
     final hMax = (space.h * 100).round();
-    final heightText = hMin < hMax ? '높이 $hMin~$hMax' : '높이 $hMax';
-    final official = space.officialVolumeLabel;
-    final text =
-        '$name · $widthText × 깊이 ${(space.d * 100).round()} × $heightText cm${official != null ? ' · $official' : ''}';
+    switch (style) {
+      case CaptionStyle.full:
+        final widthText = wIn < wMax ? '폭 $wIn~$wMax' : '폭 $wMax';
+        final heightText = hMin < hMax ? '높이 $hMin~$hMax' : '높이 $hMax';
+        final official = space.officialVolumeLabel;
+        return '$name · $widthText × 깊이 $dCm × $heightText cm${official != null ? ' · $official' : ''}';
+      case CaptionStyle.compact:
+        final widthText = wIn < wMax ? '$wIn~$wMax' : '$wMax';
+        final heightText = hMin < hMax ? '$hMin~$hMax' : '$hMax';
+        return '$name · $widthText×$dCm×$heightText cm';
+    }
+  }
+
+  /// 폰에서 시트를 끝까지 올리면 캔버스가 이 높이 아래로 내려간다 — 캡션·상태 알약이 트렁크를
+  /// 덮으므로 그리지 않는다 (같은 정보가 시트 상태 줄에 있다)
+  static const double compactCaptionMinHeight = 160;
+
+  void _paintCaption(Canvas canvas, Size size) {
+    final compact = captionStyle == CaptionStyle.compact;
+    if (compact && size.height < compactCaptionMinHeight) return;
     final tp = TextPainter(
       text: TextSpan(
-        text: text,
+        text: captionText(space, captionStyle),
         style: TextStyle(
           color: Colors.white.withValues(alpha: 0.6),
           fontSize: 12,
         ),
       ),
       textDirection: TextDirection.ltr,
-      maxLines: 2,
+      maxLines: compact ? 1 : 2,
       ellipsis: '…',
-    )..layout(maxWidth: math.max(120.0, size.width - 24)); // 폰 폭에서는 두 줄로
+    )..layout(
+        maxWidth: compact
+            ? math.max(1.0, size.width - 24) // 폰: 한 줄, 넘치면 말줄임
+            : math.max(120.0, size.width - 24)); // 폰 폭에서는 두 줄로
     var y = size.height - tp.height - 10;
     tp.paint(canvas, Offset(12, y));
 
     if (space.hasTailgateModel && boxes.isNotEmpty) {
-      final (status, kind) = captionStatus(space, boxes, tailgateBlockedIds);
+      final (status, kind) = captionStatus(space, boxes, tailgateBlockedIds,
+          collidingIds: collidingBoxIds);
       final color = switch (kind) {
         CaptionStatusKind.ok => const Color(0xFF6BD06B),
         CaptionStatusKind.unloaded => const Color(0xFFFFC46B),

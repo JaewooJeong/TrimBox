@@ -35,6 +35,9 @@ class BoxListPanel extends StatelessWidget {
   /// 통계 한 줄 + 상태 줄 — 목록에 최소 3행이 남도록.
   final bool compact;
 
+  /// 시트(폰 세로) 맨 아래 여백 — 시스템 제스처 바·노치의 `viewPadding.bottom`.
+  final double bottomPadding;
+
   const BoxListPanel({
     super.key,
     required this.boxes,
@@ -57,7 +60,11 @@ class BoxListPanel extends StatelessWidget {
     this.scrollController,
     this.showDragHandle = false,
     this.compact = false,
+    this.bottomPadding = 0,
   });
+
+  /// 폰 세로의 아래 시트인가 (스크롤 컨트롤러를 시트가 준다)
+  bool get _isSheet => scrollController != null;
 
   @override
   Widget build(BuildContext context) {
@@ -214,6 +221,10 @@ class BoxListPanel extends StatelessWidget {
   }
 
   /// 통계 한 줄 + 상태 줄
+  /// "박스 18/32개" (못 실은 짐이 있을 때) 또는 "박스 16개"
+  static String countText(LoadStats stats, int total) =>
+      stats.parked.isEmpty ? '박스 $total개' : '박스 ${stats.inside.length}/$total개';
+
   Widget _compactStats(BuildContext context) {
     final stats = LoadStats.of(boxes, space);
     final volPct = stats.volumePercent.clamp(0, 100).round();
@@ -227,7 +238,7 @@ class BoxListPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '박스 ${boxes.length}개 · 부피 $volPct% · 남은 높이 ${stats.remainingHeightCm}cm',
+            '${countText(stats, boxes.length)} · 부피 $volPct% · 남은 높이 ${stats.remainingHeightCm}cm',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(color: Colors.grey, fontSize: 12),
@@ -244,9 +255,14 @@ class BoxListPanel extends StatelessWidget {
     final detector = CollisionDetector(space);
     final warnings = <String>[];
     for (final b in boxes) {
+      final name = b.label.isNotEmpty ? b.label : b.id;
+      // 앱이 트렁크 밖에 세워 둔(못 실은) 짐은 "경계 밖" 충돌이 아니라 못 실은 짐이다
+      if (LoadStats.isParked(b, space)) {
+        warnings.add('$name: 안 들어감 (트렁크 밖에 둠)');
+        continue;
+      }
       final reasons = detector.describe(b, boxes);
       if (reasons.isEmpty) continue;
-      final name = b.label.isNotEmpty ? b.label : b.id;
       warnings.add('$name: ${reasons.join(', ')}');
     }
     return warnings;
@@ -282,6 +298,10 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
+  /// 폰 세로의 아래 시트. 위 → 아래: 손잡이 → 히어로 줄(들어갈까? · 자동 배치) →
+  /// 도구 한 줄(박스 추가 · 순서 가이드 · 실행 취소 · 다시 실행 · ⋯) → 상태 두 줄 → 목록.
+  /// 시트를 조금만 올려도 핵심 동작이 보이고, 도구는 한 줄이라 목록이 바로 나온다.
+  /// 빈 상태: 안내 + CTA + "저장된 배치 불러오기" 만 (도구 줄 없음).
   Widget _buildScrollablePanel(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
@@ -293,23 +313,128 @@ class BoxListPanel extends StatelessWidget {
         padding: EdgeInsets.zero,
         children: [
           if (showDragHandle) _buildDragHandle(),
-          // 모바일: 시트를 조금만 올려도 핵심 동작이 보이도록 위쪽에 배치
-          if (boxes.isEmpty)
+          if (boxes.isEmpty) ...[
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: _buildEmptyState(),
-            )
-          else ...[
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: _buildEmptyState(iconSize: 36, gap: 12),
+            ),
+            Center(
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 44),
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                onPressed: onLoad,
+                icon: const Icon(Icons.folder_open, size: 16, color: Colors.grey),
+                label: const Text('저장된 배치 불러오기',
+                    style: TextStyle(color: Colors.grey, fontSize: 13)),
+              ),
+            ),
+          ] else ...[
             if (onAutoLayout != null) _heroAutoLayoutButton(),
-            if (onStepView != null && _hasLoadOrders()) _stepViewButton(),
-            _statsBar(context),
+            _buildSheetToolRow(),
+            _compactStats(context),
+            ...boxes.map((b) => Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: _boxTile(b),
+                )),
           ],
-          _buildActionBar(),
-          ...boxes.map((b) => Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: _boxTile(b),
-              )),
-          const SizedBox(height: 24),
+          // 빈 상태는 초기 시트 높이(220px + 아래 인셋) 안에 다 들어가야 한다 (숨은 스크롤 없음)
+          SizedBox(height: (boxes.isEmpty ? 8 : 16) + bottomPadding),
+        ],
+      ),
+    );
+  }
+
+  /// 시트의 도구 한 줄: 박스 추가 · 순서 가이드(순서가 있을 때) · 실행 취소 · 다시 실행 · ⋯(저장·불러오기·이미지)
+  Widget _buildSheetToolRow() {
+    Widget tool(IconData icon, String tooltip, VoidCallback? onTap,
+        {Color color = Colors.grey}) {
+      return IconButton(
+        tooltip: tooltip,
+        onPressed: onTap,
+        icon: Icon(icon,
+            color: onTap == null ? const Color(0xFF777777) : color, size: 22),
+        style: IconButton.styleFrom(
+          backgroundColor:
+              onTap == null ? const Color(0xFF2A2A2A) : const Color(0xFF333333),
+          minimumSize: const Size(44, 44),
+          padding: EdgeInsets.zero,
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 44,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA3FF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: onAddBox,
+                icon: const Icon(Icons.add, size: 20),
+                label: const Text('박스 추가',
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.fade,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+          if (onStepView != null && _hasLoadOrders()) ...[
+            const SizedBox(width: 6),
+            tool(Icons.format_list_numbered, '적재 순서 가이드', onStepView,
+                color: const Color(0xFF00E676)),
+          ],
+          if (onUndo != null || onRedo != null) ...[
+            const SizedBox(width: 6),
+            tool(Icons.undo, '실행 취소', onUndo),
+            const SizedBox(width: 6),
+            tool(Icons.redo, '다시 실행', onRedo),
+          ],
+          const SizedBox(width: 6),
+          PopupMenuButton<VoidCallback>(
+            tooltip: '더 보기',
+            color: const Color(0xFF333333),
+            onSelected: (fn) => fn(),
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF333333),
+              minimumSize: const Size(44, 44),
+              padding: EdgeInsets.zero,
+            ),
+            icon: const Icon(Icons.more_horiz, color: Colors.grey, size: 22),
+            itemBuilder: (_) => [
+              _menuItem(Icons.save, '배치 저장', onSave),
+              _menuItem(Icons.folder_open, '불러오기', onLoad),
+              if (onScreenshot != null)
+                _menuItem(Icons.photo_camera, '스크린샷', onScreenshot!),
+              if (onShareCard != null)
+                _menuItem(Icons.share, '공유 카드', onShareCard!),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  PopupMenuItem<VoidCallback> _menuItem(
+      IconData icon, String label, VoidCallback fn) {
+    return PopupMenuItem<VoidCallback>(
+      value: fn,
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.grey, size: 18),
+          const SizedBox(width: 10),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
         ],
       ),
     );
@@ -367,15 +492,16 @@ class BoxListPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildEmptyState({bool showIcon = true}) {
+  Widget _buildEmptyState(
+      {bool showIcon = true, double iconSize = 48, double gap = 16}) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (showIcon) ...[
             Icon(Icons.inventory_2_outlined,
-                color: Colors.grey[700], size: 48),
-            const SizedBox(height: 16),
+                color: Colors.grey[700], size: iconSize),
+            SizedBox(height: gap),
           ],
           const Text(
             '캠핑 장비를 선택하고\n트렁크에 들어가는지 확인하세요',
@@ -385,7 +511,7 @@ class BoxListPanel extends StatelessWidget {
                 fontWeight: FontWeight.w500,
                 height: 1.5),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: gap),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF4DA3FF),
@@ -578,7 +704,23 @@ class BoxListPanel extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (isColliding) ...[
+                        if (LoadStats.isParked(box, space)) ...[
+                          const SizedBox(width: 6),
+                          Tooltip(
+                            message: '트렁크에 넣을 자리가 없어 밖에 두었습니다',
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: const Color(0x33FF6B6B),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text('안 들어감',
+                                  style: TextStyle(
+                                      color: Color(0xFFFF6B6B), fontSize: 10)),
+                            ),
+                          ),
+                        ] else if (isColliding) ...[
                           const SizedBox(width: 4),
                           const Tooltip(
                             message: '충돌 감지: 다른 박스 또는 경계와 겹침',
@@ -597,13 +739,18 @@ class BoxListPanel extends StatelessWidget {
                   ],
                 ),
               ),
-              // 회전 버튼
+              // 회전 버튼 (폰 시트에서는 48px 탭 영역 — M3 기본 40px 는 손가락에 작다, 그 외는 조밀)
               IconButton(
                 icon: const Icon(Icons.rotate_right,
                     color: Colors.white70, size: 20),
                 tooltip: '90° 회전',
                 onPressed: () => onRotate(box.id),
-                visualDensity: VisualDensity.compact,
+                visualDensity:
+                    _isSheet ? VisualDensity.standard : VisualDensity.compact,
+                constraints: _isSheet
+                    ? const BoxConstraints.tightFor(width: 48, height: 48)
+                    : null,
+                padding: _isSheet ? EdgeInsets.zero : null,
               ),
               // 삭제 버튼
               IconButton(
@@ -611,7 +758,12 @@ class BoxListPanel extends StatelessWidget {
                     color: Color(0xFFFF6B6B), size: 20),
                 tooltip: '삭제',
                 onPressed: () => onDelete(box.id),
-                visualDensity: VisualDensity.compact,
+                visualDensity:
+                    _isSheet ? VisualDensity.standard : VisualDensity.compact,
+                constraints: _isSheet
+                    ? const BoxConstraints.tightFor(width: 48, height: 48)
+                    : null,
+                padding: _isSheet ? EdgeInsets.zero : null,
               ),
             ],
           ),
@@ -689,7 +841,7 @@ class BoxListPanel extends StatelessWidget {
   Widget _statusRow(
       BuildContext context, List<String> warnings, List<String> advice) {
     if (warnings.isEmpty && advice.isNotEmpty) {
-      final more = advice.length > 1 ? ' (+${advice.length - 1})' : '';
+      final more = advice.length > 1 ? ' 외 ${advice.length - 1}건' : '';
       return InkWell(
         onTap: () => _showWarningsDialog(context, advice,
             title: '적재 조언', isAdvice: true),
@@ -725,7 +877,7 @@ class BoxListPanel extends StatelessWidget {
         ],
       );
     }
-    final more = warnings.length > 1 ? ' (+${warnings.length - 1})' : '';
+    final more = warnings.length > 1 ? ' 외 ${warnings.length - 1}건' : '';
     return InkWell(
       onTap: () => _showWarningsDialog(context, warnings),
       child: Row(

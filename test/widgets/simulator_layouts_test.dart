@@ -3,6 +3,8 @@
 //
 // 실제 글꼴(sim_harness.loadRealFonts)을 써야 의미가 있다: 기본 테스트 글꼴은 라틴·숫자를
 // 2배 폭으로 재서 거짓 overflow 를 낸다. 실제 글꼴을 못 찾으면 overflow 검사는 건너뛴다.
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trimbox/models/trunk_space.dart';
@@ -59,6 +61,12 @@ Future<void> _collecting(
   expect(e.found, isEmpty, reason: e.found.join('\n'));
 }
 
+/// 화면에 있는 "2열 +Ncm 적용" 버튼의 실제 문구
+String _applyLabel(WidgetTester tester) {
+  final t = find.textContaining(RegExp(r'^2열 \+\d+cm 적용$')).evaluate().first.widget as Text;
+  return t.data!;
+}
+
 /// 2열 컨트롤이 화면 안에 있어 누를 수 있는가
 bool _seatControlReachable(WidgetTester tester, Size size) {
   final f = seatSlideControl();
@@ -98,6 +106,7 @@ void main() {
     final name = entry.key;
     final size = entry.value;
     final isPhone = size.width < 600;
+    final isPhoneLike = isPhone || (size.width > size.height && size.height < 500);
 
     group('10. 레이아웃 — $name', () {
       testWidgets('첫 실행 화면과 빈 상태 CTA', (tester) async {
@@ -201,8 +210,9 @@ void main() {
           e.stage = '판정 다이얼로그';
           await _tapVisible(tester, find.text('들어갈까?'));
           expect(find.textContaining('적재 가능'), findsWidgets);
-          await tester.tap(find.text('확인'));
-          await tester.pumpAndSettle();
+          // 폰은 아래 시트, 그 외는 다이얼로그
+          expect(resultIsSheet(tester), isPhoneLike, reason: '결과 표시 형식');
+          await closeResult(tester);
 
           e.stage = '스텝 뷰';
           await _panelToTop(tester);
@@ -232,12 +242,12 @@ void main() {
           e.stage = '자동 배치 대안 다이얼로그';
           await _tapVisible(tester, find.text('자동 배치'));
           expect(find.text('이 배치 적용'), findsOneWidget);
+          expect(resultIsSheet(tester), isPhoneLike, reason: '대안 표시 형식');
           e.stage = '적용 후 판정 다이얼로그 + 스낵바';
           await tester.tap(find.text('이 배치 적용'));
           await tester.pumpAndSettle();
           expect(find.textContaining('적재 가능'), findsWidgets);
-          await tester.tap(find.text('확인'));
-          await tester.pumpAndSettle();
+          await closeResult(tester);
           await flushSnackBars(tester);
 
           expect(_seatControlReachable(tester, size), isTrue);
@@ -251,8 +261,7 @@ void main() {
             e.stage = '전부 적재 판정 다이얼로그';
             await _tapVisible(tester, find.text('들어갈까?'));
             expect(find.textContaining('적재 가능'), findsWidgets);
-            await tester.tap(find.text('확인'));
-            await tester.pumpAndSettle();
+            await closeResult(tester);
           }
           await flushAutosave(tester);
         });
@@ -299,19 +308,21 @@ void main() {
           await tester.pumpAndSettle();
 
           e.stage = '저장 다이얼로그';
-          await _tapVisible(tester, find.byTooltip('배치 저장'));
+          await _panelToTop(tester);
+          await tapPanelAction(tester, '배치 저장');
           expect(find.text('배치 이름'), findsOneWidget);
           await tester.tap(find.text('취소'));
           await tester.pumpAndSettle();
 
           e.stage = '불러오기 다이얼로그';
-          await _tapVisible(tester, find.byTooltip('불러오기'));
+          await _panelToTop(tester);
+          await tapPanelAction(tester, '불러오기');
           expect(find.text('저장된 배치 불러오기'), findsOneWidget);
           await tester.tap(find.text('취소'));
           await tester.pumpAndSettle();
 
-          e.stage = '단축키 도움말';
-          await tester.tap(find.byTooltip('키보드 단축키 (?)'));
+          e.stage = '도움말 (폰: 조작법, 그 외: 단축키)';
+          await tester.tap(find.byTooltip(helpTooltip(size)));
           await tester.pumpAndSettle();
           await tester.tapAt(const Offset(5, 5));
           await tester.pumpAndSettle();
@@ -433,8 +444,7 @@ void main() {
         await tester.tap(find.text('들어갈까?'));
         await tester.pumpAndSettle();
         expect(find.text('모두 적재 가능!'), findsOneWidget);
-        await tester.tap(find.text('확인'));
-        await tester.pumpAndSettle();
+        await closeResult(tester);
 
         e.stage = '스텝 뷰';
         await tester.tap(find.byTooltip('적재 순서 가이드'));
@@ -478,31 +488,62 @@ void main() {
     });
   });
 
-  group('10d. 폰에서 판정 다이얼로그 버튼', () {
-    /// 세로로 쌓인 버튼 사이가 8px 이상이고 어느 둘도 겹치지 않는다
-    void expectSeparated(WidgetTester tester, String what) {
+  group('10d. 폰의 결과 시트 (판정·자동 배치)', () {
+    /// 시트의 버튼: 전체 폭(시트 폭 − 좌우 여백 32) 이고 세로로 8px 이상 떨어져 있으며 겹치지 않는다.
+    /// 확인 대신 제목 행의 ✕('닫기') 가 있다.
+    void expectSheetButtons(WidgetTester tester, String what,
+        {required List<String> labels}) {
+      final sheet = find.byType(BottomSheet);
+      expect(sheet, findsOneWidget, reason: '$what: 아래 시트로 열린다');
+      expect(find.descendant(of: sheet, matching: find.byTooltip('닫기')),
+          findsOneWidget, reason: '$what: ✕ 닫기');
+      // 적재 불가(제안 없음)처럼 다른 동작이 없을 때만 '확인' 이 주 버튼으로 남는다
+      if (!labels.contains('확인')) {
+        expect(find.descendant(of: sheet, matching: find.text('확인')),
+            findsNothing, reason: '$what: 시트에는 확인 텍스트 버튼이 없다');
+      }
+      final sheetRect = tester.getRect(sheet);
       final buttons = find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.bySubtype<ButtonStyleButton>());
-      final rects = [for (final e in buttons.evaluate()) tester.getRect(find.byWidget(e.widget))]
-        ..sort((a, b) => a.top.compareTo(b.top));
-      expect(rects.length, greaterThanOrEqualTo(2), reason: what);
-      for (var i = 0; i < rects.length; i++) {
-        for (var j = i + 1; j < rects.length; j++) {
-          final a = rects[i], b = rects[j];
-          expect(a.overlaps(b), isFalse, reason: '$what: $a 와 $b 가 겹친다');
-          final sameColumn = a.left < b.right && b.left < a.right;
-          final stacked = b.top >= a.bottom - 0.5;
-          if (sameColumn && stacked) {
-            expect(b.top - a.bottom, greaterThanOrEqualTo(8),
-                reason: '$what: 세로 간격 ${b.top - a.bottom}');
-          }
-        }
+          of: sheet, matching: find.bySubtype<ButtonStyleButton>());
+      final rects = <Rect>[];
+      for (final e in buttons.evaluate()) {
+        final w = e.widget as ButtonStyleButton;
+        final text = find.descendant(of: find.byWidget(w), matching: find.byType(Text));
+        final label = text.evaluate().isEmpty
+            ? ''
+            : (text.evaluate().first.widget as Text).data ?? '';
+        if (!labels.contains(label)) continue;
+        rects.add(tester.getRect(find.byWidget(w)));
+      }
+      expect(rects.length, labels.length,
+          reason: '$what: 버튼 $labels 이 전부 있다 (찾은 것 ${rects.length})');
+      for (final r in rects) {
+        expect(r.height, 48, reason: '$what: 버튼 높이 48');
+        expect(r.width, closeTo(sheetRect.width - 32, 1),
+            reason: '$what: 버튼은 전체 폭 ($r in $sheetRect)');
+        expect(r.bottom, lessThanOrEqualTo(sheetRect.bottom),
+            reason: '$what: 버튼이 시트 안에 있다');
+      }
+      rects.sort((a, b) => a.top.compareTo(b.top));
+      for (var i = 1; i < rects.length; i++) {
+        expect(rects[i].top - rects[i - 1].bottom, greaterThanOrEqualTo(8),
+            reason: '$what: 세로 간격');
+      }
+      // 주 동작(파랑 채움)이 맨 아래 — 엄지에 가장 가깝다
+      final primary = tester
+          .widgetList<ElevatedButton>(find.descendant(
+              of: sheet, matching: find.byType(ElevatedButton)))
+          .where((b) => b.enabled)
+          .toList();
+      if (primary.isNotEmpty) {
+        final pr = tester.getRect(find.byWidget(primary.last));
+        expect(pr.top, greaterThanOrEqualTo(rects.map((r) => r.top).reduce(math.max) - 0.5),
+            reason: '$what: 주 동작이 맨 아래');
       }
     }
 
     for (final size in const [kPhone, Size(360, 800)]) {
-      testWidgets('세 판정 분기와 자동 배치 다이얼로그 — ${size.width.round()}dp',
+      testWidgets('세 판정 분기와 자동 배치 대안 — ${size.width.round()}dp',
           (tester) async {
         await _collecting(tester, (e) async {
           await pumpApp(tester, size: size, prefs: seenPrefs());
@@ -513,41 +554,69 @@ void main() {
           await flushSnackBars(tester);
           await _tapVisible(tester, find.text('들어갈까?'));
           expect(find.text('적재 불가'), findsOneWidget);
-          expectSeparated(tester, '적재 불가');
-          await tester.tap(find.text('확인'));
-          await tester.pumpAndSettle();
+          // 2열 제안이 있으면 [2열 +Ncm 적용, 확인], 없으면 [확인]
+          final hasApply =
+              find.textContaining(RegExp(r'^2열 \+\d+cm 적용$')).evaluate().isNotEmpty;
+          expectSheetButtons(tester, '적재 불가',
+              labels: [if (hasApply) _applyLabel(tester), '확인']);
+          await closeResult(tester);
 
           e.stage = '일부만 들어감';
           await addCustomBox(tester, label: '작은 박스', w: 30, d: 30, h: 20);
           await flushSnackBars(tester);
           await _tapVisible(tester, find.text('들어갈까?'));
           expect(find.text('1/2개 적재 가능'), findsOneWidget);
-          expectSeparated(tester, '일부 적재');
           final apply = find.textContaining(RegExp(r'^2열 \+\d+cm 적용$'));
           expect(apply, findsOneWidget);
+          expectSheetButtons(tester, '일부 적재', labels: [_applyLabel(tester), '다시 배치']);
 
           e.stage = '2열 제안 적용 → 모두 적재';
           await tester.tap(apply);
           await tester.pumpAndSettle();
           expect(find.text('모두 적재 가능!'), findsOneWidget);
-          for (final t in ['확인', '순서 가이드', '배치 저장']) {
-            expect(find.text(t), findsOneWidget, reason: t);
-          }
-          expectSeparated(tester, '모두 적재');
-          await tester.tap(find.text('확인'));
+          expectSheetButtons(tester, '모두 적재', labels: ['순서 가이드', '배치 저장']);
+          // 스크림 위(캔버스)를 탭해도 닫힌다
+          await tester.tapAt(const Offset(20, 100));
           await tester.pumpAndSettle();
+          expect(find.byType(BottomSheet), findsNothing);
           await flushSnackBars(tester);
 
           e.stage = '자동 배치 대안';
           await _tapVisible(tester, find.text('자동 배치'));
           expect(find.text('이 배치 적용'), findsOneWidget);
-          expectSeparated(tester, '자동 배치');
+          expectSheetButtons(tester, '자동 배치', labels: ['이 배치 적용']);
+          expect(find.text('취소'), findsNothing, reason: '시트는 ✕ 로 닫는다');
+          await closeResult(tester);
+          expect(find.byType(BottomSheet), findsNothing);
+
+          e.stage = '시트 밖에서 열린 배치 저장 → 저장 다이얼로그';
+          await _tapVisible(tester, find.text('들어갈까?'));
+          await tester.tap(find.text('배치 저장'));
+          await tester.pumpAndSettle();
+          expect(find.byType(BottomSheet), findsNothing);
+          expect(find.text('배치 이름'), findsOneWidget);
           await tester.tap(find.text('취소'));
           await tester.pumpAndSettle();
           await flushAutosave(tester);
         });
       });
     }
+
+    testWidgets('데스크톱은 그대로 다이얼로그 (확인·순서 가이드·배치 저장 한 줄)', (tester) async {
+      await pumpApp(tester, prefs: seenPrefs());
+      await addBundle(tester, '솔로 백패킹');
+      await flushSnackBars(tester);
+      await tester.tap(find.text('들어갈까?'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(find.byType(BottomSheet), findsNothing);
+      for (final t in ['확인', '순서 가이드', '배치 저장']) {
+        expect(find.descendant(of: find.byType(AlertDialog), matching: find.text(t)),
+            findsOneWidget, reason: t);
+      }
+      await closeResult(tester);
+      await flushAutosave(tester);
+    });
   });
 
   group('10. 레이아웃 — 좁은·낮은 화면 회귀', () {
@@ -581,8 +650,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text('모두 적재 가능!'), findsOneWidget);
         e.stage = '끝';
-        await tester.tap(find.text('확인'));
-        await tester.pumpAndSettle();
+        await closeResult(tester);
         await flushAutosave(tester);
       } finally {
         e.restore();
@@ -624,7 +692,7 @@ void main() {
         final field = tester.widget<TextField>(search);
         expect(field.controller!.text, '헬리녹스');
         expect(field.focusNode!.hasFocus, isTrue);
-        expect(presetRowLabels(tester).every((l) => l.contains('헬리녹스')), isTrue);
+        expect(presetRowLabels(tester).every((l) => l.contains('헬리녹스') || l.toLowerCase().contains('helinox')), isTrue);
         // 키보드가 내려가면 원래 배치로
         tester.view.resetViewInsets();
         await tester.pumpAndSettle();

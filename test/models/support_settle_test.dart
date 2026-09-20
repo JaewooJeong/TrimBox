@@ -57,6 +57,18 @@ void expectAllSupported(List<TrimBox> boxes, TrunkSpace t, String ctx) {
   }
 }
 
+/// 정착 뒤: 받쳐지거나(지지 50% 이상), 아니면 적어도 발밑의 무엇(바닥·짐·휠하우스 윗면)에
+/// 닿아 있다. 내려앉을 자리를 다른 짐이 먼저 차지하면 지지는 모자랄 수 있지만 허공에 뜨지는 않는다.
+void expectNoneFloating(List<TrimBox> boxes, TrunkSpace t, String ctx) {
+  for (final b in boxes) {
+    final others = boxes.where((o) => o.id != b.id);
+    final supported = SupportRule.isSupported(b, others, t);
+    final resting = (b.y - SupportRule.restOnWhateverIsBelow(b, others, t)).abs() < 1e-6;
+    expect(supported || resting, isTrue,
+        reason: '$ctx: ${b.id} 부양 y=${b.y} (지지 $supported, 발밑 접촉 $resting)');
+  }
+}
+
 void main() {
   final trunks = {
     'plain': plainTrunk(1.2, 1.0, 1.5),
@@ -102,7 +114,7 @@ void main() {
             if ((b.y - o.y).abs() > 1e-6) moved = true;
           }
           expect(changed, moved, reason: '반환값은 "하나라도 움직였는가"');
-          expectAllSupported(s1, t, '${e.key} iter=$iter S2');
+          expectNoneFloating(s1, t, '${e.key} iter=$iter S2');
           expect(anyOverlap(det, s1), isFalse, reason: '${e.key} iter=$iter: 정착 후 겹침');
           for (final b in s1) {
             expect(det.overlapsLeftWheelhouse(b) || det.overlapsRightWheelhouse(b), isFalse,

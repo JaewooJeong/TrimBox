@@ -425,10 +425,64 @@ Future<void> pumpAppWithScene(WidgetTester tester, List<TrimBox> boxes,
 Finder stepButton(IconData icon) => find.byWidgetPredicate(
     (w) => w is Icon && w.icon == icon && w.size == 28);
 
+/// 판정·자동배치 결과를 닫는다. 데스크톱은 다이얼로그의 '확인'(또는 '취소'), 폰은 아래
+/// 시트의 ✕('닫기') — 폰 시트에는 확인 버튼이 없다 (`backlog/phone-ux-w9.md` 3.7).
+Future<void> closeResult(WidgetTester tester) async {
+  final ok = find.text('확인');
+  final cancel = find.text('취소');
+  final close = find.byTooltip('닫기');
+  if (ok.evaluate().isNotEmpty) {
+    await tester.tap(ok.last);
+  } else if (cancel.evaluate().isNotEmpty) {
+    await tester.tap(cancel.last);
+  } else {
+    expect(close, findsWidgets, reason: '결과 다이얼로그/시트가 열려 있어야 한다');
+    await tester.tap(close.last);
+  }
+  await tester.pumpAndSettle();
+}
+
+/// 결과가 아래 시트로 열려 있는가 (폰)
+bool resultIsSheet(WidgetTester tester) =>
+    find.byType(BottomSheet).evaluate().isNotEmpty;
+
+/// 패널의 도구 동작을 누른다. 데스크톱·폰 가로는 툴팁 버튼, 폰 세로 시트는 '더 보기'(⋯)
+/// 메뉴 안의 항목(배치 저장·불러오기·스크린샷·공유 카드).
+Future<void> tapPanelAction(WidgetTester tester, String label) async {
+  final direct = find.byTooltip(label);
+  if (direct.evaluate().isNotEmpty) {
+    await tester.ensureVisible(direct.first);
+    await tester.pumpAndSettle();
+    await tester.tap(direct.first);
+    await tester.pumpAndSettle();
+    return;
+  }
+  final more = find.byTooltip('더 보기');
+  expect(more, findsOneWidget, reason: '$label 버튼도 ⋯ 메뉴도 없다');
+  await tester.ensureVisible(more);
+  await tester.pumpAndSettle();
+  await tester.tap(more);
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
+/// 앱바 도움말 버튼의 툴팁 (폰은 조작법, 그 외는 키보드 단축키)
+String helpTooltip(Size size) {
+  final phoneLandscape = size.width > size.height && size.height < 500;
+  return (size.width < 600 || phoneLandscape) ? '조작법' : '키보드 단축키 (?)';
+}
+
 /// 폰 레이아웃의 시트를 끝까지 올린다. (tester.drag 의 한 번에 점프하는 이동은
 /// DraggableScrollableSheet 를 움직이지 못한다 → fling 을 쓴다.)
 Future<void> expandSheet(WidgetTester tester) async {
   final sheet = find.byType(BoxListPanel);
+  // 안쪽 목록이 스크롤돼 있으면(예: ensureVisible 뒤) 위로 끌어도 시트 대신 목록이 움직인다
+  final c = panelOf(tester).scrollController;
+  if (c != null && c.hasClients && c.offset > 0) {
+    c.jumpTo(0);
+    await tester.pumpAndSettle();
+  }
   for (var i = 0; i < 8; i++) {
     final before = tester.getRect(sheet).top;
     await tester.flingFrom(tester.getRect(sheet).topCenter + const Offset(0, 8),

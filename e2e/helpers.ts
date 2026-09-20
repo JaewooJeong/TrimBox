@@ -562,3 +562,146 @@ export function verdictDotHue(s: Shot, r: Region = { x: 430, y: 200, w: 120, h: 
   if (g && a) return g.y <= a.y ? 'green' : 'red';
   return g ? 'green' : 'red';
 }
+
+// ──── 폰 UI (backlog/phone-ux-w9.md) 도우미 ────
+
+/** 트렁크 후미등의 실제 화면 색 (fixtures.lampColor 0xD9C8283C 가 어두운 차체 위에 평면 음영으로 그려진 값) */
+export const LAMP: RGB = [132, 32, 44];
+
+/** 영역에서 후미등 색 픽셀의 경계 상자 (CSS px). 트렁크가 시트에 가려지지 않았는지 볼 때 쓴다. 없으면 null */
+export function lampBbox(s: Shot, r: Region): Region | null {
+  return s.bboxOfColor(r, LAMP, 22);
+}
+
+/**
+ * 폰 아래 시트의 위 경계 y (CSS px): 손잡이(#666666, 32×4, 시트 top+8) 를 x=cx 열에서 찾는다.
+ * 시트 배경(#252525)만 인정하므로 결과 모달 시트(#2A2A2A)의 손잡이는 잡지 않는다. 실패 -1
+ */
+export function sheetTopByHandle(s: Shot, cx: number, from = 60): number {
+  const near = (p: RGB, v: number, tol: number) =>
+    Math.abs(p[0] - v) <= tol && Math.abs(p[1] - v) <= tol && Math.abs(p[2] - v) <= tol;
+  for (let y = from; y < s.cssHeight - 12; y++) {
+    if (!near(s.px(cx, y), 0x66, 14)) continue;
+    if (!near(s.px(cx - 12, y), 0x66, 14) || !near(s.px(cx + 12, y), 0x66, 14)) continue;
+    if (!near(s.px(cx, y - 3), 0x25, 4) || !near(s.px(cx, y + 5), 0x25, 4)) continue;
+    if (!near(s.px(cx - 22, y), 0x25, 4) || !near(s.px(cx + 22, y), 0x25, 4)) continue;
+    return y - 8;
+  }
+  return -1;
+}
+
+/** 영역을 위→아래로 훑어 hue 픽셀이 있는 첫 세로 구간(run)의 y 범위 (CSS px). 없으면 null */
+export function firstHueRun(
+  s: Shot, r: Region, hue: Hue, minPixelsPerRow = 1,
+): { y0: number; y1: number } | null {
+  const x0 = Math.max(0, Math.floor(r.x * s.scale)), x1 = Math.min(s.png.width, Math.ceil((r.x + r.w) * s.scale));
+  const y0 = Math.max(0, Math.floor(r.y * s.scale)), y1 = Math.min(s.png.height, Math.ceil((r.y + r.h) * s.scale));
+  const d = s.png.data;
+  let start = -1;
+  for (let y = y0; y < y1; y++) {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * s.png.width + x) * 4;
+      if (isHue(d[i], d[i + 1], d[i + 2], hue)) n++;
+    }
+    const hit = n >= minPixelsPerRow * s.scale;
+    if (hit && start < 0) start = y;
+    if (!hit && start >= 0) return { y0: start / s.scale, y1: y / s.scale };
+  }
+  return start >= 0 ? { y0: start / s.scale, y1: y1 / s.scale } : null;
+}
+
+/** 영역에서 rgb 가 가로로 minFrac 이상 이어진 첫 행의 y (CSS px). 구분선·바 찾기용. 없으면 -1 */
+export function findRowOfColor(s: Shot, r: Region, rgb: RGB, tol = 8, minFrac = 0.8): number {
+  const x0 = Math.max(0, Math.floor(r.x * s.scale)), x1 = Math.min(s.png.width, Math.ceil((r.x + r.w) * s.scale));
+  const y0 = Math.max(0, Math.floor(r.y * s.scale)), y1 = Math.min(s.png.height, Math.ceil((r.y + r.h) * s.scale));
+  const d = s.png.data;
+  for (let y = y0; y < y1; y++) {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * s.png.width + x) * 4;
+      if (Math.abs(d[i] - rgb[0]) <= tol && Math.abs(d[i + 1] - rgb[1]) <= tol && Math.abs(d[i + 2] - rgb[2]) <= tol) n++;
+    }
+    if (n >= (x1 - x0) * minFrac) return y / s.scale;
+  }
+  return -1;
+}
+
+/** 폰 캔버스의 테일게이트 상태 알약 영역: 한 줄 캡션 바로 위 (캔버스 아래 경계 −54 .. −28) */
+export function phonePillRegion(canvasBottom: number): Region {
+  return { x: 4, y: canvasBottom - 54, w: 130, h: 26 };
+}
+
+/**
+ * 전체 화면 장비 선택 페이지가 떠 있는가: 앱바 왼쪽 ✕ + '장비 선택' 제목(흰 글자)이 있고,
+ * 메인 화면이라면 흰 글자가 있을 2열 버튼 자리(x 150..270)는 비어 있다.
+ */
+export function isGearPage(s: Shot): boolean {
+  const white = (r: Region) => s.countColorNear(r, [255, 255, 255], 60) / (s.scale * s.scale);
+  return white({ x: 72, y: 16, w: 80, h: 24 }) > 120 &&
+    white({ x: 150, y: 8, w: 120, h: 40 }) < 5 &&
+    white({ x: 16, y: 16, w: 24, h: 24 }) > 15;
+}
+
+/** 장비 페이지가 뜰 때까지(또는 사라질 때까지) 폴링. 걸린 ms, 실패 -1 */
+export async function waitForGearPage(page: Page, want = true, timeout = 6000): Promise<number> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    if (isGearPage(await shot(page)) === want) return Date.now() - t0;
+    await page.waitForTimeout(100);
+  }
+  return -1;
+}
+
+/** 폰 시트 위 경계가 목표 범위에 들어올 때까지 폴링 (스냅 애니메이션 종료 대기). 마지막 값을 돌려준다 */
+export async function waitForSheetTop(
+  page: Page, cx: number, pred: (top: number) => boolean, timeout = 4000,
+): Promise<number> {
+  const t0 = Date.now();
+  let top = -1;
+  while (Date.now() - t0 < timeout) {
+    top = sheetTopByHandle(await shot(page), cx);
+    if (pred(top)) return top;
+    await page.waitForTimeout(120);
+  }
+  return top;
+}
+
+/** 영역을 위→아래로 훑어 hue 픽셀이 있는 세로 구간(run)들의 y 범위 (CSS px) */
+export function hueRuns(
+  s: Shot, r: Region, hue: Hue, minPixelsPerRow = 1,
+): { y0: number; y1: number }[] {
+  const x0 = Math.max(0, Math.floor(r.x * s.scale)), x1 = Math.min(s.png.width, Math.ceil((r.x + r.w) * s.scale));
+  const y0 = Math.max(0, Math.floor(r.y * s.scale)), y1 = Math.min(s.png.height, Math.ceil((r.y + r.h) * s.scale));
+  const d = s.png.data;
+  const out: { y0: number; y1: number }[] = [];
+  let start = -1;
+  for (let y = y0; y < y1; y++) {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * s.png.width + x) * 4;
+      if (isHue(d[i], d[i + 1], d[i + 2], hue)) n++;
+    }
+    const hit = n >= minPixelsPerRow * s.scale;
+    if (hit && start < 0) start = y;
+    if (!hit && start >= 0) { out.push({ y0: start / s.scale, y1: y / s.scale }); start = -1; }
+  }
+  if (start >= 0) out.push({ y0: start / s.scale, y1: y1 / s.scale });
+  return out;
+}
+
+/** 영역에서 rgb 에 가까운 픽셀이 한 행에 minPixels 이상 있는 첫 행의 y (CSS px). 글자 줄 찾기용. 없으면 -1 */
+export function firstRowWithColor(s: Shot, r: Region, rgb: RGB, tol = 60, minPixels = 4): number {
+  const x0 = Math.max(0, Math.floor(r.x * s.scale)), x1 = Math.min(s.png.width, Math.ceil((r.x + r.w) * s.scale));
+  const y0 = Math.max(0, Math.floor(r.y * s.scale)), y1 = Math.min(s.png.height, Math.ceil((r.y + r.h) * s.scale));
+  const d = s.png.data;
+  for (let y = y0; y < y1; y++) {
+    let n = 0;
+    for (let x = x0; x < x1; x++) {
+      const i = (y * s.png.width + x) * 4;
+      if (Math.abs(d[i] - rgb[0]) <= tol && Math.abs(d[i + 1] - rgb[1]) <= tol && Math.abs(d[i + 2] - rgb[2]) <= tol) n++;
+    }
+    if (n >= minPixels * s.scale) return y / s.scale;
+  }
+  return -1;
+}

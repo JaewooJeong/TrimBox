@@ -26,7 +26,7 @@ flutter run -d chrome        # 개발 실행
 flutter test                 # 테스트 680여 개
 flutter analyze
 flutter build web            # build/web (로컬 서빙: python -m http.server -d build/web 8080)
-npx playwright test          # 브라우저 E2E 32개, 약 12분 (build/web 필요, 스크린샷은 e2e/screenshots/)
+npx playwright test          # 브라우저 E2E 34개, 약 12분 (build/web 필요, 스크린샷은 e2e/screenshots/)
 flutter build apk --debug    # Android (JDK 17: flutter config --jdk-dir <JDK17 경로>)
 ```
 
@@ -83,7 +83,8 @@ lib/
 - `test/widgets/simulator_*_test.dart` 실제 화면 플로우: 추가·판정·2열 제안·키보드·복원(옛 저장본·손상본)·레이아웃 5종·캔버스 조작
 - `test/render3d/` 메시가 AABB 안에 있는지, 고정물 위치, 페인터 스모크, 스냅샷 PNG(`build/render_snapshots/`)
 - `test/utils/collision_test.dart` 쏘렌토 실측 형상: 테일게이트 닫힘, 등받이, 개구부 통과, 프레임 구간 폭
-- `e2e/*.spec.ts` 실제 웹 빌드 브라우저 테스트 32개: 번들별 판정 색과 시간, 미적재→2열 제안 적용, 테일게이트 걸림↔실행 취소, 편집·단축키·카메라, 자동배치 대안·스텝 뷰, 차종·2열 메뉴, 새로고침 복원·이름 저장·손상 저장본, 폰·소형 폰·가로·태블릿, 리사이즈·연타·20회 내구
+- `e2e/*.spec.ts` 실제 웹 빌드 브라우저 테스트 34개: 번들별 판정 색과 시간, 미적재→2열 제안 적용, 테일게이트 걸림↔실행 취소, 편집·단축키·카메라, 자동배치 대안·스텝 뷰, 차종·2열 메뉴, 새로고침 복원·이름 저장·손상 저장본, 폰 10개(전체 화면 장비 페이지, 시트를 따라가는 캔버스, 선택 도구 띠, 결과 시트, 가로·소형·태블릿), 리사이즈·연타·20회 내구
+- `test/widgets/simulator_phone_test.dart` 폰 UX 사양(`backlog/phone-ux-w9.md`) 독립 검증 75개, `gear_picker_test.dart` 전체 화면 장비 페이지 16개, `test/render3d/label_policy_test.dart`·`caption_style_test.dart` 폰 압축 라벨·캡션
 
 ## 문서
 

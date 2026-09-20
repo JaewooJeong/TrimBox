@@ -25,6 +25,7 @@ LabelSpot? placeLabelGroup({
   required double badgeWidth,
   required double? pillWidth,
   required List<Rect> placed,
+  bool sideways = false,
 }) {
   Rect at(double width, double y) {
     var left = centre.dx - width / 2;
@@ -45,12 +46,54 @@ LabelSpot? placeLabelGroup({
   ];
   final full = badgeWidth + (pillWidth ?? 0);
   if (full <= 0) return null;
+  // sideways: 배지만 남았을 때는 좌우로도 비켜 본다 (겹친 두 배지 중 하나가 40% 가려지는 것을 막는다)
+  final dxs = <double>[0.0, if (sideways) ...const [-18.0, 18.0, -30.0, 30.0]];
   for (final width in [full, if (pillWidth != null && badgeWidth > 0) badgeWidth]) {
     for (final y in ys) {
-      final r = at(width, y);
-      if (free(r)) return LabelSpot(r, withPill: width == full && pillWidth != null);
+      for (final dx in dxs) {
+        final r = at(width, y).shift(Offset(dx, 0));
+        if (dx != 0 && (r.left < face.left - 4 || r.right > face.right + 4)) continue;
+        if (free(r)) return LabelSpot(r, withPill: width == full && pillWidth != null);
+      }
     }
   }
   return LabelSpot(at(full, centre.dy),
       withPill: pillWidth != null, overlapping: true);
+}
+
+/// 폰(compact) 라벨 정책에서 이름 알약을 붙일 짐 id 집합.
+///
+/// [areas] 는 이 프레임에 라벨을 그릴 짐을 그리는 순서대로 (id, 화면 투영 면적 px²)로 준
+/// 것이다. 선택·드래그 중([selected]·[dragging])·충돌([colliding])·테일게이트에 걸린
+/// ([blocked]) 짐은 항상 들어가고, 그 밖의 짐은 면적이 큰 순서로 [limit]개까지 들어간다.
+/// 면적이 같으면 먼저 그린 짐이 우선한다 (결정적). [areas] 에 없는 id 는 넣지 않는다.
+Set<String> compactLabelIds({
+  required List<(String, double)> areas,
+  String? selected,
+  String? dragging,
+  Set<String> colliding = const {},
+  Set<String> blocked = const {},
+  required int limit,
+}) {
+  final ids = <String>{};
+  final rest = <int>[];
+  for (var i = 0; i < areas.length; i++) {
+    final id = areas[i].$1;
+    if (id == selected ||
+        id == dragging ||
+        colliding.contains(id) ||
+        blocked.contains(id)) {
+      ids.add(id);
+    } else {
+      rest.add(i);
+    }
+  }
+  rest.sort((a, b) {
+    final byArea = areas[b].$2.compareTo(areas[a].$2);
+    return byArea != 0 ? byArea : a.compareTo(b);
+  });
+  for (final i in rest.take(limit < 0 ? 0 : limit)) {
+    ids.add(areas[i].$1);
+  }
+  return ids;
 }

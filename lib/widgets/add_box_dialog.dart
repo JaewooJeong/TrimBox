@@ -663,8 +663,30 @@ List<GearBundleInfo> gearBundles() => [
     ];
 
 /// 박스 추가 다이얼로그 — 카테고리별 프리셋 + 멀티 셀렉트 + W, D, H (cm 단위) + 컬러 선택
+/// 장비 선택 UI 를 연다. 폰([fullScreen])에서는 전체 화면 페이지로 밀어 올리고, 그 외에는
+/// 다이얼로그다. 결과는 두 경우 모두 추가할 항목 목록이고 취소면 null.
+Future<List<Map<String, dynamic>>?> showGearPicker(BuildContext context,
+    {required bool fullScreen}) {
+  if (fullScreen) {
+    return Navigator.of(context).push<List<Map<String, dynamic>>>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const AddBoxDialog(fullScreen: true),
+      ),
+    );
+  }
+  return showDialog<List<Map<String, dynamic>>>(
+    context: context,
+    builder: (_) => const AddBoxDialog(),
+  );
+}
+
 class AddBoxDialog extends StatefulWidget {
-  const AddBoxDialog({super.key});
+  /// true 면 전체 화면 페이지(폰): Scaffold + 앱바 + 고정 머리말 + 하단 고정 "추가" 버튼.
+  /// false 면 기존 다이얼로그.
+  final bool fullScreen;
+
+  const AddBoxDialog({super.key, this.fullScreen = false});
 
   @override
   State<AddBoxDialog> createState() => _AddBoxDialogState();
@@ -738,11 +760,9 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     final result = <(int, _BoxPreset)>[];
     for (int i = 0; i < _presets.length; i++) {
       final p = _presets[i];
-      // 검색어가 있으면 카테고리 무시하고 전체 검색
+      // 검색어가 있으면 카테고리 무시하고 전체 검색 (이름·분류·동의어)
       if (query.isNotEmpty) {
-        if (p.label.toLowerCase().contains(query)) {
-          result.add((i, p));
-        }
+        if (_matchesQuery(p, query)) result.add((i, p));
         continue;
       }
       if (p.category != _selectedCategory) continue;
@@ -755,6 +775,49 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     }
     return result;
   }
+
+  /// 검색어 토큰마다 이름·카테고리·서브카테고리 이름·동의어 중 하나에 맞으면 통과.
+  /// "쿨러" 로 아이스박스·쿨러백이, "helinox" 로 헬리녹스가 나오게.
+  static bool _matchesQuery(_BoxPreset p, String query) {
+    final hay = <String>[
+      p.label.toLowerCase(),
+      p.category.label,
+      if (p.subCategory != null) p.subCategory!.label,
+    ];
+    for (final raw in query.split(RegExp(r'\s+'))) {
+      final token = raw.trim().toLowerCase();
+      if (token.isEmpty) continue;
+      final terms = <String>{token, ..._synonyms[token] ?? const []};
+      final ok = hay.any((h) => terms.any((t) => h.contains(t)));
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  /// 검색 동의어 (소문자 검색어 → 함께 찾을 말)
+  static const Map<String, List<String>> _synonyms = {
+    '쿨러': ['아이스', '냉장', '쿨러'],
+    '아이스박스': ['쿨러', '아이스'],
+    '냉장고': ['냉장', '쿨러'],
+    'cooler': ['쿨러', '아이스'],
+    'helinox': ['헬리녹스'],
+    '헬리녹스': ['helinox'],
+    'snow peak': ['스노우피크'],
+    'snowpeak': ['스노우피크'],
+    'dod': ['dod', '디오디'],
+    '텐트': ['텐트', '쉘터', '타프쉘'],
+    '타프': ['타프', '쉘터'],
+    '의자': ['체어', '의자', '벤치'],
+    '체어': ['체어', '의자'],
+    '테이블': ['테이블', '탁자'],
+    '매트': ['매트', '패드', '에어'],
+    '버너': ['버너', '스토브', '화로'],
+    '스토브': ['버너', '스토브'],
+    '랜턴': ['랜턴', '조명', 'led'],
+    '가방': ['백', '가방', '더플', '캐리어'],
+    '캐리어': ['캐리어', '트렁크', '인치'],
+    '침낭': ['침낭', '슬리핑'],
+  };
 
   /// _PresetCategory -> BoxCategory 매핑
   static const _categoryMap = {
@@ -775,6 +838,8 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
   Widget build(BuildContext context) {
     final isCustom = _selectedCategory == _PresetCategory.custom;
     final selectedCount = _selectedCount;
+
+    if (widget.fullScreen) return _buildPage(isCustom, selectedCount);
 
     return Dialog(
       backgroundColor: const Color(0xFF252525),
@@ -834,40 +899,187 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     );
   }
 
-  /// 머리말: 제목 + 카테고리 + 서브카테고리 + 검색
-  List<Widget> _buildHeader(bool isCustom, int selectedCount) {
-    return [
-      // 제목
-      Padding(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-        child: Row(
-          children: [
-            const Text('박스 추가',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600)),
-            const Spacer(),
-            if (selectedCount > 0)
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF4DA3FF),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '$selectedCount개 선택',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
-          ],
+  /// 페이지 본문(앱바·하단 바 제외)이 이보다 낮으면 — 폰 + 키보드, 폰 가로 — 카테고리·
+  /// 서브카테고리 칩을 고정하지 않고 목록과 함께 스크롤한다. 검색 필드는 그래도 고정.
+  /// 칩 두 줄(~100px) + 검색(44px) 을 빼고도 목록이 120px 이상 남는 경계.
+  static const double _pageCompactHeight = 300;
+
+  /// 이보다 낮으면(폰 가로 + 키보드) 검색 필드도 목록과 함께 스크롤한다.
+  static const double _pageTinyHeight = 160;
+
+  /// 전체 화면 페이지(폰): 앱바(✕·제목·선택 수) → 고정 머리말(칩·검색) → 목록 →
+  /// 하단 고정 바(선택 해제·추가). 취소 버튼은 없다 — 앱바 ✕ 와 뒤로가기가 닫는다.
+  Widget _buildPage(bool isCustom, int selectedCount) {
+    const bg = Color(0xFF252525);
+    const divider = Divider(color: Color(0xFF444444), height: 1);
+    return Scaffold(
+      backgroundColor: bg,
+      resizeToAvoidBottomInset: true,
+      appBar: AppBar(
+        backgroundColor: bg,
+        foregroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: '닫기',
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text('장비 선택',
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600)),
+        actions: [
+          if (selectedCount > 0)
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Center(child: _selectedCountChip(selectedCount)),
+            ),
+        ],
+      ),
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxHeight < _pageCompactHeight;
+            final tiny = constraints.maxHeight < _pageTinyHeight;
+            final chips = _buildFilterChipRows();
+            if (isCustom) {
+              return Column(
+                children: [
+                  if (!compact) ...chips,
+                  if (!compact) divider,
+                  Expanded(
+                    child: _buildCustomInput(
+                        leading: compact ? chips : const []),
+                  ),
+                ],
+              );
+            }
+            final pinned = <Widget>[
+              if (!compact) ...chips,
+              if (!tiny) _buildSearchField(),
+            ];
+            final scrolling = <Widget>[
+              if (compact) ...chips,
+              if (tiny) _buildSearchField(),
+            ];
+            return Column(
+              children: [
+                ...pinned,
+                if (pinned.isNotEmpty) divider,
+                Expanded(child: _buildPresetList(leading: scrolling)),
+              ],
+            );
+          },
         ),
       ),
+      bottomNavigationBar: Padding(
+        // Scaffold 는 bottomNavigationBar 를 키보드 뒤(화면 바닥)에 두므로,
+        // 키보드 높이만큼 띄워 검색 중에도 '추가' 가 보이게 한다
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SafeArea(
+          top: false,
+          child: _buildPageBottomBar(isCustom, selectedCount),
+        ),
+      ),
+    );
+  }
 
+  /// 페이지 하단 고정 바: [선택 해제] + 전체 폭 [추가 (N개)] 48px
+  Widget _buildPageBottomBar(bool isCustom, int selectedCount) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF252525),
+        border: Border(top: BorderSide(color: Color(0xFF444444))),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Row(
+        children: [
+          if (!isCustom && selectedCount > 0) ...[
+            TextButton(
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 48),
+                foregroundColor: Colors.grey,
+              ),
+              onPressed: () => setState(() => _clearSelection()),
+              child: const Text('선택 해제', style: TextStyle(fontSize: 14)),
+            ),
+            const SizedBox(width: 8),
+          ],
+          Expanded(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4DA3FF),
+                minimumSize: const Size.fromHeight(48),
+                textStyle: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+              onPressed: (isCustom || selectedCount > 0) ? _onConfirm : null,
+              child: Text(
+                isCustom
+                    ? '추가'
+                    : selectedCount > 0
+                        ? '추가 ($selectedCount개)'
+                        : '추가',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 머리말: 제목 + 카테고리 + 서브카테고리 + 검색 (다이얼로그)
+  List<Widget> _buildHeader(bool isCustom, int selectedCount) {
+    return [
+      _buildTitleRow(selectedCount),
+      ..._buildFilterChipRows(),
+      if (!isCustom) _buildSearchField(),
+    ];
+  }
+
+  /// 다이얼로그 제목 줄: '박스 추가' + 선택 수 알약
+  Widget _buildTitleRow(int selectedCount) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      child: Row(
+        children: [
+          const Text('박스 추가',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600)),
+          const Spacer(),
+          if (selectedCount > 0) _selectedCountChip(selectedCount),
+        ],
+      ),
+    );
+  }
+
+  /// 'N개 선택' 파란 알약 (다이얼로그 제목 줄·페이지 앱바 공용)
+  Widget _selectedCountChip(int selectedCount) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF4DA3FF),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        '$selectedCount개 선택',
+        style: const TextStyle(
+            color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+
+  /// 카테고리 칩 줄 + (캠핑이면) 서브카테고리 칩 줄
+  List<Widget> _buildFilterChipRows() {
+    return [
       // 카테고리 탭
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -881,52 +1093,53 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: _buildSubCategoryChips(),
         ),
+    ];
+  }
 
-      // 검색 필드 (프리셋 모드에서만)
-      if (!isCustom)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: SizedBox(
-            height: 36,
-            child: TextField(
-              // 키보드가 올라오며 머리말이 목록 안으로 옮겨져도 입력 상태·포커스를 유지한다
-              key: _searchFieldKey,
-              focusNode: _searchFocus,
-              controller: _searchCtrl,
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-              decoration: InputDecoration(
-                hintText: '장비 검색 (예: 헬리녹스, 쿨러, 텐트...)',
-                hintStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
-                prefixIcon:
-                    Icon(Icons.search, color: Colors.grey[500], size: 18),
-                suffixIcon: _searchQuery.isNotEmpty
-                    ? IconButton(
-                        icon: Icon(Icons.close,
-                            color: Colors.grey[500], size: 16),
-                        tooltip: '검색어 지우기',
-                        onPressed: () => setState(() {
-                          _searchCtrl.clear();
-                          _searchQuery = '';
-                        }),
-                        padding: EdgeInsets.zero,
-                        constraints:
-                            const BoxConstraints(minWidth: 28, minHeight: 28),
-                      )
-                    : null,
-                filled: true,
-                fillColor: const Color(0xFF333333),
-                contentPadding:
-                    const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-              onChanged: (v) => setState(() => _searchQuery = v),
+  /// 검색 필드 (프리셋 모드에서만)
+  Widget _buildSearchField() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: SizedBox(
+        height: 36,
+        child: TextField(
+          // 키보드가 올라오며 머리말이 목록 안으로 옮겨져도 입력 상태·포커스를 유지한다
+          key: _searchFieldKey,
+          focusNode: _searchFocus,
+          controller: _searchCtrl,
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: InputDecoration(
+            hintText: '장비 검색 (예: 헬리녹스, 쿨러, 텐트...)',
+            hintStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
+            prefixIcon:
+                Icon(Icons.search, color: Colors.grey[500], size: 18),
+            suffixIcon: _searchQuery.isNotEmpty
+                ? IconButton(
+                    icon: Icon(Icons.close,
+                        color: Colors.grey[500], size: 16),
+                    tooltip: '검색어 지우기',
+                    onPressed: () => setState(() {
+                      _searchCtrl.clear();
+                      _searchQuery = '';
+                    }),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                  )
+                : null,
+            filled: true,
+            fillColor: const Color(0xFF333333),
+            contentPadding:
+                const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide.none,
             ),
           ),
+          onChanged: (v) => setState(() => _searchQuery = v),
         ),
-    ];
+      ),
+    );
   }
 
   /// 하단 버튼 줄
@@ -990,7 +1203,7 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
                 setState(() {
                   _selectedCategory = cat;
                   _selectedSubCategory = null;
-                  _clearSelection();
+                  // 선택은 유지한다: 세트 + 캐리어 + 쿨러를 한 번에 담을 수 있게
                 });
               },
               selectedColor: const Color(0xFF4DA3FF),
@@ -1024,7 +1237,6 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
               selected: _selectedSubCategory == null,
               onSelected: (_) {
                 setState(() {
-                  _clearSelection();
                   _selectedSubCategory = null;
                 });
               },
@@ -1056,7 +1268,6 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
                 selected: isSelected,
                 onSelected: (_) {
                   setState(() {
-                    _clearSelection();
                     _selectedSubCategory = sub;
                   });
                 },
@@ -1251,7 +1462,11 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     // 목록 앞에 붙는 고정 항목들 (머리말, 추천 세트, 결과 없음 안내)
     final prefix = <Widget>[
       if (leading.isNotEmpty)
-        Column(mainAxisSize: MainAxisSize.min, children: leading),
+        // 머리말(칩 줄·검색)이 목록과 함께 스크롤될 때도 왼쪽 정렬·전체 폭을 유지한다
+        Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: leading),
       if (showBundles) _buildBundleCards(),
       if (filtered.isEmpty)
         const Padding(
@@ -1267,6 +1482,10 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
     return ListView.builder(
       shrinkWrap: true,
       padding: const EdgeInsets.symmetric(vertical: 4),
+      // 전체 화면 페이지(폰): 목록을 끌면 키보드가 내려가 목록이 다시 커진다
+      keyboardDismissBehavior: widget.fullScreen
+          ? ScrollViewKeyboardDismissBehavior.onDrag
+          : ScrollViewKeyboardDismissBehavior.manual,
       itemCount: prefix.length + filtered.length,
       itemBuilder: (context, idx) {
         if (idx < prefix.length) return prefix[idx];
@@ -1274,6 +1493,10 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
         final (presetIndex, preset) = filtered[idx - prefix.length];
         final isChecked = _isPresetSelected(presetIndex);
         final qty = _presetQuantity(presetIndex);
+        // 전체 화면 페이지(터치): 행 48px, 체크박스 40px (수량 버튼도 40px 이라 높이 같음).
+        // 다이얼로그는 그대로 (데스크톱 E2E 가 고정 좌표를 누른다).
+        final touch = widget.fullScreen;
+        final boxSize = touch ? 40.0 : 24.0;
 
         return InkWell(
           onTap: () {
@@ -1288,15 +1511,17 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
           child: Container(
             // 수량 버튼(32px)이 붙는 선택된 행도 높이가 같도록 여백을 줄인다 (24+20 = 32+12)
             padding: EdgeInsets.symmetric(
-                horizontal: 16, vertical: isChecked ? 6 : 10),
+                horizontal: 16,
+                vertical: touch ? 4 : (isChecked ? 6 : 10)),
+            constraints: touch ? const BoxConstraints(minHeight: 48) : null,
             color: isChecked
                 ? const Color(0xFF4DA3FF).withValues(alpha: 0.15)
                 : null,
             child: Row(
               children: [
                 SizedBox(
-                  width: 24,
-                  height: 24,
+                  width: boxSize,
+                  height: boxSize,
                   child: Checkbox(
                     value: isChecked,
                     onChanged: (val) {
@@ -1311,7 +1536,9 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
                     activeColor: const Color(0xFF4DA3FF),
                     checkColor: Colors.white,
                     side: const BorderSide(color: Color(0xFF666666)),
-                    visualDensity: VisualDensity.compact,
+                    // shrinkWrap 40px + standard 0 = 40px 탭 영역 / 다이얼로그는 24px 안에 축소
+                    visualDensity:
+                        touch ? VisualDensity.standard : VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                 ),
@@ -1347,10 +1574,12 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
 
   /// 선택된 행의 수량 조절: [−] n [+]. 1 에서 − 를 누르면 선택 해제.
   Widget _quantityStepper(int presetIndex, int qty) {
+    // 전체 화면 페이지(터치)는 40px, 다이얼로그는 32px
+    final size = widget.fullScreen ? 40.0 : 32.0;
     Widget button(IconData icon, String tooltip, VoidCallback? onTap) {
       return SizedBox(
-        width: 32,
-        height: 32,
+        width: size,
+        height: size,
         child: IconButton(
           tooltip: tooltip,
           onPressed: onTap,
@@ -1358,7 +1587,7 @@ class _AddBoxDialogState extends State<AddBoxDialog> {
           color: Colors.white,
           disabledColor: const Color(0xFF666666),
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+          constraints: BoxConstraints.tightFor(width: size, height: size),
           style: IconButton.styleFrom(
             backgroundColor: const Color(0xFF3A3A3A),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,

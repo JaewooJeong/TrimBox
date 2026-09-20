@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { shot, isGearPage } from './helpers';
 
 /**
  * 스모크 테스트 — 핵심 플로우가 실제 웹 빌드에서 에러 없이 동작하는지.
@@ -157,10 +158,11 @@ test.describe('데스크톱', () => {
   });
 });
 
-// 모바일 390×844 좌표
+// 모바일 390×844 좌표 (폰 UI: backlog/phone-ux-w9.md — 장비 선택은 전체 화면 페이지)
+// 웹 빌드는 Windows Chrome UA 라 데스크톱 밀도(CTA 32px, y 751..783)로 그려진다; android 밀도(48px, 749..797)도 포함하는 y
 const M = {
   onboarding: [195, 300],
-  cta: [195, 787], // 캠핑 장비 선택하기 (시트 안)
+  cta: [195, 767], // 캠핑 장비 선택하기 (빈 시트 안)
 } as const;
 
 test.describe('모바일', () => {
@@ -171,15 +173,20 @@ test.describe('모바일', () => {
     deviceScaleFactor: 2,
   });
 
-  test('빈 트렁크 → 장비 다이얼로그가 열린다', async ({ page }) => {
+  test('빈 트렁크 → 전체 화면 장비 페이지가 열린다', async ({ page }) => {
     const errors = collectErrors(page);
     await waitForApp(page);
     await page.mouse.click(...M.onboarding);
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/mobile-01-empty.png` });
+    const before = await shot(page);
+    // 메인 앱바: 차종·2열 버튼(흰 글자)이 x 140..270 에 있다
+    expect(before.countColorNear({ x: 140, y: 8, w: 120, h: 40 }, [255, 255, 255], 60), '메인 앱바의 2열 버튼').toBeGreaterThan(80 * 4);
     await page.mouse.click(...M.cta);
     await page.waitForTimeout(1200);
     await page.screenshot({ path: `${SHOTS}/mobile-02-dialog.png` });
+    // 다이얼로그(딤)가 아니라 페이지: 앱바가 ✕ + '장비 선택' 제목으로 바뀌고 2열 버튼 자리는 비어 있다
+    expect(isGearPage(await shot(page)), '전체 화면 장비 페이지 (✕ · 장비 선택 제목)').toBe(true);
     expect(errors, errors.join('\n')).toEqual([]);
   });
 });
